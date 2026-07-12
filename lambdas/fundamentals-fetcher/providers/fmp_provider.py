@@ -172,26 +172,37 @@ class FMPProvider(DataProvider):
 
     def get_fundamentals(self, symbol: str) -> Optional[StockFundamentals]:
         """
-        Fetch fundamentals by combining FMP's profile and ratios-ttm endpoints.
-        Both work on the free tier for single-symbol requests.
+        Fetch fundamentals by combining multiple FMP endpoints.
+
+        Endpoints used (all work on free tier):
+        - /stable/profile: price, market cap, sector
+        - /stable/ratios-ttm: valuation ratios, margins, balance sheet
+        - /stable/financial-growth: EPS growth, revenue growth
+        - /stable/price-target-consensus: analyst target prices
+
+        Each endpoint is a separate API call. For ~1,000 stocks this is
+        ~4,000 calls/day. Bandwidth: ~1,000 × (2.7+3.0+1.5+0.5)KB ≈ 7.7MB/day.
         """
         try:
             profile = self._fetch_profile(symbol)
             ratios = self._fetch_ratios(symbol)
+            growth = self._fetch_growth(symbol)
+            price_target = self._fetch_price_target(symbol)
 
             if not profile and not ratios:
                 return None
 
             p = profile or {}
             r = ratios or {}
+            g = growth or {}
+            pt = price_target or {}
 
-            # Calculate target price upside
-            # Note: analyst target may not be available on free tier
-            target_price = p.get("targetMeanPrice")
+            # Calculate target price upside from consensus target
             current_price = p.get("price")
+            target_consensus = pt.get("targetConsensus")
             target_upside = None
-            if target_price and current_price and current_price > 0:
-                target_upside = (target_price - current_price) / current_price
+            if target_consensus and current_price and current_price > 0:
+                target_upside = (target_consensus - current_price) / current_price
 
             return StockFundamentals(
                 # Identity
@@ -223,16 +234,16 @@ class FMPProvider(DataProvider):
                 gross_margin=r.get("grossProfitMarginTTM"),
                 return_on_equity=r.get("returnOnEquityTTM"),
 
-                # Growth
-                eps_growth_yoy=None,  # Requires financial-growth endpoint
-                revenue_growth_yoy=None,
-                revenue_growth_qoq=None,
+                # Growth (from /stable/financial-growth)
+                eps_growth_yoy=g.get("epsgrowth"),
+                revenue_growth_yoy=g.get("revenueGrowth"),
+                revenue_growth_qoq=None,  # Quarterly growth needs quarterly endpoint
                 earnings_growth_qoq=None,
-                estimated_lt_growth=None,
+                estimated_lt_growth=None,  # Requires paid analyst-estimates endpoint
 
-                # Analyst
-                analyst_recommendation=None,
-                analyst_target_price=target_price,
+                # Analyst (from /stable/price-target-consensus)
+                analyst_recommendation=None,  # Requires paid tier
+                analyst_target_price=target_consensus,
                 target_price_upside=target_upside,
 
                 # Institutional
@@ -303,6 +314,48 @@ class FMPProvider(DataProvider):
     def _fetch_ratios(self, symbol: str) -> Optional[dict]:
         """Fetch TTM ratios from /stable/ratios-ttm."""
         url = f"{self.FMP_BASE_URL}/ratios-ttm"
+        response = http_requests.get(
+            url, params={"symbol": symbol, "apikey": self._api_key}, timeout=15
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and data:
+                return data[0]
+        return None
+
+    def _fetch_growth(self, symbol: str) -> Optional[dict]:
+        """
+        Fetch financial growth data from /stable/financial-growth.
+
+        Returns year-over-year growth rates:
+        - epsgrowth: EPS growth
+        - revenueGrowth: revenue growth
+        - netIncomeGrowth: net income growth
+        - operatingIncomeGrowth: operating income growth
+        """
+        url = f"{self.FMP_BASE_URL}/financial-growth"
+        response = http_requests.get(
+            url,
+            params={"symbol": symbol, "period": "annual", "limit": 1, "apikey": self._api_key},
+            timeout=15,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and data:
+                return data[0]
+        return None
+
+    def _fetch_price_target(self, symbol: str) -> Optional[dict]:
+        """
+        Fetch analyst price target consensus from /stable/price-target-consensus.
+
+        Returns:
+        - targetHigh: highest analyst target
+        - targetLow: lowest analyst target
+        - targetConsensus: average target
+        - targetMedian: median target
+        """
+        url = f"{self.FMP_BASE_URL}/price-target-consensus"
         response = http_requests.get(
             url, params={"symbol": symbol, "apikey": self._api_key}, timeout=15
         )

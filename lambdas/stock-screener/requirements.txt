@@ -1,2 +1,3 @@
-# AWS SDK
-boto3>=1.34.0
+# No external dependencies — this Lambda only does filtering logic.
+# boto3 is included in the Lambda runtime by default.
+# If we later need S3/DynamoDB access for presets, add boto3 here.

@@ -7,20 +7,14 @@ import * as path from 'path';
 import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
 
 /**
- * StockScreenerStack — Phase 1
+ * StockScreenerStack
  *
- * This stack defines the AWS resources for the fundamentals pipeline:
+ * Pipeline Step 1: fundamentals-fetcher — fetches data from FMP API
+ * Pipeline Step 2: stock-screener — applies value filters to identify passing stocks
  *
- * 1. S3 Bucket (data lake) — stores raw financial data for historical analysis
- * 2. Lambda Function (fundamentals-fetcher) — provider-agnostic data fetcher
- *
- * The Lambda uses a provider abstraction layer. The active provider is set
- * via the PROVIDER environment variable:
- *   "yfinance" — free, no API key (current POC)
- *   "fmp"      — paid, stable API (future upgrade)
- *
- * Switching providers is a one-line change here + redeploy. No application
- * code changes needed.
+ * Both Lambdas are provider-agnostic. The fundamentals-fetcher reads PROVIDER
+ * env var to select data source. The stock-screener reads filter thresholds
+ * from a bundled config file (screener-filters.json).
  */
 export class StockScreenerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -29,12 +23,6 @@ export class StockScreenerStack extends cdk.Stack {
     // ==========================================
     // S3 BUCKET — Raw Data Lake
     // ==========================================
-    // Stores all raw API responses, date-partitioned.
-    // Permanent historical record for retroactive analysis via Athena.
-    //
-    // - versioned: keeps old versions if overwritten (safety net)
-    // - lifecycleRules: moves old data to cheaper storage after 90 days
-    // - removalPolicy: DESTROY for development (use RETAIN in production)
     const rawDataBucket = new s3.Bucket(this, 'RawDataBucket', {
       bucketName: `stock-screener-raw-data-${this.account}`,
       versioned: true,
@@ -53,16 +41,8 @@ export class StockScreenerStack extends cdk.Stack {
     });
 
     // ==========================================
-    // LAMBDA — Fundamentals Fetcher
+    // LAMBDA — Step 1: Fundamentals Fetcher
     // ==========================================
-    // PythonFunction: Docker-based bundling that installs requirements.txt
-    // in a Linux container matching Lambda's runtime. Production-grade:
-    //   - Works for compiled C extensions (pandas, numpy)
-    //   - Reproducible across any machine or CI/CD
-    //   - Just add packages to requirements.txt, CDK handles the rest
-    //
-    // The handler is provider-agnostic — it reads the PROVIDER env var
-    // and initializes the corresponding data provider via factory pattern.
     const fundamentalsFetcher = new PythonFunction(this, 'FundamentalsFetcher', {
       functionName: 'stock-screener-fundamentals-fetcher',
       entry: path.join(__dirname, '../lambdas/fundamentals-fetcher'),
@@ -71,30 +51,43 @@ export class StockScreenerStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(5),
-      memorySize: 256, // Lightweight — only requests + boto3 now
+      memorySize: 256,
       environment: {
-        // Active data provider — change this to switch sources.
-        // Currently using FMP (free tier: per-symbol endpoints + NASDAQ ticker list)
         PROVIDER: 'fmp',
-        // S3 bucket for raw data storage
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
-        // SSM path for FMP API key
         FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
-        // Minimum market cap for universe inclusion (configurable)
         MIN_MARKET_CAP: '300000000',
       },
-      description: 'Fetches fundamental stock data via configurable provider (yfinance/fmp)',
+      description: 'Step 1: Fetches fundamental stock data via configurable provider',
+    });
+
+    // ==========================================
+    // LAMBDA — Step 2: Stock Screener
+    // ==========================================
+    // Pure filtering logic — no external API calls, no dependencies.
+    // Takes the fundamentals-fetcher output, applies value filters,
+    // returns passing stocks with scores.
+    //
+    // Uses lambda.Function (not PythonFunction) because there are no
+    // pip dependencies to install — just pure Python + a JSON config file.
+    const stockScreener = new lambda.Function(this, 'StockScreener', {
+      functionName: 'stock-screener-filter',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
+      handler: 'handler.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/stock-screener')),
+      timeout: cdk.Duration.seconds(30), // Pure computation, should be fast
+      memorySize: 128, // Minimal — just filtering in-memory data
+      description: 'Step 2: Applies value investing filters and scores stocks',
     });
 
     // ==========================================
     // PERMISSIONS
     // ==========================================
 
-    // S3: write raw data to the data lake
+    // Fundamentals Fetcher: write to S3 + read SSM secrets
     rawDataBucket.grantWrite(fundamentalsFetcher);
 
-    // SSM: read the FMP API key (for when PROVIDER=fmp is activated)
-    // We grant this now so switching to FMP requires only an env var change.
     fundamentalsFetcher.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ssm:GetParameter'],
@@ -103,7 +96,6 @@ export class StockScreenerStack extends cdk.Stack {
       ],
     }));
 
-    // KMS: decrypt SecureString parameters (SSM uses AWS-managed KMS key)
     fundamentalsFetcher.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['kms:Decrypt'],
@@ -126,6 +118,11 @@ export class StockScreenerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FundamentalsFetcherArn', {
       value: fundamentalsFetcher.functionArn,
       description: 'ARN of the fundamentals fetcher Lambda',
+    });
+
+    new cdk.CfnOutput(this, 'StockScreenerArn', {
+      value: stockScreener.functionArn,
+      description: 'ARN of the stock screener Lambda',
     });
   }
 }

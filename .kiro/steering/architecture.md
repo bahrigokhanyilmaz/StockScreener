@@ -67,6 +67,12 @@ These principles govern ALL technical decisions in this project:
 - Infrastructure as Code (CDK) — never create resources manually in console
 - Version-controlled everything
 
+### 9. Always Reassess
+- Do not assume that because we started with a tool/API/approach, we must continue with it
+- At every stage, evaluate whether a better option exists
+- Pivoting back to redo something properly is always acceptable
+- The provider abstraction exists precisely to enable painless pivots
+
 ## Tech Stack
 
 ### Infrastructure (CDK - TypeScript)
