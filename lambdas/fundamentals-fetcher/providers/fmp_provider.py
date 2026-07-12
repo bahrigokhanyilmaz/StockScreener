@@ -44,6 +44,14 @@ class FMPProvider(DataProvider):
     FMP_BASE_URL = "https://financialmodelingprep.com/stable"
     NASDAQ_TRADED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt"
 
+    # Known symbol aliases where FMP uses a different ticker than NASDAQ.
+    # FMP may block one class of shares but allow another.
+    # Format: { "nasdaq_symbol": "fmp_symbol" }
+    SYMBOL_ALIASES = {
+        "GOOG": "GOOGL",  # Google class C → class A (FMP has ratios for GOOGL only)
+        "BRK.B": "BRK-B",  # Berkshire formatting
+    }
+
     def __init__(self, api_key: str = "", min_market_cap: float = 300_000_000, **kwargs):
         """
         Initialize with FMP API key and universe configuration.
@@ -59,6 +67,23 @@ class FMPProvider(DataProvider):
             )
         self._api_key = api_key
         self._min_market_cap = min_market_cap
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Normalize a ticker symbol to FMP's expected format.
+
+        Some symbols differ between NASDAQ's file and what FMP recognizes.
+        This mapping ensures we query the correct symbol.
+        """
+        return self.SYMBOL_ALIASES.get(symbol, symbol)
+
+    def _is_premium_blocked(self, response_text: str) -> bool:
+        """
+        Detect if FMP blocked this request due to free tier restrictions.
+
+        FMP returns a text message (not JSON) for premium-only symbols.
+        """
+        return "Premium" in response_text or "Special Endpoint" in response_text
 
     @property
     def name(self) -> str:
@@ -150,7 +175,8 @@ class FMPProvider(DataProvider):
 
         for i, symbol in enumerate(symbols):
             try:
-                profile = self._fetch_profile(symbol)
+                fmp_symbol = self._normalize_symbol(symbol)
+                profile = self._fetch_profile(fmp_symbol)
                 if profile:
                     mc = profile.get("marketCap", 0) or 0
                     if mc >= threshold:
@@ -184,10 +210,13 @@ class FMPProvider(DataProvider):
         ~4,000 calls/day. Bandwidth: ~1,000 × (2.7+3.0+1.5+0.5)KB ≈ 7.7MB/day.
         """
         try:
-            profile = self._fetch_profile(symbol)
-            ratios = self._fetch_ratios(symbol)
-            growth = self._fetch_growth(symbol)
-            price_target = self._fetch_price_target(symbol)
+            # Normalize the symbol (e.g., GOOG → GOOGL)
+            fmp_symbol = self._normalize_symbol(symbol)
+
+            profile = self._fetch_profile(fmp_symbol)
+            ratios = self._fetch_ratios(fmp_symbol)
+            growth = self._fetch_growth(fmp_symbol)
+            price_target = self._fetch_price_target(fmp_symbol)
 
             if not profile and not ratios:
                 return None
@@ -305,7 +334,7 @@ class FMPProvider(DataProvider):
         response = http_requests.get(
             url, params={"symbol": symbol, "apikey": self._api_key}, timeout=15
         )
-        if response.status_code == 200:
+        if response.status_code == 200 and not self._is_premium_blocked(response.text):
             data = response.json()
             if isinstance(data, list) and data:
                 return data[0]
@@ -317,7 +346,7 @@ class FMPProvider(DataProvider):
         response = http_requests.get(
             url, params={"symbol": symbol, "apikey": self._api_key}, timeout=15
         )
-        if response.status_code == 200:
+        if response.status_code == 200 and not self._is_premium_blocked(response.text):
             data = response.json()
             if isinstance(data, list) and data:
                 return data[0]
@@ -339,7 +368,7 @@ class FMPProvider(DataProvider):
             params={"symbol": symbol, "period": "annual", "limit": 1, "apikey": self._api_key},
             timeout=15,
         )
-        if response.status_code == 200:
+        if response.status_code == 200 and not self._is_premium_blocked(response.text):
             data = response.json()
             if isinstance(data, list) and data:
                 return data[0]
@@ -359,7 +388,7 @@ class FMPProvider(DataProvider):
         response = http_requests.get(
             url, params={"symbol": symbol, "apikey": self._api_key}, timeout=15
         )
-        if response.status_code == 200:
+        if response.status_code == 200 and not self._is_premium_blocked(response.text):
             data = response.json()
             if isinstance(data, list) and data:
                 return data[0]

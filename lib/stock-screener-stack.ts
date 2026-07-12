@@ -3,18 +3,26 @@ import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
 
 /**
  * StockScreenerStack
  *
- * Pipeline Step 1: fundamentals-fetcher — fetches data from FMP API
- * Pipeline Step 2: stock-screener — applies value filters to identify passing stocks
+ * Defines the full pipeline:
+ * - S3 bucket (raw data lake)
+ * - Lambda: fundamentals-fetcher (Step 1)
+ * - Lambda: stock-screener (Step 2)
+ * - Step Functions state machine (orchestrates the pipeline)
+ * - EventBridge rule (triggers daily at market close)
  *
- * Both Lambdas are provider-agnostic. The fundamentals-fetcher reads PROVIDER
- * env var to select data source. The stock-screener reads filter thresholds
- * from a bundled config file (screener-filters.json).
+ * Step Functions handles batching: the universe (~1,000 stocks) is split
+ * into batches of 100. Each batch is processed by a separate Lambda invocation.
+ * After all batches complete, the screener filters the combined results.
  */
 export class StockScreenerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,28 +72,20 @@ export class StockScreenerStack extends cdk.Stack {
     // ==========================================
     // LAMBDA — Step 2: Stock Screener
     // ==========================================
-    // Pure filtering logic — no external API calls, no dependencies.
-    // Takes the fundamentals-fetcher output, applies value filters,
-    // returns passing stocks with scores.
-    //
-    // Uses lambda.Function (not PythonFunction) because there are no
-    // pip dependencies to install — just pure Python + a JSON config file.
     const stockScreener = new lambda.Function(this, 'StockScreener', {
       functionName: 'stock-screener-filter',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
       handler: 'handler.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/stock-screener')),
-      timeout: cdk.Duration.seconds(30), // Pure computation, should be fast
-      memorySize: 128, // Minimal — just filtering in-memory data
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256, // Filtering 1,000 stocks needs some memory
       description: 'Step 2: Applies value investing filters and scores stocks',
     });
 
     // ==========================================
     // PERMISSIONS
     // ==========================================
-
-    // Fundamentals Fetcher: write to S3 + read SSM secrets
     rawDataBucket.grantWrite(fundamentalsFetcher);
 
     fundamentalsFetcher.addToRolePolicy(new iam.PolicyStatement({
@@ -108,6 +108,77 @@ export class StockScreenerStack extends cdk.Stack {
     }));
 
     // ==========================================
+    // STEP FUNCTIONS — Pipeline Orchestration
+    // ==========================================
+    // The state machine orchestrates the pipeline:
+    // 1. Invoke fundamentals-fetcher with batch_size to get one batch
+    // 2. Collect the results
+    // 3. Loop if has_more batches remain
+    // 4. Combine all results and pass to the screener
+    //
+    // Why Step Functions instead of just chaining Lambdas?
+    // - Visual monitoring (you can see each step's status in the console)
+    // - Built-in retry logic and error handling
+    // - Handles the batching loop (Lambda can't loop over itself)
+    // - Timeout spans the full pipeline (not limited to 5 min per Lambda)
+    // - Easy to add more steps later (news, sentiment, alerts)
+
+    // Step 1: Fetch fundamentals (single batch — Step Functions handles batching)
+    const fetchFundamentals = new tasks.LambdaInvoke(this, 'FetchFundamentals', {
+      lambdaFunction: fundamentalsFetcher,
+      comment: 'Fetch fundamental data for a batch of stocks',
+      // Pass the full state as input (includes batch_start, batch_size)
+      payloadResponseOnly: true, // Unwrap Lambda response (no metadata wrapper)
+      retryOnServiceExceptions: true,
+    });
+
+    // Step 2: Screen the fetched stocks
+    const screenStocks = new tasks.LambdaInvoke(this, 'ScreenStocks', {
+      lambdaFunction: stockScreener,
+      comment: 'Apply value filters to identify passing stocks',
+      payloadResponseOnly: true,
+      retryOnServiceExceptions: true,
+    });
+
+    // Define the state machine workflow:
+    // For now, a simple sequential flow (fetch → screen).
+    // The fundamentals-fetcher handles batching internally via batch_start/batch_size.
+    // We'll start with a single batch (batch_size = 50) to stay within Lambda timeout.
+    // Later, we'll add a Map state for parallel batch processing.
+    const definition = fetchFundamentals
+      .next(screenStocks);
+
+    const stateMachine = new sfn.StateMachine(this, 'PipelineStateMachine', {
+      stateMachineName: 'stock-screener-pipeline',
+      definitionBody: sfn.DefinitionBody.fromChainable(definition),
+      timeout: cdk.Duration.minutes(15), // Full pipeline timeout
+      comment: 'Daily stock screening pipeline: fetch fundamentals → apply value filters',
+    });
+
+    // ==========================================
+    // EVENTBRIDGE — Daily Schedule
+    // ==========================================
+    // Trigger the pipeline daily at 8 PM UTC (4 PM ET — market close).
+    // The rule passes the initial input to the state machine.
+    const dailyRule = new events.Rule(this, 'DailyTrigger', {
+      ruleName: 'stock-screener-daily-trigger',
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '20',    // 8 PM UTC = 4 PM ET
+        weekDay: 'MON-FRI',  // Only on trading days
+      }),
+      description: 'Triggers the stock screener pipeline daily at market close (4 PM ET)',
+    });
+
+    // Pass initial configuration to the state machine
+    dailyRule.addTarget(new targets.SfnStateMachine(stateMachine, {
+      input: events.RuleTargetInput.fromObject({
+        batch_start: 0,
+        batch_size: 50,  // Process 50 stocks per run (conservative for free tier)
+      }),
+    }));
+
+    // ==========================================
     // OUTPUTS
     // ==========================================
     new cdk.CfnOutput(this, 'RawDataBucketName', {
@@ -123,6 +194,11 @@ export class StockScreenerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'StockScreenerArn', {
       value: stockScreener.functionArn,
       description: 'ARN of the stock screener Lambda',
+    });
+
+    new cdk.CfnOutput(this, 'StateMachineArn', {
+      value: stateMachine.stateMachineArn,
+      description: 'ARN of the pipeline state machine',
     });
   }
 }
