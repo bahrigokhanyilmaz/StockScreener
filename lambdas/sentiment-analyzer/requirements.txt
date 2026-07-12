@@ -1,2 +1,2 @@
-# AWS SDK (for Bedrock runtime client)
-boto3>=1.34.0
+# AWS SDK (for Bedrock runtime client + S3 storage)
+boto3==1.38.0

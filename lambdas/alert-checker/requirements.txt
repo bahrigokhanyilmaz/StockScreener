@@ -1,2 +1,2 @@
-# AWS SDK (for SNS/SES)
-boto3>=1.34.0
+# AWS SDK (for SNS notifications)
+boto3==1.38.0

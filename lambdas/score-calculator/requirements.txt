@@ -1,2 +1,2 @@
-# AWS SDK
-boto3>=1.34.0
+# No external dependencies — pure computation.
+# boto3 included in Lambda runtime by default.
