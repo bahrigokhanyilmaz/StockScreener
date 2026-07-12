@@ -6,3 +6,12 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Local test artifacts
+lambdas/**/test_local.py

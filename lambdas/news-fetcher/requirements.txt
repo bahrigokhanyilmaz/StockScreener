@@ -1,0 +1,4 @@
+# News API client
+requests>=2.31.0
+# AWS SDK
+boto3>=1.34.0

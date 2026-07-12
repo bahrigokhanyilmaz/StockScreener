@@ -1,0 +1,4 @@
+# HTTP requests (FMP API calls + NASDAQ ticker file download)
+requests==2.32.3
+# AWS SDK (included in Lambda runtime, pinned for local dev consistency)
+boto3==1.38.0

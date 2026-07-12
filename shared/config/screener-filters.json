@@ -1,0 +1,132 @@
+{
+  "description": "Default stock screening filters based on value investing criteria",
+  "universe": {
+    "min_market_cap": 300000000,
+    "min_market_cap_label": "Minimum Market Cap ($)",
+    "min_market_cap_description": "Pre-filter for liquidity. Only stocks above this market cap are included in the scannable universe. Configurable — increase for large-cap focus, decrease to include small-caps.",
+    "exchanges": ["NYSE", "NASDAQ"],
+    "exclude_types": ["ETF", "warrant", "right", "unit", "preferred"],
+    "universe_refresh_frequency": "weekly",
+    "fundamentals_scan_frequency": "daily",
+    "grace_period_days": 90
+  },
+  "filters": {
+    "pe_ratio": {
+      "label": "P/E Ratio",
+      "type": "max",
+      "default": 50,
+      "min": 5,
+      "max": 100,
+      "step": 1,
+      "description": "Price-to-Earnings ratio. Lower = cheaper relative to earnings."
+    },
+    "forward_pe": {
+      "label": "Forward P/E",
+      "type": "max",
+      "default": 20,
+      "min": 5,
+      "max": 50,
+      "step": 1,
+      "description": "P/E based on estimated future earnings. Lower = cheaper on projected growth."
+    },
+    "peg_ratio": {
+      "label": "PEG Ratio",
+      "type": "max",
+      "default": 1.0,
+      "min": 0.1,
+      "max": 3.0,
+      "step": 0.1,
+      "description": "P/E divided by growth rate. Below 1 = growth at a reasonable price."
+    },
+    "price_to_fcf": {
+      "label": "Price / Free Cash Flow",
+      "type": "max",
+      "default": 20,
+      "min": 5,
+      "max": 50,
+      "step": 1,
+      "description": "How much you pay per dollar of free cash flow. Lower = more cash generation per dollar invested."
+    },
+    "debt_to_equity": {
+      "label": "Debt / Equity",
+      "type": "max",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 3.0,
+      "step": 0.1,
+      "description": "Total debt relative to shareholders equity. Below 1 = conservative balance sheet."
+    },
+    "quick_ratio": {
+      "label": "Quick Ratio",
+      "type": "min",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 5.0,
+      "step": 0.1,
+      "description": "Liquid assets / current liabilities. Above 1 = can cover short-term obligations."
+    },
+    "operating_margin": {
+      "label": "Operating Margin (%)",
+      "type": "min",
+      "default": 0,
+      "min": -20,
+      "max": 50,
+      "step": 1,
+      "description": "Percentage of revenue kept after operating costs. Positive = profitable operations."
+    },
+    "eps_growth_yoy": {
+      "label": "EPS Growth YoY",
+      "type": "min",
+      "default": 0,
+      "min": -50,
+      "max": 100,
+      "step": 1,
+      "description": "Earnings per share growth year-over-year. Positive = growing earnings."
+    },
+    "sales_growth_qoq": {
+      "label": "Sales Growth QoQ",
+      "type": "min",
+      "default": 0,
+      "min": -50,
+      "max": 100,
+      "step": 1,
+      "description": "Revenue growth quarter-over-quarter. Positive = accelerating sales."
+    },
+    "est_lt_growth": {
+      "label": "Est. LT Growth (%)",
+      "type": "min",
+      "default": 0,
+      "min": -10,
+      "max": 50,
+      "step": 1,
+      "description": "Analyst estimated long-term growth rate. Positive = expected to keep growing."
+    },
+    "institutional_transactions": {
+      "label": "Institutional Transactions",
+      "type": "min",
+      "default": 0,
+      "min": -50,
+      "max": 50,
+      "step": 1,
+      "description": "Net institutional buying (%). Positive = smart money is buying."
+    },
+    "target_price_upside": {
+      "label": "Target Price Upside (%)",
+      "type": "min",
+      "default": 20,
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "description": "How far current price is below analyst target. Higher = more upside potential."
+    },
+    "sentiment_score": {
+      "label": "Sentiment Score",
+      "type": "min",
+      "default": -0.3,
+      "min": -1.0,
+      "max": 1.0,
+      "step": 0.1,
+      "description": "News sentiment from -1 (very negative) to +1 (very positive). Filters out stocks with bad news."
+    }
+  }
+}
