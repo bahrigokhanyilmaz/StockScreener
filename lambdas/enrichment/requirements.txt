@@ -1,0 +1,4 @@
+# HTTP requests (Twelve Data API)
+requests==2.32.3
+# AWS SDK (for SSM parameter fetch)
+boto3==1.38.0

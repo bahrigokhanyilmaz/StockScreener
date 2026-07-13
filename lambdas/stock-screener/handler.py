@@ -255,7 +255,7 @@ def handler(event, context):
         - all_screened: every stock with pass/fail status + score
         - metadata: summary stats
     """
-    stocks = event.get("stocks", [])
+    stocks = event.get("stocks") or event.get("enriched_stocks") or []
     custom_thresholds = event.get("thresholds")  # Optional: for slider exploration
 
     if not stocks:

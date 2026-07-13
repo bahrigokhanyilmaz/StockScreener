@@ -1,27 +1,14 @@
 """
-SEC EDGAR Data Provider (with Alpha Vantage enrichment)
-========================================================
-Free, unlimited, official US government financial data + price enrichment.
+SEC EDGAR Data Provider
+========================
+Free, unlimited, official US government financial data.
 
-Strategy:
-- EDGAR Frames API: bulk financial metrics for ALL companies (~10 requests total)
-- Alpha Vantage OVERVIEW: price-based metrics (P/E, PEG, Market Cap, Analyst Target)
-  for the ~25 stocks that pass the initial balance-sheet/margin screen.
+Single responsibility: Fetch bulk financial metrics for ALL companies
+via the EDGAR Frames API (~10 requests for the entire US market).
 
-Data Flow:
-1. Fetch ticker → CIK mapping (one-time, cached)
-2. Fetch bulk financial metrics via EDGAR Frames API (~10 requests)
-3. Join metrics by CIK to build per-company financials
-4. Calculate ratios (D/E, Quick Ratio, Op Margin, etc.)
-5. (Optional) Enrich passing stocks with Alpha Vantage (P/E, PEG, targets)
-
-Cost:
-- EDGAR: Free, unlimited, forever
-- Alpha Vantage: Free (25 req/day, 1 req/second)
-- Total: $0
+Does NOT handle price data — that's the enrichment Lambda's job (Twelve Data).
 
 EDGAR API docs: https://www.sec.gov/edgar/sec-api-documentation
-Alpha Vantage docs: https://www.alphavantage.co/documentation/
 """
 
 import time
@@ -74,19 +61,16 @@ class EdgarProvider(DataProvider):
         "SalesRevenueNet",
     ]
 
-    def __init__(self, fiscal_year: int = 2024, min_market_cap: float = 300_000_000,
-                 alpha_vantage_key: str = "", **kwargs):
+    def __init__(self, fiscal_year: int = 2024, min_market_cap: float = 300_000_000, **kwargs):
         """
         Initialize the EDGAR provider.
 
         Args:
-            fiscal_year: Which fiscal year to fetch data for (default: most recent full year)
-            min_market_cap: Minimum market cap filter (applied when price data available)
-            alpha_vantage_key: Alpha Vantage API key for price enrichment (optional)
+            fiscal_year: Which fiscal year to fetch data for
+            min_market_cap: Minimum market cap filter (applied after price enrichment)
         """
         self._fiscal_year = fiscal_year
         self._min_market_cap = min_market_cap
-        self._alpha_vantage_key = alpha_vantage_key
         self._ticker_to_cik: dict[str, int] = {}
         self._cik_to_ticker: dict[int, str] = {}
         self._cik_to_company: dict[int, str] = {}
@@ -425,120 +409,3 @@ class EdgarProvider(DataProvider):
     def get_rate_limit_delay(self) -> float:
         """SEC asks for max 10 requests/second. 0.12s = ~8 req/sec (safe)."""
         return 0.12
-
-    # ==========================================
-    # ALPHA VANTAGE ENRICHMENT
-    # ==========================================
-
-    ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
-
-    def enrich_with_price_data(self, stocks: list[StockFundamentals], max_enrichments: int = 25) -> list[StockFundamentals]:
-        """
-        Enrich stocks with price-based metrics from Alpha Vantage.
-
-        Call this after get_fundamentals_batch() on the stocks that passed
-        the initial balance-sheet screen. Adds: P/E, PEG, Forward P/E,
-        Market Cap, Analyst Target Price, EPS Growth, Revenue Growth, Dividend Yield.
-
-        Args:
-            stocks: List of StockFundamentals from EDGAR (partially filled)
-            max_enrichments: Max API calls (default 25 = free tier daily limit)
-
-        Returns:
-            Updated list with price metrics filled in where available.
-        """
-        if not self._alpha_vantage_key:
-            print("  Warning: No Alpha Vantage key — skipping price enrichment")
-            return stocks
-
-        enriched_count = 0
-        print(f"  Enriching up to {min(len(stocks), max_enrichments)} stocks with Alpha Vantage...")
-
-        for i, stock in enumerate(stocks[:max_enrichments]):
-            av_data = self._fetch_alpha_vantage_overview(stock.symbol)
-            if av_data:
-                # Update the stock with price-based metrics
-                stock.price = self._safe_float(av_data.get("price"))
-                stock.market_cap = self._safe_float(av_data.get("MarketCapitalization"))
-                stock.pe_ratio = self._safe_float(av_data.get("PERatio"))
-                stock.forward_pe = self._safe_float(av_data.get("ForwardPE"))
-                stock.peg_ratio = self._safe_float(av_data.get("PEGRatio"))
-                stock.price_to_book = self._safe_float(av_data.get("PriceToBookRatio"))
-                stock.price_to_sales = self._safe_float(av_data.get("PriceToSalesRatioTTM"))
-                stock.ev_to_ebitda = self._safe_float(av_data.get("EVToEBITDA"))
-                stock.eps_growth_yoy = self._safe_float(av_data.get("QuarterlyEarningsGrowthYOY"))
-                stock.revenue_growth_yoy = self._safe_float(av_data.get("QuarterlyRevenueGrowthYOY"))
-                stock.dividend_yield = self._safe_float(av_data.get("DividendYield"))
-                stock.sector = av_data.get("Sector") or stock.sector
-                stock.industry = av_data.get("Industry") or stock.industry
-                stock.exchange = av_data.get("Exchange") or stock.exchange
-
-                # Analyst target + upside calculation
-                target = self._safe_float(av_data.get("AnalystTargetPrice"))
-                if target and stock.price and stock.price > 0:
-                    stock.analyst_target_price = target
-                    stock.target_price_upside = (target - stock.price) / stock.price
-
-                enriched_count += 1
-
-            # Alpha Vantage free tier requires 1 request/second minimum spacing
-            if i < min(len(stocks), max_enrichments) - 1:
-                time.sleep(1.2)  # 1.2s to be safe
-
-        print(f"  Alpha Vantage enriched {enriched_count}/{min(len(stocks), max_enrichments)} stocks")
-        return stocks
-
-    def _fetch_alpha_vantage_overview(self, symbol: str) -> Optional[dict]:
-        """
-        Fetch company overview from Alpha Vantage.
-
-        Returns a dict with 55 fields including P/E, PEG, Market Cap,
-        Analyst Target, EPS Growth, Revenue Growth, etc.
-        """
-        params = {
-            "function": "OVERVIEW",
-            "symbol": symbol,
-            "apikey": self._alpha_vantage_key,
-        }
-
-        try:
-            response = http_requests.get(self.ALPHA_VANTAGE_URL, params=params, timeout=15)
-            if response.status_code != 200:
-                return None
-
-            data = response.json()
-
-            # Check for rate limit or error messages
-            if "Information" in data or "Note" in data:
-                print(f"    Warning: Alpha Vantage rate limit hit for {symbol}")
-                return None
-
-            # Check it's a valid response (has a Symbol field)
-            if "Symbol" not in data:
-                return None
-
-            # Add current price (from 50DayMovingAverage as proxy if no quote)
-            # OVERVIEW doesn't include live price, but we can approximate
-            data["price"] = self._safe_float(data.get("AnalystTargetPrice"))  # Placeholder
-            # Better: use EPS × P/E for implied price
-            eps = self._safe_float(data.get("EPS"))
-            pe = self._safe_float(data.get("PERatio"))
-            if eps and pe and pe > 0:
-                data["price"] = eps * pe
-
-            return data
-
-        except Exception as e:
-            print(f"    Warning: Alpha Vantage error for {symbol}: {e}")
-            return None
-
-    @staticmethod
-    def _safe_float(value) -> Optional[float]:
-        """Safely convert a string/value to float, returning None for invalid values."""
-        if value is None or value == "None" or value == "-" or value == "":
-            return None
-        try:
-            result = float(value)
-            return result if result != 0 else None  # Treat 0 as missing for ratios
-        except (ValueError, TypeError):
-            return None

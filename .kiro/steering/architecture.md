@@ -81,8 +81,20 @@ API Gateway (REST)
 | Lambda (API) | stock-screener-api |
 | SSM | /stock-screener/fmp-api-key (inactive, retained) |
 | SSM | /stock-screener/alpha-vantage-api-key |
+| SSM | /stock-screener/twelve-data-api-key |
 | AWS Account | 116488731375, us-east-2 |
 | AWS Profile | stock-screener |
+
+### API Keys Reference (stored in SSM Parameter Store — SecureString)
+
+| Service | SSM Path | Free Tier Limits | Status |
+|---------|----------|-----------------|--------|
+| FMP | /stock-screener/fmp-api-key | 500MB/30 days (exhausted) | INACTIVE |
+| Alpha Vantage | /stock-screener/alpha-vantage-api-key | 25 req/day, 1 req/sec | ACTIVE |
+| Twelve Data | /stock-screener/twelve-data-api-key | 800 req/day, 8 req/min | ACTIVE (price data) |
+
+Note: Actual key values are NEVER in code or docs. They're in SSM only.
+To retrieve a key value: `aws ssm get-parameter --name "/stock-screener/<key-name>" --with-decryption --profile stock-screener --region us-east-2`
 
 ### API Endpoints
 
