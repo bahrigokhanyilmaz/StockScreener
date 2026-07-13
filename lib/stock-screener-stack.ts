@@ -10,6 +10,7 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
 import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
 
@@ -215,8 +216,78 @@ export class StockScreenerStack extends cdk.Stack {
     });
 
     // ==========================================
+    // LAMBDA — API Handler
+    // ==========================================
+    // Single Lambda that handles all REST API routes.
+    // API Gateway proxies all requests to this function.
+    // The handler routes internally based on path + method.
+    const apiHandler = new PythonFunction(this, 'ApiHandler', {
+      functionName: 'stock-screener-api',
+      entry: path.join(__dirname, '../lambdas/api'),
+      index: 'handler.py',
+      handler: 'handler',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 128,
+      environment: {
+        DATA_TABLE_NAME: dataTable.tableName,
+      },
+      description: 'REST API handler for the stock screener dashboard',
+    });
+
+    // ==========================================
+    // API GATEWAY — REST API
+    // ==========================================
+    // Creates a public REST API that the React frontend will call.
+    // All requests are proxied to the apiHandler Lambda.
+    //
+    // "proxy integration" means API Gateway passes the full HTTP request
+    // to Lambda and returns Lambda's response directly to the client.
+    // No request/response mapping needed.
+    const api = new apigateway.RestApi(this, 'StockScreenerApi', {
+      restApiName: 'stock-screener-api',
+      description: 'REST API for the stock screener dashboard',
+      defaultCorsPreflightOptions: {
+        // CORS: Allow the React frontend (any origin during dev) to call this API
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: ['Content-Type'],
+      },
+    });
+
+    // Proxy all requests to the API Lambda
+    const lambdaIntegration = new apigateway.LambdaIntegration(apiHandler);
+
+    // /stocks
+    const stocksResource = api.root.addResource('stocks');
+    stocksResource.addMethod('GET', lambdaIntegration);
+
+    // /stocks/{ticker}
+    const singleStockResource = stocksResource.addResource('{ticker}');
+    singleStockResource.addMethod('GET', lambdaIntegration);
+
+    // /stocks/{ticker}/history
+    const historyResource = singleStockResource.addResource('history');
+    historyResource.addMethod('GET', lambdaIntegration);
+
+    // /stocks/{ticker}/track
+    const trackResource = singleStockResource.addResource('track');
+    trackResource.addMethod('POST', lambdaIntegration);
+    trackResource.addMethod('DELETE', lambdaIntegration);
+
+    // /pipeline
+    const pipelineResource = api.root.addResource('pipeline');
+    // /pipeline/status
+    const statusResource = pipelineResource.addResource('status');
+    statusResource.addMethod('GET', lambdaIntegration);
+
+    // ==========================================
     // PERMISSIONS
     // ==========================================
+
+    // API Lambda: read from DynamoDB
+    dataTable.grantReadWriteData(apiHandler);
 
     // Step 1: S3 write + SSM read
     rawDataBucket.grantWrite(fundamentalsFetcher);
@@ -345,6 +416,10 @@ export class StockScreenerStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'StateMachineArn', {
       value: stateMachine.stateMachineArn,
+    });
+    new cdk.CfnOutput(this, 'ApiUrl', {
+      value: api.url,
+      description: 'REST API base URL',
     });
   }
 }
