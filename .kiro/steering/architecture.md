@@ -29,15 +29,15 @@ Always keep README and steering docs updated without being asked.
 ### Data Flow
 ```
 EventBridge (Mon-Fri 4PM ET)
-    → Step Functions (stock-screener-pipeline)
-        → Step 1: EDGAR Bulk Fundamentals (~10 API calls for ~6,000 companies)
-        → Step 1b: Alpha Vantage Enrichment (P/E, PEG, targets for top 25)
-        → Step 2: Value Filter Screen (balance sheet + margins + ratios)
-        → Step 3: News Fetch (TickerTick — articles per passing stock)
-        → Step 4: Sentiment Analysis (Bedrock Claude Haiku 4.5)
-        → Step 5: Score Calculator (fundamental + sentiment → investability)
-               → Writes to DynamoDB (LATEST, SCORE#date, TRACKING)
-        → Step 6: Alert Checker (thresholds + tracking lifecycle → SNS email)
+    → Step Functions (stock-screener-pipeline, 8 steps)
+        → Step 1: EDGAR Bulk Fundamentals (~10 API calls for ~5,097 companies)
+        → Step 2: Pre-Screen (EDGAR-only filters: D/E, QR, OpMargin → ~233 pass)
+        → Step 3: Price Enrichment (Twelve Data for ALL ~233 passers)
+        → Step 4: Full Screen (all filters incl. P/E, Price/FCF)
+        → Step 5: News Fetch (TickerTick — articles per final passer)
+        → Step 6: Sentiment Analysis (Bedrock Claude Haiku 4.5)
+        → Step 7: Score Calculator (investability + DynamoDB write)
+        → Step 8: Alert Checker (thresholds + tracking lifecycle → SNS)
 
 API Gateway (REST)
     → API Lambda → DynamoDB → JSON response to React frontend
@@ -52,7 +52,7 @@ API Gateway (REST)
 | Orchestration | Step Functions + EventBridge | Daily Mon-Fri 4PM ET |
 | Storage | S3 (raw data lake) + DynamoDB (live data) | Single-table design |
 | Fundamentals | SEC EDGAR Frames API | Free, unlimited, ~10 requests for all US stocks |
-| Price/Valuation | Alpha Vantage OVERVIEW | Free, 25 req/day, 1 req/sec |
+| Price/Valuation | Twelve Data | Free, 800 req/day, 8 req/min |
 | News | TickerTick API | Free, no key, 10 req/min |
 | Sentiment | Amazon Bedrock (Claude Haiku 4.5) | ~$3.60/month |
 | Alerts | Amazon SNS | Email to bahrigokhanyilmaz@gmail.com |
