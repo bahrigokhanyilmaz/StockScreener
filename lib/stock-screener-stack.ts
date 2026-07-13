@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -47,6 +48,45 @@ export class StockScreenerStack extends cdk.Stack {
           ],
         },
       ],
+    });
+
+    // ==========================================
+    // DYNAMODB — Single-Table Design
+    // ==========================================
+    // One table serves all data needs via different PK/SK patterns:
+    //
+    // Access patterns and key design:
+    //   PK: STOCK#AAPL         SK: LATEST          → Current fundamentals + score
+    //   PK: STOCK#AAPL         SK: SCORE#2026-07-12 → Historical score for date
+    //   PK: STOCK#AAPL         SK: TRACKING        → Tracking status + grace period
+    //   PK: PIPELINE#2026-07-12 SK: RESULT          → Daily pipeline summary
+    //   PK: ALERT_RULE#uuid    SK: CONFIG          → User alert rules
+    //   PK: PRESET#name        SK: CONFIG          → Saved filter presets
+    //
+    // GSI1 (tracking_status-last_updated-index):
+    //   Lets us query "all stocks with status=ACTIVE" efficiently
+    //   GSI1PK: tracking_status (ACTIVE/GRACE/MANUAL)
+    //   GSI1SK: last_updated (ISO date — for sorting by recency)
+    //
+    // Why single-table?
+    //   DynamoDB charges per table (for on-demand) and per read/write.
+    //   One table with multiple item types is the recommended pattern
+    //   for applications with related data and known access patterns.
+    const dataTable = new dynamodb.Table(this, 'DataTable', {
+      tableName: 'stock-screener-data',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST, // No capacity planning needed
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // Dev only
+      timeToLiveAttribute: 'ttl', // Auto-delete old items (optional, set per item)
+    });
+
+    // GSI for querying stocks by tracking status
+    dataTable.addGlobalSecondaryIndex({
+      indexName: 'tracking-status-index',
+      partitionKey: { name: 'tracking_status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'last_updated', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // ==========================================
@@ -149,6 +189,7 @@ export class StockScreenerStack extends cdk.Stack {
       environment: {
         FUNDAMENTAL_WEIGHT: '0.7',
         SENTIMENT_WEIGHT: '0.3',
+        DATA_TABLE_NAME: dataTable.tableName,
       },
       description: 'Step 5: Combines fundamental + sentiment into investability score',
     });
@@ -168,6 +209,7 @@ export class StockScreenerStack extends cdk.Stack {
       environment: {
         ALERT_SNS_TOPIC_ARN: alertTopic.topicArn,
         SENTIMENT_DROP_THRESHOLD: '-0.3',
+        DATA_TABLE_NAME: dataTable.tableName,
       },
       description: 'Step 6: Checks thresholds and sends alert notifications',
     });
@@ -203,6 +245,10 @@ export class StockScreenerStack extends cdk.Stack {
 
     // Step 6: SNS publish
     alertTopic.grantPublish(alertChecker);
+
+    // Steps 5 & 6: DynamoDB read/write (scores, tracking status)
+    dataTable.grantReadWriteData(scoreCalculator);
+    dataTable.grantReadWriteData(alertChecker);
 
     // ==========================================
     // STEP FUNCTIONS — Full Pipeline
@@ -290,6 +336,9 @@ export class StockScreenerStack extends cdk.Stack {
     // ==========================================
     new cdk.CfnOutput(this, 'RawDataBucketName', {
       value: rawDataBucket.bucketName,
+    });
+    new cdk.CfnOutput(this, 'DataTableName', {
+      value: dataTable.tableName,
     });
     new cdk.CfnOutput(this, 'AlertTopicArn', {
       value: alertTopic.topicArn,
