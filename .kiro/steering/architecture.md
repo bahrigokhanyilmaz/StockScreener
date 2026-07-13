@@ -8,162 +8,132 @@ Built on AWS, designed to be modular, scalable, and cost-effective.
 
 The user is a long-term value investor learning to build this from scratch.
 Always explain concepts, teach the stack, and keep the user engaged.
-
-## Core Features
-
-1. **Fundamental Screening** — Filter stocks by value KPIs (P/E, PEG, FCF, debt ratios, etc.)
-2. **Sentiment Analysis** — Score news articles to detect negative/positive developments
-3. **Investability Score** — Combined metric: fundamental quality + sentiment health
-4. **Dynamic KPI Sliders** — React frontend with real-time adjustable thresholds
-5. **Threshold Alerts** — Email/SMS when stocks breach user-configured rules
-6. **Retroactive Analysis** — Historical data accumulation for trend analysis
-7. **Presets** — Save/load filter configurations ("Aggressive Value", "Conservative", etc.)
+Always keep README and steering docs updated without being asked.
 
 ## Design Principles (NON-NEGOTIABLE)
 
-### 1. No Shortcuts
-- Never take shortcuts that create long-term problems
-- Every decision should be forward-looking and scalable
-- If a "quick fix" would limit future evolution, choose the proper approach even if slower
+1. **No Shortcuts** — Never sacrifice long-term quality for short-term convenience
+2. **Modularity & Swappability** — Interfaces everywhere, swap via config
+3. **Provider Abstraction** — Strategy Pattern for data sources
+4. **Free First, Upgrade Later** — Architecture doesn't change, only implementation
+5. **Clean As You Go** — No dead code or obsolete artifacts
+6. **Security By Default** — SSM for secrets, never hardcode
+7. **Teach While Building** — Explain every concept
+8. **Production-Grade Tooling** — Docker, ARM64, CDK, version control
+9. **Always Reassess** — Pivot when better options exist
+10. **Test Locally First** — Use `.venv/bin/python3` for local tests, deploy only when verified
+11. **Keep Docs Updated** — Steering file and README always reflect current state
 
-### 2. Modularity & Swappability
-- Use abstraction layers (interfaces) so components can be swapped without rewrites
-- Data providers, sentiment engines, storage backends — all behind interfaces
-- Switching a component should be a config change, not a code change
+## Current Architecture (Deployed & Working)
 
-### 3. Provider Abstraction Pattern
-- Financial data sourcing uses the Strategy Pattern
-- Abstract `DataProvider` interface defines the contract
-- Implementations are interchangeable via `PROVIDER` environment variable
+### Data Flow
+```
+EventBridge (Mon-Fri 4PM ET)
+    → Step Functions (stock-screener-pipeline)
+        → Step 1: EDGAR Bulk Fundamentals (~10 API calls for ~6,000 companies)
+        → Step 1b: Alpha Vantage Enrichment (P/E, PEG, targets for top 25)
+        → Step 2: Value Filter Screen (balance sheet + margins + ratios)
+        → Step 3: News Fetch (TickerTick — articles per passing stock)
+        → Step 4: Sentiment Analysis (Bedrock Claude Haiku 4.5)
+        → Step 5: Score Calculator (fundamental + sentiment → investability)
+               → Writes to DynamoDB (LATEST, SCORE#date, TRACKING)
+        → Step 6: Alert Checker (thresholds + tracking lifecycle → SNS email)
 
-### 4. Free First, Upgrade Later
-- Start with free/open tools for proof of concept
-- Design the architecture so paid upgrades are drop-in replacements
-- Never let the "free" choice dictate the architecture
+API Gateway (REST)
+    → API Lambda → DynamoDB → JSON response to React frontend
+```
 
-### 5. Clean As You Go
-- Remove obsolete artifacts immediately when approach changes
-- No dead code, unused files, or leftover experiments in the repo
+### Tech Stack
 
-### 6. Security By Default
-- NEVER hardcode secrets in source code
-- Use AWS SSM Parameter Store (SecureString) for all secrets
-- Lambda reads parameter NAME from env vars, fetches decrypted value at runtime
+| Layer | Technology | Notes |
+|-------|-----------|-------|
+| Infrastructure | AWS CDK v2 (TypeScript) | `cdk deploy` from laptop |
+| Compute | AWS Lambda (Python 3.12, ARM64) | 8 functions total |
+| Orchestration | Step Functions + EventBridge | Daily Mon-Fri 4PM ET |
+| Storage | S3 (raw data lake) + DynamoDB (live data) | Single-table design |
+| Fundamentals | SEC EDGAR Frames API | Free, unlimited, ~10 requests for all US stocks |
+| Price/Valuation | Alpha Vantage OVERVIEW | Free, 25 req/day, 1 req/sec |
+| News | TickerTick API | Free, no key, 10 req/min |
+| Sentiment | Amazon Bedrock (Claude Haiku 4.5) | ~$3.60/month |
+| Alerts | Amazon SNS | Email to bahrigokhanyilmaz@gmail.com |
+| API | API Gateway (REST) | CORS enabled |
+| Frontend | React (not yet built) | Will use AWS Amplify |
+| Secrets | SSM Parameter Store (SecureString) | 2 keys stored |
 
-### 7. Teach While Building
-- This is a learning project — explain every concept as it's introduced
-- Keep the user engaged and informed at every step
+### AWS Resources (Deployed)
 
-### 8. Production-Grade Tooling
-- Docker for dependency bundling (PythonFunction in CDK)
-- ARM64 Lambda architecture (cheaper, faster, native to dev machine)
-- Infrastructure as Code (CDK) — never create resources manually in console
+| Resource | Name/ID |
+|----------|---------|
+| Stack | StockScreenerStack |
+| S3 Bucket | stock-screener-raw-data-116488731375 |
+| DynamoDB Table | stock-screener-data |
+| DynamoDB GSI | tracking-status-index |
+| Step Functions | stock-screener-pipeline |
+| EventBridge Rule | stock-screener-daily-trigger |
+| SNS Topic | stock-screener-alerts |
+| API Gateway | https://kw8mlahpj2.execute-api.us-east-2.amazonaws.com/prod/ |
+| Lambda (Step 1) | stock-screener-fundamentals-fetcher |
+| Lambda (Step 2) | stock-screener-filter |
+| Lambda (Step 3) | stock-screener-news-fetcher |
+| Lambda (Step 4) | stock-screener-sentiment-analyzer |
+| Lambda (Step 5) | stock-screener-score-calculator |
+| Lambda (Step 6) | stock-screener-alert-checker |
+| Lambda (API) | stock-screener-api |
+| SSM | /stock-screener/fmp-api-key (inactive, retained) |
+| SSM | /stock-screener/alpha-vantage-api-key |
+| AWS Account | 116488731375, us-east-2 |
+| AWS Profile | stock-screener |
 
-### 9. Always Reassess
-- Do not assume that because we started with a tool/API/approach, we must continue
-- At every stage, evaluate whether a better option exists
-- Pivoting to redo something properly is always acceptable
+### API Endpoints
 
-### 10. Test Locally First
-- Test Lambda logic locally before deploying (fast feedback loop)
-- Deploy only when local tests pass
-- Virtual env at `.venv/` for local Python development
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /stocks | List all tracked stocks with latest scores |
+| GET | /stocks/{ticker} | Single stock detail (fundamentals + sentiment) |
+| GET | /stocks/{ticker}/history | Score history time series (for charts) |
+| POST | /stocks/{ticker}/track | Manually track a stock |
+| DELETE | /stocks/{ticker}/track | Stop tracking a stock |
+| GET | /pipeline/status | Pipeline summary (active/grace counts) |
 
-## Tech Stack
+### DynamoDB Schema (Single-Table)
 
-### Infrastructure (CDK - TypeScript)
-- **AWS CDK v2** for Infrastructure as Code
-- **AWS Account**: 116488731375, region us-east-2
-- **AWS Profile**: `stock-screener`
-- **Deployment**: `cdk deploy` (profile set in cdk.json)
-- **Docker**: Required for PythonFunction Lambda bundling
+| PK | SK | Purpose |
+|----|----|---------| 
+| STOCK#{ticker} | LATEST | Current scores + fundamentals (overwritten daily) |
+| STOCK#{ticker} | SCORE#{date} | Historical score (one per day, never overwritten) |
+| STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL) |
+| PIPELINE#{date} | RESULT | Daily pipeline run summary (future) |
+| ALERT_RULE#{id} | CONFIG | User alert rules (future) |
+| PRESET#{name} | CONFIG | Saved filter presets (future) |
 
-### Orchestration
-- **AWS Step Functions** — State machine: `stock-screener-pipeline`
-- **Amazon EventBridge** — Cron: Mon-Fri 8PM UTC (4PM ET market close)
+**GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated)
 
-### Backend (Python 3.12, ARM64)
-- **6 Lambda Functions** chained via Step Functions
-- **PythonFunction** CDK construct — Docker-based dependency bundling
-- **Amazon Bedrock** — Claude Haiku 4.5 for sentiment analysis
-- **Amazon S3** — Raw data lake (fundamentals + news + sentiment)
-- **Amazon SNS** — Alert notifications (email)
-- **AWS SSM Parameter Store** — Secure secret storage
+### Two-Tier Data Architecture
 
-### Data Provider Layer
-- **Abstract Interface**: `DataProvider` in `providers/base.py`
-- **Active Provider**: `FMPProvider` (set via `PROVIDER=fmp` env var)
-- **Universe Source**: NASDAQ official traded symbols file (free, ~5,200 stocks)
-- **Fundamentals**: FMP `/stable/ratios-ttm`, `/stable/profile`, `/stable/financial-growth`, `/stable/price-target-consensus`
-- **Market Cap Filter**: $300M minimum (configurable via `MIN_MARKET_CAP` env var)
-- **Symbol Normalization**: GOOG→GOOGL alias mapping
-- **Premium Detection**: Gracefully skips FMP-blocked symbols (PG, HD, CRM on free tier)
+**Tier 1: Discovery** (daily, broad)
+- EDGAR Frames API: bulk financials for ~6,000 companies (~10 requests)
+- Alpha Vantage: enriches top ~25 passing stocks with price metrics
+- ALL data stored in S3 (even non-passing — for slider exploration + retroactive)
 
-### News Source
-- **TickerTick API** — Free, no API key, covers all US stocks
-- Rate limit: 10 req/min (6.5s delay between requests)
-- Returns articles from ~10,000 sources (Reuters, WSJ, SEC filings, etc.)
+**Tier 2: Tracking** (daily, focused)
+- Passing stocks get: news + sentiment + investability score
+- Results persisted to DynamoDB
+- Grace period: 90 days after dropping off screen
+- Status: ACTIVE (green) | GRACE (yellow) | MANUAL (blue)
 
-### Sentiment Engine
-- **Amazon Bedrock** — Model: `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- Inference profile required (not raw model ID — Bedrock changed this)
-- Cost: ~$3.60/month at expected volume
-- Returns: sentiment (-1 to +1), confidence, relevance, risk_flags, summary
-
-### Frontend (Phase 4 — not yet built)
-- **React** (TypeScript) — Dashboard with slider panel
-- **AWS Amplify** — Hosting
-
-## Two-Tier Data Architecture
-
-### Tier 1: Discovery (broad scan, daily)
-- Fetches NASDAQ ticker list → filters to ~1,000 stocks (market cap ≥ $300M)
-- Pulls fundamentals from FMP for all ~1,000
-- Stores ALL data in S3 (even non-passing stocks — for slider exploration + retroactive analysis)
-- Applies value filters → ~30-50 pass
-
-### Tier 2: Tracking (focused, deep)
-- Passing stocks get: news fetched + sentiment analyzed + investability scored
-- **Grace period: 90 days** — stock stays tracked after dropping off screen
-- Tracking status: Active (green) | Grace (yellow) | Manual (blue)
-- After 90 days without re-qualifying and no manual pin: tracking stops
-
-### How Sliders Work
-- Sliders re-filter from the most recent daily scan — instant, no new API calls
-- Sliders are for EXPLORATION (what would pass if I changed criteria?)
-- Saved default filters determine what gets AUTO-TRACKED
-- User can manually "Track" any stock from exploration mode
-
-## Pipeline Steps (Step Functions State Machine)
-
-| Step | Lambda | Purpose | Timeout |
-|------|--------|---------|---------|
-| 1 | `stock-screener-fundamentals-fetcher` | NASDAQ universe + FMP data → S3 | 5 min |
-| 2 | `stock-screener-filter` | Apply value filters, score fundamentals | 60s |
-| 3 | `stock-screener-news-fetcher` | TickerTick news for passing stocks → S3 | 10 min |
-| 4 | `stock-screener-sentiment-analyzer` | Bedrock/Claude sentiment per article | 10 min |
-| 5 | `stock-screener-score-calculator` | Combine fundamental + sentiment → investability | 30s |
-| 6 | `stock-screener-alert-checker` | Check thresholds → SNS notifications | 30s |
-
-Pipeline total timeout: 30 minutes.
-
-## Investability Score Formula
+### Investability Score Formula
 
 ```
 investability = (0.7 × fundamental_score) + (0.3 × sentiment_adjustment) + risk_penalties
-
-Where:
 - fundamental_score: 0-100 (how well stock passes value filters)
 - sentiment_adjustment: -25 to +25 (sentiment × 25 × confidence)
 - risk_penalties: -10 to -35 per flag (SEC investigation, fraud, etc.)
-- Final score clamped to 0-100
+- Final: clamped 0-100
 ```
 
-Categories: Highly Investable (≥70) | Moderate (40-70) | Low (<40)
+### Screening Criteria
 
-## Screening Criteria (from Finviz filters)
-
-Config file: `shared/config/screener-filters.json`
+Config: `shared/config/screener-filters.json`
 
 | Filter | Type | Default | Data Format |
 |--------|------|---------|-------------|
@@ -176,124 +146,77 @@ Config file: `shared/config/screener-filters.json`
 | Operating Margin | min | 0% | percent_as_decimal |
 | EPS Growth YoY | min | 0% | percent_as_decimal |
 | Revenue Growth YoY | min | 0% | percent_as_decimal |
-| Est. LT Growth | min | 0% | percent_as_decimal |
-| Institutional Transactions | min | 0% | percent_as_decimal |
 | Target Price Upside | min | 20% | percent_as_decimal |
 | Sentiment Score | min | -0.3 | ratio |
 
-Note: `percent_as_decimal` means data is stored as 0.22 (= 22%) but slider shows 22.
-The screener divides threshold by 100 before comparing.
+### Data Sources
 
-## Data Sources — Current State
+| Need | Source | Limit | Cost |
+|------|--------|-------|------|
+| Fundamentals | SEC EDGAR Frames API | Unlimited | Free |
+| Price/Valuation | Alpha Vantage OVERVIEW | 25/day | Free |
+| News | TickerTick API | 10/min | Free |
+| Sentiment | Bedrock Claude Haiku 4.5 | Pay per token | ~$3.60/mo |
+| Universe | EDGAR (companies filing 10-K) | Unlimited | Free |
+| Alerts | SNS email | Unlimited | Free tier |
 
-| Need | Source | Status | Notes |
-|------|--------|--------|-------|
-| Stock universe | NASDAQ traded symbols file | Working | Free, ~5,200 stocks |
-| Fundamentals | FMP free tier (per-symbol endpoints) | Working | ~1,000 stocks/day within bandwidth |
-| EPS/Revenue growth | FMP `/stable/financial-growth` | Working | Free tier |
-| Analyst targets | FMP `/stable/price-target-consensus` | Working | Free tier |
-| News articles | TickerTick API | Working | Free, no key, 10 req/min |
-| Sentiment | Amazon Bedrock (Claude Haiku 4.5) | Working | ~$3.60/month |
-| Alerts | Amazon SNS (email) | Deployed | Email: bahrigokhanyilmaz@gmail.com |
+**Key Lessons Learned:**
+- yfinance does NOT work from Lambda (Yahoo blocks AWS IPs)
+- FMP free tier has 500MB/30-day bandwidth (exhausted during development)
+- EDGAR Frames API is the best free source (bulk data, no limits)
+- Alpha Vantage needs 1 req/sec spacing (free tier)
+- Bedrock requires inference profile IDs (not raw model IDs)
 
-### FMP Free Tier Limitations
-- Some popular symbols blocked (PG, HD, CRM return "Premium" error)
-- Stock screener endpoint (`/stable/stock-screener`) not available
-- Bandwidth: 500MB/30 days (current usage: ~220MB/month for daily scans)
-- Legacy model IDs deprecated (Claude 3 Haiku → use inference profile IDs)
-
-### Key Lesson: yfinance Does NOT Work From Lambda
-Yahoo Finance actively blocks AWS IP ranges. Discovered during build.
-FMP + NASDAQ ticker file is the reliable alternative.
-
-## FMP Bandwidth Budget (Free: 500MB/30 days)
-- Daily scan: ~1,000 stocks × 7.7KB (profile+ratios+growth+target) = 7.7 MB/day
-- 30 days × 7.7 MB = ~231 MB/month
-- Weekly universe refresh: ~5,200 profiles × 2.7KB = 14 MB/week → 56 MB/month
-- **Total: ~287 MB/month (within 500 MB limit)**
-
-## AWS Resources (Deployed)
-
-| Resource | Name/ARN |
-|----------|----------|
-| S3 Bucket | `stock-screener-raw-data-116488731375` |
-| Lambda (Step 1) | `stock-screener-fundamentals-fetcher` |
-| Lambda (Step 2) | `stock-screener-filter` |
-| Lambda (Step 3) | `stock-screener-news-fetcher` |
-| Lambda (Step 4) | `stock-screener-sentiment-analyzer` |
-| Lambda (Step 5) | `stock-screener-score-calculator` |
-| Lambda (Step 6) | `stock-screener-alert-checker` |
-| Step Functions | `stock-screener-pipeline` |
-| SNS Topic | `stock-screener-alerts` |
-| EventBridge Rule | `stock-screener-daily-trigger` (Mon-Fri 8PM UTC) |
-| SSM Parameter | `/stock-screener/fmp-api-key` (SecureString) |
-| CDK Stack | `StockScreenerStack` |
-
-## Project Structure
+### Project Structure
 
 ```
 stock-screener/
-├── bin/                           → CDK app entry point
-├── lib/
-│   └── stock-screener-stack.ts    → Full CDK stack (all 6 Lambdas + Step Functions + SNS)
+├── bin/stock-screener.ts              → CDK entry point
+├── lib/stock-screener-stack.ts        → Full infrastructure definition
 ├── lambdas/
-│   ├── fundamentals-fetcher/
-│   │   ├── handler.py             → Provider-agnostic data fetcher
-│   │   ├── requirements.txt       → requests, boto3
+│   ├── fundamentals-fetcher/          → EDGAR + Alpha Vantage
+│   │   ├── handler.py
+│   │   ├── requirements.txt
 │   │   └── providers/
-│   │       ├── __init__.py        → Factory + registry
-│   │       ├── base.py            → DataProvider ABC + StockFundamentals schema
-│   │       └── fmp_provider.py    → FMP free tier (NASDAQ universe + per-symbol data)
-│   ├── stock-screener/
-│   │   ├── handler.py             → Value filter logic + scoring
-│   │   ├── screener-filters.json  → Bundled config (copy of shared/config)
-│   │   └── requirements.txt
-│   ├── news-fetcher/
-│   │   ├── handler.py             → TickerTick API integration
-│   │   └── requirements.txt       → requests, boto3
-│   ├── sentiment-analyzer/
-│   │   ├── handler.py             → Bedrock/Claude per-article analysis
-│   │   └── requirements.txt       → boto3
-│   ├── score-calculator/
-│   │   ├── handler.py             → Combine fundamental + sentiment scores
-│   │   └── requirements.txt
-│   └── alert-checker/
-│       ├── handler.py             → Threshold checks + SNS notifications
-│       └── requirements.txt       → boto3
-├── frontend/                      → React app (Phase 4 — not started)
+│   │       ├── __init__.py            → Factory + registry
+│   │       ├── base.py               → DataProvider ABC + StockFundamentals
+│   │       ├── edgar_provider.py      → ACTIVE: EDGAR + Alpha Vantage hybrid
+│   │       └── fmp_provider.py        → INACTIVE: retained for future paid upgrade
+│   ├── stock-screener/                → Value filter logic
+│   │   ├── handler.py
+│   │   └── screener-filters.json
+│   ├── news-fetcher/                  → TickerTick integration
+│   ├── sentiment-analyzer/            → Bedrock/Claude
+│   ├── score-calculator/              → Investability score + DynamoDB write
+│   ├── alert-checker/                 → Tracking lifecycle + SNS alerts
+│   └── api/                           → REST API handler (all routes)
+├── frontend/                          → React app (Phase 4 — next)
 ├── shared/config/
-│   └── screener-filters.json      → Source of truth for filter thresholds
-├── .venv/                         → Local Python virtual env (gitignored)
-└── .kiro/steering/
-    └── architecture.md            → This file
+│   └── screener-filters.json          → Source of truth for filter thresholds
+├── .venv/                             → Local Python virtualenv (gitignored)
+├── cdk.json                           → CDK config (profile: stock-screener)
+└── .kiro/steering/architecture.md     → This file
 ```
 
-## Build Phases — Progress
+### Build Progress
 
 | Phase | Status | What's Done |
 |-------|--------|-------------|
-| 1. Fundamentals pipeline | COMPLETE | Fetch + screen + store in S3 |
-| 2. News + Sentiment | COMPLETE | TickerTick + Bedrock/Claude + scoring + alerts |
-| 3. Step Functions orchestration | COMPLETE | Full 6-step pipeline + EventBridge daily trigger |
-| 4. React dashboard | NOT STARTED | Sliders, tables, charts, alert config |
-| 5. Retroactive analysis | NOT STARTED | Athena + S3, historical trends, DynamoDB tracking |
+| 1. Fundamentals pipeline | COMPLETE | EDGAR bulk + Alpha Vantage enrichment |
+| 2. News + Sentiment | COMPLETE | TickerTick + Bedrock/Claude |
+| 3. Scoring + Alerts + Tracking | COMPLETE | Investability score + DynamoDB + SNS |
+| 4. API Gateway | COMPLETE | REST endpoints, all verified |
+| 5. React dashboard | NEXT | Sliders, tables, charts |
+| 6. Retroactive analysis | FUTURE | Athena + historical trends |
 
-## What's Next
+### Conventions
 
-1. **DynamoDB tables** — For tracked stocks list, score history, alert rules, user presets
-2. **API Gateway** — REST API for the React frontend to consume
-3. **React dashboard** — Sliders, stock table, trend charts
-4. **Full pipeline test** — FMP was rate-limited during testing; verify on next run
-5. **SNS confirmation** — User needs to confirm email subscription for alerts
-
-## Conventions
-
-- Lambdas: Python 3.12 ARM64, each in its own folder with handler.py + requirements.txt
-- Dependencies: Docker-bundled via PythonFunction CDK construct (or plain lambda.Function for no-dependency Lambdas)
+- Lambdas: Python 3.12 ARM64, handler.py + requirements.txt per folder
+- Dependencies: Docker-bundled via PythonFunction (or plain Function if no deps)
 - Infrastructure: TypeScript CDK, single stack
-- Config: JSON files in shared/config/ — single source of truth for frontend + backend
-- Naming: kebab-case for folders, snake_case for Python, camelCase for TypeScript
-- Secrets: Always in SSM Parameter Store (SecureString), never in code
-- Pin dependency versions for reproducibility
-- Remove dead code and obsolete files immediately
-- Test locally first, deploy only when verified
+- Config: JSON in shared/config/ — single source of truth
+- Naming: kebab-case folders, snake_case Python, camelCase TypeScript
+- Secrets: SSM Parameter Store (SecureString), never in code
+- Pin dependency versions
+- Test locally with `.venv/bin/python3`, deploy only when verified
+- Remove dead code immediately
