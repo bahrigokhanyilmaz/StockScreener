@@ -43,7 +43,54 @@ API Gateway (REST)
     → API Lambda → DynamoDB → JSON response to React frontend
 ```
 
-### Tech Stack
+### Pipeline Step-by-Step (Precise Detail)
+
+**Step 1 — EDGAR Bulk Fetch** (~4 seconds)
+- Source: SEC EDGAR Frames API (free, unlimited, US government)
+- ~10 API calls gets bulk financials for ALL ~5,097 US public companies
+- Data: Net Income, Revenue, Operating Income, Equity, Debt, Assets, Liabilities, Shares, Cash
+- Calculates: EPS, Debt/Equity, Quick Ratio, Operating Margin, Net Margin, ROE
+- Writes full dataset to S3
+
+**Step 2 — Pre-Screen** (instant)
+- Applies 3 EDGAR-evaluable filters: D/E < 1, Quick Ratio > 1, Op Margin > 0%
+- 5,097 → ~233 pass
+- Writes passers to S3
+
+**Step 3 — Price + Metrics Enrichment** (~8 minutes)
+- Polygon.io: ONE API call → closing prices for ALL 12,398 US stocks
+- Finnhub: `/stock/metric?metric=all` → 133 metrics per stock (60 calls/min, 2s/stock)
+- Adds: Price, P/E, PEG, Price/FCF, Forward P/E, EPS Growth, Revenue Growth, Market Cap, Analyst Target
+- After this step: ALL 13 filter fields populated. No data gaps.
+- Writes enriched data to S3
+
+**Step 4 — Full Screen** (instant)
+- Applies ALL 13 filters. Stocks missing ANY field FAIL (no skipping).
+- Filters: P/E<50, FwdP/E<20, PEG<1, P/FCF<20, D/E<1, QR>1, OpMargin>0, EPSGrowth>0, RevGrowth>0, LTGrowth>0, InstTxns>0, TargetUpside>20%, Sentiment>-0.3
+- 233 → **~33 pass**
+- Writes passers to S3
+
+**Step 5 — News Fetch** (~3.5 minutes)
+- TickerTick API: 10 articles per stock, 6.5s rate limit between stocks
+- ~33 stocks × 10 articles = ~330 articles total
+- Writes to S3
+
+**Step 6 — Sentiment Analysis** (~5 minutes)
+- Amazon Bedrock Claude Haiku 4.5: analyzes each article
+- Returns: relevance, sentiment (-1 to +1), confidence, risk_flags, summary
+- Aggregates into one sentiment score per stock (confidence-weighted)
+- Cost: ~$0.12/day
+
+**Step 7 — Score Calculator** (instant)
+- Formula: investability = (0.7 × fundamental) + (0.3 × sentiment_adj) + risk_penalties
+- Writes to DynamoDB: LATEST (current), SCORE#date (history), TRACKING (status)
+
+**Step 8 — Alert Checker** (instant)
+- Detects: new passers, dropped stocks, sentiment crashes, risk flags, grace expiry
+- Updates tracking in DynamoDB (ACTIVE/GRACE/MANUAL, 90-day grace period)
+- Sends email via SNS if thresholds breached
+
+**Total: ~18 minutes. Triggered Mon-Fri 4PM ET.**
 
 | Layer | Technology | Notes |
 |-------|-----------|-------|
@@ -90,8 +137,10 @@ API Gateway (REST)
 | Service | SSM Path | Free Tier Limits | Status |
 |---------|----------|-----------------|--------|
 | FMP | /stock-screener/fmp-api-key | 500MB/30 days (exhausted) | INACTIVE |
-| Alpha Vantage | /stock-screener/alpha-vantage-api-key | 25 req/day, 1 req/sec | ACTIVE |
-| Twelve Data | /stock-screener/twelve-data-api-key | 800 req/day, 8 req/min | ACTIVE (price data) |
+| Alpha Vantage | /stock-screener/alpha-vantage-api-key | 25 req/day, 1 req/sec | INACTIVE |
+| Twelve Data | /stock-screener/twelve-data-api-key | 800 req/day, 8 req/min | INACTIVE |
+| Polygon.io | /stock-screener/polygon-api-key | 5 req/min, ALL stock prices in 1 call | ACTIVE (bulk prices) |
+| Finnhub | /stock-screener/finnhub-api-key | 60 req/min — full fundamentals per stock | ACTIVE (enrichment) |
 
 Note: Actual key values are NEVER in code or docs. They're in SSM only.
 To retrieve a key value: `aws ssm get-parameter --name "/stock-screener/<key-name>" --with-decryption --profile stock-screener --region us-east-2`
