@@ -50,10 +50,22 @@ def get_provider_config():
     Returns:
         Tuple of (provider_name, kwargs_dict)
     """
-    provider_name = os.environ.get("PROVIDER", "fmp")
+    provider_name = os.environ.get("PROVIDER", "edgar")
     kwargs = {}
 
-    if provider_name == "fmp":
+    if provider_name == "edgar":
+        # Alpha Vantage key for price enrichment
+        av_param = os.environ.get("ALPHA_VANTAGE_KEY_PARAM")
+        if av_param:
+            response = ssm_client.get_parameter(Name=av_param, WithDecryption=True)
+            kwargs["alpha_vantage_key"] = response["Parameter"]["Value"]
+
+        # Configurable market cap threshold
+        min_market_cap = os.environ.get("MIN_MARKET_CAP")
+        if min_market_cap:
+            kwargs["min_market_cap"] = float(min_market_cap)
+
+    elif provider_name == "fmp":
         param_name = os.environ.get("FMP_API_KEY_PARAM")
         if not param_name:
             raise ValueError(
@@ -62,7 +74,6 @@ def get_provider_config():
         response = ssm_client.get_parameter(Name=param_name, WithDecryption=True)
         kwargs["api_key"] = response["Parameter"]["Value"]
 
-        # Pass configurable market cap threshold
         min_market_cap = os.environ.get("MIN_MARKET_CAP")
         if min_market_cap:
             kwargs["min_market_cap"] = float(min_market_cap)
@@ -161,6 +172,13 @@ def handler(event, context):
     # Fetch fundamentals
     print("Fetching fundamentals...")
     results = provider.get_fundamentals_batch(batch)
+
+    # Enrich with price data if provider supports it (EDGAR + Alpha Vantage)
+    # This adds P/E, PEG, Market Cap, Analyst Target, Growth rates
+    # Only enriches up to 25 stocks (Alpha Vantage free tier daily limit)
+    if hasattr(provider, 'enrich_with_price_data'):
+        max_enrich = int(event.get("max_enrichments", 25))
+        results = provider.enrich_with_price_data(results, max_enrichments=max_enrich)
 
     # Convert to dicts for serialization
     results_dicts = [stock.to_dict() for stock in results]

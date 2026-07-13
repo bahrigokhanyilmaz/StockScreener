@@ -73,14 +73,14 @@ export class StockScreenerStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(5),
-      memorySize: 256,
+      memorySize: 512, // EDGAR frames are large JSON responses (~5MB total)
       environment: {
-        PROVIDER: 'fmp',
+        PROVIDER: 'edgar',
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
-        FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
+        ALPHA_VANTAGE_KEY_PARAM: '/stock-screener/alpha-vantage-api-key',
         MIN_MARKET_CAP: '300000000',
       },
-      description: 'Step 1: Fetches fundamental stock data via FMP + NASDAQ',
+      description: 'Step 1: EDGAR bulk fundamentals + Alpha Vantage price enrichment',
     });
 
     // ==========================================

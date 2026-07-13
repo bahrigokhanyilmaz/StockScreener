@@ -3,18 +3,15 @@ Data Providers Package
 ======================
 Implements the Strategy Pattern for financial data sourcing.
 
-The key idea: your screening logic doesn't know or care WHERE the data
-comes from. It works against a standard interface (DataProvider), and you
-swap implementations via configuration.
-
 Architecture:
     DataProvider (abstract interface)
-    ├── FMPProvider       (current — works on free + paid tiers)
+    ├── EdgarProvider    (current — SEC EDGAR, free, unlimited, bulk data)
+    ├── FMPProvider      (previous — FMP free tier, bandwidth-limited)
     └── [Future: PolygonProvider, AlphaVantageProvider, etc.]
 
 Usage:
     from providers import get_provider
-    provider = get_provider("fmp", api_key="...")
+    provider = get_provider("edgar")
     stocks = provider.get_stock_universe()
     data = provider.get_fundamentals_batch(stocks)
 
@@ -25,11 +22,12 @@ To add a new provider:
 """
 
 from providers.base import DataProvider, StockFundamentals, ProviderError
+from providers.edgar_provider import EdgarProvider
 from providers.fmp_provider import FMPProvider
 
 # Registry of available providers
-# To add a new provider, import it and add to this dict
 PROVIDERS = {
+    "edgar": EdgarProvider,
     "fmp": FMPProvider,
 }
 
@@ -38,12 +36,9 @@ def get_provider(provider_name: str, **kwargs) -> DataProvider:
     """
     Factory function to instantiate a data provider by name.
 
-    Called by the Lambda handler. The provider name comes from
-    an environment variable — switching providers is a config change.
-
     Args:
         provider_name: Key from the PROVIDERS dict
-        **kwargs: Provider-specific config (e.g., api_key for FMP)
+        **kwargs: Provider-specific config
 
     Returns:
         An initialized DataProvider instance
