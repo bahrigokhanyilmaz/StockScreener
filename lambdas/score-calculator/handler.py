@@ -221,11 +221,16 @@ def handler(event, context):
     Output:
         Ranked list of stocks with investability scores.
     """
+    from pipeline_io import read_pipeline_input, write_pipeline_output
+
     start_time = datetime.now(timezone.utc)
     today = start_time.strftime("%Y-%m-%d")
     print(f"Starting score calculation at {start_time.isoformat()}")
 
-    stocks = event.get("stocks_with_sentiment", [])
+    # Read input from S3 if needed (Step Functions payload limit workaround)
+    data = read_pipeline_input(event)
+
+    stocks = data.get("stocks_with_sentiment", [])
     if not stocks:
         return {
             "scored_stocks": [],
@@ -280,4 +285,4 @@ def handler(event, context):
           f"{len(moderately_investable)} moderate, "
           f"{len(low_investability)} low.")
 
-    return result
+    return write_pipeline_output(result, step_name="step7_scores")

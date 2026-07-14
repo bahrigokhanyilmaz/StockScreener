@@ -223,10 +223,15 @@ def handler(event, context):
     Output:
         List of stocks with sentiment scores and per-article analysis.
     """
+    from pipeline_io import read_pipeline_input, write_pipeline_output
+
     start_time = datetime.now(timezone.utc)
     print(f"Starting sentiment analysis at {start_time.isoformat()}")
 
-    stocks_with_news = event.get("stocks_with_news", [])
+    # Read input from S3 if needed (Step Functions payload limit workaround)
+    data = read_pipeline_input(event)
+
+    stocks_with_news = data.get("stocks_with_news", [])
     if not stocks_with_news:
         return {
             "stocks_with_sentiment": [],
@@ -315,4 +320,4 @@ def handler(event, context):
     print(f"Done in {duration:.1f}s. Analyzed {total_articles_analyzed} articles "
           f"for {len(stocks_with_news)} stocks.")
 
-    return result
+    return write_pipeline_output(result, step_name="step6_sentiment")

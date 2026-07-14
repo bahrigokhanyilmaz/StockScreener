@@ -259,6 +259,13 @@ def handler(event, context):
     custom_thresholds = event.get("thresholds")  # Optional: for slider exploration
 
     if not stocks:
+        # Try reading from S3 (pipeline passes s3_key between steps)
+        from pipeline_io import read_pipeline_input
+        pipeline_data = read_pipeline_input(event)
+        stocks = pipeline_data.get("stocks") or pipeline_data.get("enriched_stocks") or []
+        custom_thresholds = pipeline_data.get("thresholds") or custom_thresholds
+
+    if not stocks:
         return {
             "passing_stocks": [],
             "near_misses": [],
@@ -294,7 +301,7 @@ def handler(event, context):
     print(f"Results: {len(passing)} passing, {len(near_misses)} near-misses, "
           f"{len(stocks) - len(passing) - len(near_misses)} rejected")
 
-    return {
+    result = {
         "passing_stocks": passing,
         "near_misses": near_misses,
         "all_screened": screened,
@@ -307,3 +314,7 @@ def handler(event, context):
             "custom_thresholds_used": custom_thresholds is not None,
         },
     }
+
+    # Write to S3 for next step (avoids Step Functions 256KB limit)
+    from pipeline_io import write_pipeline_output
+    return write_pipeline_output(result, step_name="step2_screened")

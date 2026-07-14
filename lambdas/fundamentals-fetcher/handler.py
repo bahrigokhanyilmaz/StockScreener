@@ -140,4 +140,7 @@ def handler(event, context):
     }
 
     print(f"Done in {duration_seconds:.1f}s. Got data for {len(results_dicts)}/{len(universe)} stocks.")
-    return response
+
+    # Write output to S3 (Step Functions has 256KB payload limit)
+    from pipeline_io import write_pipeline_output
+    return write_pipeline_output(response, step_name="step1_fundamentals")

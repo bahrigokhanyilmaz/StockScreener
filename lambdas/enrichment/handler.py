@@ -1,32 +1,41 @@
 """
-Price Enrichment Lambda
-========================
-Step 3 in the pipeline (between initial screen and full screen).
+Price & Metrics Enrichment Lambda
+==================================
+Step 3 in the pipeline.
 
-Takes stocks that passed the EDGAR-based pre-screen (~233 stocks)
-and adds current stock prices from Twelve Data.
+Combines two data sources to fully enrich all stocks that passed EDGAR pre-screen:
 
-With price data, the downstream screener can evaluate:
-- P/E ratio (Price / EPS)
-- Price/FCF (Price / Free Cash Flow per share)
-- Market Cap (Price × Shares Outstanding)
+1. Polygon.io Grouped Daily — ALL US stock prices in ONE API call (1 credit)
+2. Finnhub Basic Financials — 133 metrics per stock (60 calls/min free)
 
-Twelve Data free tier: 800 credits/day, 8 credits/minute.
-Each symbol = 1 credit. We can batch up to 8 symbols per request.
-~233 stocks = ~30 requests (8 symbols each) = ~4 minutes at 1 req/sec pacing.
+After this step, ALL 13 screening filters can be evaluated. No filter is skipped.
 
-This Lambda processes ALL stocks passed to it — no artificial limit.
-The number of stocks is naturally limited by the upstream EDGAR filters.
+Data provided by this step:
+- Current price (Polygon)
+- P/E ratio (Finnhub: peTTM)
+- PEG ratio (calculated: P/E ÷ EPS growth)
+- Price/FCF (Finnhub: pfcfShareTTM)
+- Forward P/E (Finnhub: forwardPE, or calculated from EPS estimates)
+- EPS Growth YoY (Finnhub: epsGrowthTTMAnnual or revenueGrowthTTMYoy)
+- Revenue Growth YoY (Finnhub: revenueGrowthTTMYoy)
+- Analyst Target Price (Finnhub: price-target endpoint)
+- Market Cap (Finnhub: marketCapitalization)
+- All balance sheet ratios refreshed (Finnhub more current than EDGAR annual)
+
+Rate limits:
+- Polygon: 5 calls/min (we use 1)
+- Finnhub: 60 calls/min → 233 stocks in ~4 minutes
 
 Environment Variables:
-    TWELVE_DATA_KEY_PARAM - SSM path for the Twelve Data API key
+    POLYGON_API_KEY_PARAM  - SSM path for Polygon.io key
+    FINNHUB_API_KEY_PARAM  - SSM path for Finnhub key
+    RAW_DATA_BUCKET        - S3 bucket for pipeline I/O
 """
 
 import json
 import os
 import time
-import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import boto3
 import requests as http_requests
@@ -34,179 +43,228 @@ import requests as http_requests
 # AWS
 ssm_client = boto3.client("ssm")
 
-# Twelve Data
-TWELVE_DATA_URL = "https://api.twelvedata.com/price"
-BATCH_SIZE = 8  # Max credits per minute = 8, so request 8 symbols at once
-RATE_PAUSE = 61  # Seconds to wait between batches (must wait full minute for credit reset)
+# API URLs
+POLYGON_GROUPED_URL = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks"
+FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
 # Cache
-_api_key = None
+_polygon_key = None
+_finnhub_key = None
 
 
-def get_api_key() -> str:
-    """Fetch Twelve Data API key from SSM."""
-    global _api_key
-    if _api_key:
-        return _api_key
-
-    param_name = os.environ.get("TWELVE_DATA_KEY_PARAM")
-    if not param_name:
-        raise ValueError("TWELVE_DATA_KEY_PARAM env var not set")
-
+def get_ssm_param(param_name: str) -> str:
+    """Fetch a parameter from SSM."""
     response = ssm_client.get_parameter(Name=param_name, WithDecryption=True)
-    _api_key = response["Parameter"]["Value"]
-    return _api_key
+    return response["Parameter"]["Value"]
 
 
-def fetch_prices_batch(symbols: list[str], api_key: str) -> dict[str, float]:
+def get_polygon_key() -> str:
+    global _polygon_key
+    if not _polygon_key:
+        _polygon_key = get_ssm_param(os.environ["POLYGON_API_KEY_PARAM"])
+    return _polygon_key
+
+
+def get_finnhub_key() -> str:
+    global _finnhub_key
+    if not _finnhub_key:
+        _finnhub_key = get_ssm_param(os.environ["FINNHUB_API_KEY_PARAM"])
+    return _finnhub_key
+
+
+def get_last_trading_day() -> str:
+    """Get the most recent trading day (skip weekends)."""
+    today = datetime.now(timezone.utc).date()
+    if datetime.now(timezone.utc).hour < 21:
+        today = today - timedelta(days=1)
+    while today.weekday() >= 5:
+        today = today - timedelta(days=1)
+    return today.strftime("%Y-%m-%d")
+
+
+def fetch_all_prices(polygon_key: str, date: str) -> dict[str, float]:
+    """Fetch ALL US stock closing prices in one Polygon API call."""
+    url = f"{POLYGON_GROUPED_URL}/{date}"
+    response = http_requests.get(url, params={"apiKey": polygon_key}, timeout=30)
+    if response.status_code != 200:
+        print(f"  Warning: Polygon returned {response.status_code}")
+        return {}
+    data = response.json()
+    results = data.get("results", [])
+    return {item["T"]: item["c"] for item in results if "T" in item and "c" in item}
+
+
+def fetch_finnhub_metrics(symbol: str, finnhub_key: str) -> dict:
     """
-    Fetch prices for a batch of symbols from Twelve Data.
-
-    Args:
-        symbols: List of ticker symbols (max 8 per call)
-        api_key: Twelve Data API key
-
-    Returns:
-        Dict mapping symbol → price (float)
+    Fetch full fundamental metrics for a single stock from Finnhub.
+    Returns 133 metrics including P/E, PEG components, margins, growth, etc.
     """
-    symbols_str = ",".join(symbols)
+    url = f"{FINNHUB_BASE_URL}/stock/metric"
     try:
         response = http_requests.get(
-            TWELVE_DATA_URL,
-            params={"symbol": symbols_str, "apikey": api_key},
-            timeout=15,
+            url, params={"symbol": symbol, "metric": "all", "token": finnhub_key}, timeout=10
         )
-        if response.status_code != 200:
-            print(f"    Warning: Twelve Data returned {response.status_code}")
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("metric", {})
+        elif response.status_code == 429:
+            print(f"    Rate limited on {symbol} — waiting 2s")
+            time.sleep(2)
             return {}
-
-        data = response.json()
-
-        # Handle rate limit error
-        if isinstance(data, dict) and data.get("code") == 429:
-            print(f"    Rate limited — waiting...")
-            return {}
-
-        # Single symbol returns {"price": "123.45"}
-        # Multiple symbols returns {"AAPL": {"price": "123.45"}, "MSFT": {...}}
-        prices = {}
-        if len(symbols) == 1 and "price" in data:
-            prices[symbols[0]] = float(data["price"])
-        else:
-            for sym, val in data.items():
-                if isinstance(val, dict) and "price" in val:
-                    prices[sym] = float(val["price"])
-
-        return prices
-
     except Exception as e:
-        print(f"    Warning: Twelve Data error: {e}")
-        return {}
+        print(f"    Finnhub error for {symbol}: {e}")
+    return {}
+
+
+def fetch_finnhub_price_target(symbol: str, finnhub_key: str) -> dict:
+    """Fetch analyst price target consensus."""
+    url = f"{FINNHUB_BASE_URL}/stock/price-target"
+    try:
+        response = http_requests.get(
+            url, params={"symbol": symbol, "token": finnhub_key}, timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return {}
+
+
+def enrich_stock(stock: dict, price: float, metrics: dict, target: dict) -> dict:
+    """
+    Apply all enrichment data to a stock dict.
+    Calculates derived metrics (PEG, forward P/E, target upside).
+    """
+    # Price from Polygon
+    stock["price"] = price
+    stock["market_cap"] = metrics.get("marketCapitalization")
+
+    # Direct from Finnhub metrics
+    stock["pe_ratio"] = metrics.get("peTTM")
+    stock["price_to_fcf"] = metrics.get("pfcfShareTTM")
+    stock["debt_to_equity"] = metrics.get("totalDebt/totalEquityQuarterly")
+    stock["quick_ratio"] = metrics.get("quickRatioQuarterly")
+    stock["current_ratio"] = metrics.get("currentRatioQuarterly")
+    stock["operating_margin"] = (metrics.get("operatingMarginTTM") or 0) / 100.0  # Convert % to decimal
+    stock["net_profit_margin"] = (metrics.get("netProfitMarginTTM") or 0) / 100.0
+    stock["gross_margin"] = (metrics.get("grossMarginTTM") or 0) / 100.0
+    stock["return_on_equity"] = (metrics.get("roeTTM") or 0) / 100.0
+    stock["dividend_yield"] = (metrics.get("dividendYieldIndicatedAnnual") or 0) / 100.0
+
+    # Growth metrics (Finnhub returns as percentage, convert to decimal)
+    eps_growth = metrics.get("epsGrowthTTMAnnual") or metrics.get("epsGrowth3Y")
+    rev_growth = metrics.get("revenueGrowthTTMYoy")
+    stock["eps_growth_yoy"] = eps_growth / 100.0 if eps_growth else None
+    stock["revenue_growth_yoy"] = rev_growth / 100.0 if rev_growth else None
+
+    # PEG calculation: P/E ÷ EPS growth rate
+    pe = stock.get("pe_ratio")
+    if pe and eps_growth and eps_growth > 0:
+        stock["peg_ratio"] = round(pe / eps_growth, 2)  # eps_growth already in %
+    else:
+        stock["peg_ratio"] = None
+
+    # Forward P/E (Finnhub sometimes has this)
+    stock["forward_pe"] = metrics.get("forwardPE") or metrics.get("peExclExtraAnnual")
+
+    # Analyst target price + upside
+    target_mean = target.get("targetMean") or target.get("targetMedian")
+    if target_mean and price and price > 0:
+        stock["analyst_target_price"] = target_mean
+        stock["target_price_upside"] = (target_mean - price) / price
+    else:
+        stock["analyst_target_price"] = None
+        stock["target_price_upside"] = None
+
+    return stock
 
 
 def handler(event, context):
     """
     Lambda entry point.
 
-    Takes stocks from the initial screener (Step 2) that passed EDGAR-based
-    filters. Adds current price to each stock. Returns enriched stocks
-    for the full screener (Step 4) to evaluate price-based filters.
-
-    The input stocks already have: D/E, Quick Ratio, Operating Margin, EPS,
-    revenue_per_share, etc. from EDGAR. This step adds: price, market_cap,
-    pe_ratio, price_to_fcf.
-
-    Input event:
-        event["passing_stocks"] — stocks that passed initial EDGAR screen
-        event["near_misses"] — stocks close to passing (also enrich these)
-
-    Output:
-        Same structure with price fields populated.
+    1. Fetch ALL stock prices from Polygon (1 API call)
+    2. For each stock that passed EDGAR pre-screen, fetch Finnhub metrics (60/min)
+    3. Combine and calculate all derived metrics
+    4. Output fully enriched stocks for the full screener (Step 4)
     """
+    from pipeline_io import read_pipeline_input, write_pipeline_output
+
     start_time = datetime.now(timezone.utc)
-    print(f"Starting price enrichment at {start_time.isoformat()}")
+    print(f"Starting enrichment at {start_time.isoformat()}")
 
-    # Collect all stocks to enrich (passers + near misses)
-    passing = event.get("passing_stocks", [])
-    near_misses = event.get("near_misses", [])
-    all_stocks = passing + near_misses
+    # Read input
+    data = read_pipeline_input(event)
+    passing = data.get("passing_stocks", [])
 
-    if not all_stocks:
-        print("No stocks to enrich")
-        return {
-            "enriched_stocks": [],
-            "metadata": {"error": "No stocks provided"},
-        }
+    if not passing:
+        return write_pipeline_output(
+            {"enriched_stocks": [], "metadata": {"error": "No stocks provided"}},
+            step_name="step3_enriched"
+        )
 
-    # Extract symbols
-    symbols = [s.get("symbol") for s in all_stocks if s.get("symbol")]
-    print(f"Enriching {len(symbols)} stocks with price data from Twelve Data")
+    print(f"Enriching {len(passing)} stocks (Polygon prices + Finnhub metrics)")
 
-    # Fetch prices in batches of 8 (respecting 8 credits/minute limit)
-    api_key = get_api_key()
-    all_prices = {}
-    num_batches = math.ceil(len(symbols) / BATCH_SIZE)
+    # Step A: Bulk prices from Polygon (1 API call, all stocks)
+    polygon_key = get_polygon_key()
+    trading_date = get_last_trading_day()
+    print(f"  Fetching Polygon grouped daily for {trading_date}...")
+    all_prices = fetch_all_prices(polygon_key, trading_date)
+    print(f"  Got {len(all_prices)} prices from Polygon")
 
-    for i in range(num_batches):
-        batch = symbols[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
-        prices = fetch_prices_batch(batch, api_key)
-        all_prices.update(prices)
-
-        fetched_so_far = len(all_prices)
-        print(f"  Batch {i+1}/{num_batches}: got {len(prices)} prices "
-              f"(total: {fetched_so_far}/{len(symbols)})")
-
-        # Wait for rate limit reset (8 credits/minute)
-        if i < num_batches - 1:
-            time.sleep(RATE_PAUSE)
-
-    print(f"Prices fetched: {len(all_prices)}/{len(symbols)}")
-
-    # Enrich each stock with price-derived metrics
+    # Step B: Finnhub metrics for each stock (60/min — paced at 1/sec)
+    finnhub_key = get_finnhub_key()
     enriched = []
-    for stock in all_stocks:
+    metrics_fetched = 0
+
+    for i, stock in enumerate(passing):
         symbol = stock.get("symbol", "")
         price = all_prices.get(symbol)
 
-        if price:
-            stock["price"] = price
+        if not price:
+            # No price from Polygon — can't calculate P/E. Stock fails.
+            enriched.append(stock)
+            continue
 
-            # Calculate P/E = Price / EPS
-            eps = stock.get("eps")
-            if eps and eps > 0:
-                stock["pe_ratio"] = round(price / eps, 2)
+        # Fetch Finnhub metrics
+        metrics = fetch_finnhub_metrics(symbol, finnhub_key)
+        target = fetch_finnhub_price_target(symbol, finnhub_key)
 
-            # Calculate Market Cap = Price × Shares Outstanding
-            # (shares_outstanding not in the stock dict from screener,
-            #  but EPS is calculated from net_income/shares, so we can
-            #  reverse: shares = net_income / EPS if both available)
-            # For now, leave market_cap as None — we'll get it from
-            # Alpha Vantage for tracked stocks later, or compute it.
-
-            # Calculate Price/FCF if fcf_per_share available
-            fcf_ps = stock.get("fcf_per_share")
-            if fcf_ps and fcf_ps > 0:
-                stock["price_to_fcf"] = round(price / fcf_ps, 2)
+        if metrics:
+            stock = enrich_stock(stock, price, metrics, target)
+            metrics_fetched += 1
 
         enriched.append(stock)
 
-    # Count how many now have P/E
-    pe_count = sum(1 for s in enriched if s.get("pe_ratio") is not None)
-    print(f"Stocks with P/E after enrichment: {pe_count}/{len(enriched)}")
+        # Progress logging
+        if (i + 1) % 50 == 0:
+            print(f"  [{i+1}/{len(passing)}] enriched {metrics_fetched} so far")
 
+        # Pacing: 60 calls/min = 1/sec. We make 2 calls per stock (metric + target)
+        # So pace at 2 seconds per stock to stay safe
+        if i < len(passing) - 1:
+            time.sleep(2)
+
+    # Output
     end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds()
+
+    pe_count = sum(1 for s in enriched if s.get("pe_ratio") is not None)
+    peg_count = sum(1 for s in enriched if s.get("peg_ratio") is not None)
 
     result = {
         "enriched_stocks": enriched,
         "metadata": {
-            "total_stocks": len(all_stocks),
-            "prices_fetched": len(all_prices),
-            "pe_calculated": pe_count,
+            "total_stocks": len(passing),
+            "prices_matched": sum(1 for s in enriched if s.get("price")),
+            "metrics_fetched": metrics_fetched,
+            "pe_available": pe_count,
+            "peg_available": peg_count,
+            "trading_date": trading_date,
             "duration_seconds": duration,
             "timestamp": end_time.isoformat(),
         },
     }
 
-    print(f"Done in {duration:.1f}s.")
-    return result
+    print(f"Done in {duration:.1f}s. Metrics: {metrics_fetched}, P/E: {pe_count}, PEG: {peg_count}")
+    return write_pipeline_output(result, step_name="step3_enriched")

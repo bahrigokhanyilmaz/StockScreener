@@ -120,15 +120,21 @@ def handler(event, context):
     Output:
         List of stocks with articles attached, ready for sentiment analysis.
     """
+    from pipeline_io import read_pipeline_input, write_pipeline_output
+
     start_time = datetime.now(timezone.utc)
     print(f"Starting news fetch at {start_time.isoformat()}")
 
-    # Get the stocks we want news for
-    passing_stocks = event.get("passing_stocks", [])
-    near_misses = event.get("near_misses", [])
+    # Read input from S3 if needed (Step Functions payload limit workaround)
+    data = read_pipeline_input(event)
 
-    # Fetch news for passing stocks + near misses (both are tracked)
-    stocks_to_fetch = passing_stocks + near_misses
+    # Get the stocks we want news for
+    passing_stocks = data.get("passing_stocks", [])
+    near_misses = data.get("near_misses", [])
+
+    # Fetch news ONLY for stocks that passed all filters.
+    # Near-misses don't get news/sentiment — they haven't earned tracking yet.
+    stocks_to_fetch = passing_stocks
     symbols = [s.get("symbol") for s in stocks_to_fetch if s.get("symbol")]
 
     if not symbols:
@@ -191,4 +197,4 @@ def handler(event, context):
     print(f"Done in {duration:.1f}s. Fetched {total_articles} articles "
           f"for {len(symbols)} stocks.")
 
-    return result
+    return write_pipeline_output(result, step_name="step5_news")

@@ -110,10 +110,13 @@ export class StockScreenerStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/stock-screener')),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
+      environment: {
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
+      },
       description: 'Steps 2 & 4: Value filter (called twice — pre-screen + full screen)',
     });
 
-    // Step 3: Price Enrichment (Twelve Data — 800 calls/day, 8/min)
+    // Step 3: Price Enrichment (Polygon bulk prices + Finnhub metrics)
     const priceEnrichment = new PythonFunction(this, 'PriceEnrichment', {
       functionName: 'stock-screener-price-enrichment',
       entry: path.join(__dirname, '../lambdas/enrichment'),
@@ -121,12 +124,14 @@ export class StockScreenerStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(15), // ~233 stocks ÷ 8/min = ~30 min worst case
-      memorySize: 128,
+      timeout: cdk.Duration.minutes(15), // 233 stocks × 2s pacing = ~8 min
+      memorySize: 256,
       environment: {
-        TWELVE_DATA_KEY_PARAM: '/stock-screener/twelve-data-api-key',
+        POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
+        FINNHUB_API_KEY_PARAM: '/stock-screener/finnhub-api-key',
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
-      description: 'Step 3: Twelve Data prices for all EDGAR pre-screen passers',
+      description: 'Step 3: Polygon bulk prices + Finnhub full metrics (all filters evaluable)',
     });
 
     // Step 5: News Fetcher (TickerTick)
@@ -176,6 +181,7 @@ export class StockScreenerStack extends cdk.Stack {
         FUNDAMENTAL_WEIGHT: '0.7',
         SENTIMENT_WEIGHT: '0.3',
         DATA_TABLE_NAME: dataTable.tableName,
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
       description: 'Step 7: Investability score + DynamoDB persistence',
     });
@@ -194,6 +200,7 @@ export class StockScreenerStack extends cdk.Stack {
         ALERT_SNS_TOPIC_ARN: alertTopic.topicArn,
         SENTIMENT_DROP_THRESHOLD: '-0.3',
         DATA_TABLE_NAME: dataTable.tableName,
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
       description: 'Step 8: Threshold monitoring + tracking lifecycle + SNS alerts',
     });
@@ -253,7 +260,11 @@ export class StockScreenerStack extends cdk.Stack {
     // Step 1: S3 write
     rawDataBucket.grantWrite(fundamentalsFetcher);
 
-    // Step 3: SSM read (Twelve Data key)
+    // Steps 2 & 4: S3 read/write (pipeline I/O)
+    rawDataBucket.grantReadWrite(stockScreener);
+
+    // Step 3: SSM read (Twelve Data key) + S3 read/write (pipeline I/O)
+    rawDataBucket.grantReadWrite(priceEnrichment);
     priceEnrichment.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ssm:GetParameter'],
@@ -266,20 +277,22 @@ export class StockScreenerStack extends cdk.Stack {
       conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
     }));
 
-    // Step 5: S3 write
-    rawDataBucket.grantWrite(newsFetcher);
+    // Step 5: S3 read/write (news storage + pipeline I/O)
+    rawDataBucket.grantReadWrite(newsFetcher);
 
-    // Step 6: Bedrock + S3
+    // Step 6: Bedrock + S3 read/write (sentiment storage + pipeline I/O)
     sentimentAnalyzer.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
       resources: ['*'],
     }));
-    rawDataBucket.grantWrite(sentimentAnalyzer);
+    rawDataBucket.grantReadWrite(sentimentAnalyzer);
 
-    // Steps 7 & 8: DynamoDB
+    // Steps 7 & 8: DynamoDB + S3 read/write (pipeline I/O)
     dataTable.grantReadWriteData(scoreCalculator);
     dataTable.grantReadWriteData(alertChecker);
+    rawDataBucket.grantReadWrite(scoreCalculator);
+    rawDataBucket.grantReadWrite(alertChecker);
 
     // Step 8: SNS
     alertTopic.grantPublish(alertChecker);

@@ -311,11 +311,16 @@ def handler(event, context):
 
     Checks alerts, manages tracking lifecycle, sends notifications.
     """
+    from pipeline_io import read_pipeline_input, write_pipeline_output
+
     start_time = datetime.now(timezone.utc)
     today = start_time.strftime("%Y-%m-%d")
     print(f"Starting alert check at {start_time.isoformat()}")
 
-    scored_stocks = event.get("scored_stocks", [])
+    # Read input from S3 if needed (Step Functions payload limit workaround)
+    data = read_pipeline_input(event)
+
+    scored_stocks = data.get("scored_stocks", [])
     if not scored_stocks:
         return {"alerts": [], "metadata": {"error": "No scored stocks provided"}}
 
@@ -364,7 +369,7 @@ def handler(event, context):
 
     end_time = datetime.now(timezone.utc)
 
-    return {
+    result = {
         "alerts": all_alerts,
         "metadata": {
             "stocks_checked": len(scored_stocks),
@@ -380,3 +385,5 @@ def handler(event, context):
             "timestamp": end_time.isoformat(),
         },
     }
+
+    return write_pipeline_output(result, step_name="step8_alerts")
