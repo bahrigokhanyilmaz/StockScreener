@@ -167,26 +167,21 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None) 
     """
     Screen a single stock against all filters.
 
-    A stock is evaluated ONLY on filters where data is available.
-    If it passes all filters that have data, it passes the screen.
-    Filters with missing data are skipped (not counted as pass or fail).
+    RULE: Stocks missing data for ANY filter FAIL that filter.
+    All filters must be evaluable for a stock to pass.
+    No skipping — if we don't have the data, the stock doesn't qualify.
 
-    This is important because:
-    - Not all data is available on the free tier (growth, analyst targets)
-    - Sentiment scores don't exist until Phase 2
-    - We don't want to penalize stocks for data we haven't collected yet
+    Exception: The 'sentiment_score' filter is skipped ONLY on the pre-screen
+    (Step 2) since sentiment hasn't been calculated yet at that point.
+    It will be evaluated in the pipeline's final scoring step.
 
     Args:
-        stock: Dict with fundamental data (from fundamentals-fetcher output)
+        stock: Dict with fundamental data
         filters: Filter config from screener-filters.json
         thresholds: Optional override thresholds (for slider exploration)
 
     Returns:
-        Dict with:
-        - "passes_screen": bool — passes all filters where data exists
-        - "fundamental_score": float — 0-100 score
-        - "filter_results": dict — per-filter detail
-        - All original stock data preserved
+        Dict with passes_screen, fundamental_score, filter_results
     """
     filter_results = {}
     evaluated_count = 0
@@ -199,15 +194,45 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None) 
         data_format = filter_config.get("data_format", "ratio")
 
         if value is None:
-            # No data for this filter — skip it (don't penalize)
-            filter_results[filter_name] = {
-                "value": None,
-                "threshold": threshold,
-                "type": filter_type,
-                "passes": None,  # None = not evaluated (vs False = failed)
-                "skipped": True,
-            }
-            continue
+            # Missing data handling depends on screening mode:
+            # - Pre-screen (Step 2): skip filters that need enrichment data (price-based)
+            # - Full screen (Step 4): FAIL on any missing data (stock must prove it qualifies)
+            # Sentiment is always skippable (calculated later in pipeline)
+            is_prescreen = stock.get("price") is None
+            price_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
+                                       "eps_growth_yoy", "revenue_growth_yoy", "est_lt_growth",
+                                       "institutional_transactions", "target_price_upside"}
+
+            if filter_name == "sentiment_score":
+                # Always skip sentiment — calculated in Step 6
+                filter_results[filter_name] = {
+                    "value": None, "threshold": threshold, "type": filter_type,
+                    "passes": None, "skipped": True,
+                }
+                continue
+            elif filter_config.get("deferred"):
+                # Deferred filters: data source not yet available (e.g., paid API needed)
+                # Skip without penalty. Easy to re-enable: remove "deferred" from config.
+                filter_results[filter_name] = {
+                    "value": None, "threshold": threshold, "type": filter_type,
+                    "passes": None, "skipped": True, "reason": "deferred",
+                }
+                continue
+            elif is_prescreen and filter_name in price_dependent_filters:
+                # Pre-screen: skip price-dependent filters (not available yet)
+                filter_results[filter_name] = {
+                    "value": None, "threshold": threshold, "type": filter_type,
+                    "passes": None, "skipped": True,
+                }
+                continue
+            else:
+                # Full screen: missing data = FAIL
+                filter_results[filter_name] = {
+                    "value": None, "threshold": threshold, "type": filter_type,
+                    "passes": False, "skipped": False,
+                }
+                evaluated_count += 1
+                continue
 
         passes = apply_filter(value, filter_type, threshold, data_format)
         filter_results[filter_name] = {
@@ -222,7 +247,7 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None) 
         if passes:
             passed_count += 1
 
-    # A stock passes if it passes ALL evaluated filters (where data exists)
+    # A stock passes if it passes ALL evaluated filters
     # Must have at least 3 evaluated filters to be meaningful
     passes_screen = evaluated_count >= 3 and passed_count == evaluated_count
 

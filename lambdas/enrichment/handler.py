@@ -152,10 +152,12 @@ def enrich_stock(stock: dict, price: float, metrics: dict, target: dict) -> dict
     stock["dividend_yield"] = (metrics.get("dividendYieldIndicatedAnnual") or 0) / 100.0
 
     # Growth metrics (Finnhub returns as percentage, convert to decimal)
-    eps_growth = metrics.get("epsGrowthTTMAnnual") or metrics.get("epsGrowth3Y")
+    eps_growth = metrics.get("epsGrowthTTMAnnual") or metrics.get("epsGrowthTTMYoy") or metrics.get("epsGrowth3Y")
     rev_growth = metrics.get("revenueGrowthTTMYoy")
+    lt_growth = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
     stock["eps_growth_yoy"] = eps_growth / 100.0 if eps_growth else None
     stock["revenue_growth_yoy"] = rev_growth / 100.0 if rev_growth else None
+    stock["est_lt_growth"] = lt_growth / 100.0 if lt_growth else None
 
     # PEG calculation: P/E ÷ EPS growth rate
     pe = stock.get("pe_ratio")
