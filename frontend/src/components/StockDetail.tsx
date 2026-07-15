@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getStockDetail, getStockHistory } from '../api';
-import type { Stock, ScoreHistoryPoint } from '../api';
+import { getStockDetail, getStockHistory } from '../api.ts';
+import type { Stock, ScoreHistoryPoint } from '../api.ts';
 
 /**
  * StockDetail Component

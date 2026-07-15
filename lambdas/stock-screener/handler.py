@@ -163,7 +163,7 @@ def calculate_fundamental_score(stock: dict, filters: dict) -> float:
     return round((sum(scores) / len(scores)) * 100, 1)
 
 
-def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None) -> dict:
+def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, is_prescreen: bool = False) -> dict:
     """
     Screen a single stock against all filters.
 
@@ -198,7 +198,7 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None) 
             # - Pre-screen (Step 2): skip filters that need enrichment data (price-based)
             # - Full screen (Step 4): FAIL on any missing data (stock must prove it qualifies)
             # Sentiment is always skippable (calculated later in pipeline)
-            is_prescreen = stock.get("price") is None
+            is_prescreen = is_prescreen  # Use the explicit flag, not data inference
             price_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
                                        "eps_growth_yoy", "revenue_growth_yoy", "est_lt_growth",
                                        "institutional_transactions", "target_price_upside"}
@@ -282,6 +282,7 @@ def handler(event, context):
     """
     stocks = event.get("stocks") or event.get("enriched_stocks") or []
     custom_thresholds = event.get("thresholds")  # Optional: for slider exploration
+    is_prescreen_mode = event.get("prescreen", False)  # Explicit flag from Step Functions
 
     if not stocks:
         # Try reading from S3 (pipeline passes s3_key between steps)
@@ -289,6 +290,7 @@ def handler(event, context):
         pipeline_data = read_pipeline_input(event)
         stocks = pipeline_data.get("stocks") or pipeline_data.get("enriched_stocks") or []
         custom_thresholds = pipeline_data.get("thresholds") or custom_thresholds
+        is_prescreen_mode = pipeline_data.get("prescreen", False)
 
     if not stocks:
         return {
@@ -307,7 +309,7 @@ def handler(event, context):
         print(f"Using custom thresholds for {len(custom_thresholds)} filters")
 
     # Screen each stock
-    screened = [screen_stock(stock, filters, custom_thresholds) for stock in stocks]
+    screened = [screen_stock(stock, filters, custom_thresholds, is_prescreen_mode) for stock in stocks]
 
     # Categorize results
     passing = [s for s in screened if s["passes_screen"]]

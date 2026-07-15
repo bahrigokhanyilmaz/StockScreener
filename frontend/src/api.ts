@@ -5,7 +5,7 @@
  * they use these functions. This gives us one place to change if the API evolves.
  */
 
-import { API_BASE_URL } from './config';
+import { API_BASE_URL } from './config.ts';
 
 export interface Stock {
   symbol: string;

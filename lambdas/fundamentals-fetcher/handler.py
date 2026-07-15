@@ -130,6 +130,7 @@ def handler(event, context):
 
     response = {
         "stocks": results_dicts,
+        "prescreen": True,  # Tells the screener this is Step 2 (skip price-dependent filters)
         "metadata": {
             "provider": provider.name,
             "universe_size": len(universe),

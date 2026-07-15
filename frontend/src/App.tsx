@@ -1,24 +1,28 @@
-import { useState, useEffect } from 'react';
-import { getStocks, getPipelineStatus } from './api';
-import type { Stock, PipelineStatus } from './api';
-import StockTable from './components/StockTable';
-import StockDetail from './components/StockDetail';
+import { useState, useEffect, useMemo } from 'react';
+import { getStocks, getPipelineStatus } from './api.ts';
+import type { Stock, PipelineStatus } from './api.ts';
+import StockTable from './components/StockTable.tsx';
+import StockDetail from './components/StockDetail.tsx';
+import FilterSliders, { getDefaultFilters, applyFilters } from './components/FilterSliders.tsx';
+import type { FilterValues } from './components/FilterSliders.tsx';
 import './App.css';
 
 /**
  * Main App Component
- * 
+ *
  * Displays:
  * 1. Pipeline status header (active/grace counts)
- * 2. Stock table (all tracked stocks with key metrics)
- * 3. Stock detail panel (when a stock is selected)
+ * 2. Filter slider panel (adjust thresholds, instantly re-filters table)
+ * 3. Stock table (filtered stocks with key metrics)
+ * 4. Stock detail panel (when a stock is selected)
  */
 function App() {
-  const [stocks, setStocks] = useState<Stock[]>([]);
+  const [allStocks, setAllStocks] = useState<Stock[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<FilterValues>(getDefaultFilters());
 
   // Fetch data on mount
   useEffect(() => {
@@ -29,7 +33,7 @@ function App() {
           getStocks(),
           getPipelineStatus(),
         ]);
-        setStocks(stocksData.stocks);
+        setAllStocks(stocksData.stocks);
         setPipelineStatus(statusData);
         setError(null);
       } catch (err) {
@@ -40,6 +44,11 @@ function App() {
     }
     loadData();
   }, []);
+
+  // Apply filters client-side (instant, no API call)
+  const filteredStocks = useMemo(() => {
+    return applyFilters(allStocks as Record<string, unknown>[], filters) as unknown as Stock[];
+  }, [allStocks, filters]);
 
   return (
     <div className="app">
@@ -66,9 +75,19 @@ function App() {
 
         {!loading && !error && (
           <div className="content-layout">
+            <div className="sidebar">
+              <FilterSliders
+                filters={filters}
+                onChange={setFilters}
+                onReset={() => setFilters(getDefaultFilters())}
+                matchCount={filteredStocks.length}
+                totalCount={allStocks.length}
+              />
+            </div>
+
             <div className="table-section">
               <StockTable
-                stocks={stocks}
+                stocks={filteredStocks}
                 selectedTicker={selectedTicker}
                 onSelectStock={setSelectedTicker}
               />

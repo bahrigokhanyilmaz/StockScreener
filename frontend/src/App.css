@@ -55,14 +55,26 @@ body {
 /* Layout */
 .content-layout {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 280px 1fr;
   gap: 1.5rem;
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1200px) {
   .content-layout {
-    grid-template-columns: 1fr 400px;
+    grid-template-columns: 280px 1fr 380px;
   }
+}
+
+@media (max-width: 768px) {
+  .content-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sidebar {
+  position: sticky;
+  top: 1rem;
+  align-self: start;
 }
 
 /* Loading & Error */
@@ -335,4 +347,108 @@ body {
   padding: 2rem;
   text-align: center;
   color: #64748b;
+}
+
+/* Filter Panel */
+.filter-panel {
+  background: #1e293b;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  border: 1px solid #334155;
+}
+
+.filter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.filter-title-row h3 {
+  font-size: 1rem;
+  color: #f8fafc;
+  margin-bottom: 0.25rem;
+}
+
+.match-count {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-reset, .btn-collapse {
+  background: #334155;
+  border: none;
+  color: #94a3b8;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.btn-reset:hover, .btn-collapse:hover {
+  background: #475569;
+  color: #f8fafc;
+}
+
+.filter-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.slider-row {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #334155;
+}
+
+.slider-row.modified {
+  border-left: 2px solid #3b82f6;
+  padding-left: 0.5rem;
+}
+
+.slider-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.3rem;
+}
+
+.slider-label-row label {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
+.slider-value {
+  font-size: 0.72rem;
+  color: #e2e8f0;
+  font-weight: 500;
+  font-family: monospace;
+}
+
+.slider-input {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  background: #334155;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.slider-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+}
+
+.slider-input::-webkit-slider-thumb:hover {
+  background: #60a5fa;
 }

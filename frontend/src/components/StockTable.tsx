@@ -1,4 +1,4 @@
-import type { Stock } from '../api';
+import type { Stock } from '../api.ts';
 
 /**
  * StockTable Component
