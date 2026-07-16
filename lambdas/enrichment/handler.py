@@ -130,6 +130,37 @@ def fetch_finnhub_price_target(symbol: str, finnhub_key: str) -> dict:
     return {}
 
 
+def fetch_finnhub_institutional(symbol: str, finnhub_key: str) -> float:
+    """
+    Fetch institutional ownership and calculate net share change.
+
+    Calls /stock/institutional-ownership, sums the 'change' field across
+    all reporting institutions. Returns the net change as a decimal
+    (positive = net buying, negative = net selling).
+
+    Maps to Finviz's sh_insttrans_pos filter.
+    """
+    url = f"{FINNHUB_BASE_URL}/stock/institutional-ownership"
+    try:
+        response = http_requests.get(
+            url, params={"symbol": symbol, "token": finnhub_key}, timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            holders = data.get("data", [])
+            if holders:
+                # Sum net share changes across all institutions
+                net_change = sum(h.get("change", 0) for h in holders)
+                # Normalize: return as a fraction of total shares held
+                total_shares = sum(abs(h.get("share", 0)) for h in holders)
+                if total_shares > 0:
+                    return net_change / total_shares  # Decimal: 0.05 = 5% net buying
+                return 0.01 if net_change > 0 else -0.01 if net_change < 0 else 0.0
+    except Exception:
+        pass
+    return None
+
+
 def enrich_stock(stock: dict, price: float, metrics: dict, target: dict) -> dict:
     """
     Apply all enrichment data to a stock dict.
@@ -228,7 +259,7 @@ def handler(event, context):
             enriched.append(stock)
             continue
 
-        # Fetch Finnhub metrics
+        # Fetch Finnhub metrics (2 calls: basic metrics + price target)
         metrics = fetch_finnhub_metrics(symbol, finnhub_key)
         target = fetch_finnhub_price_target(symbol, finnhub_key)
 
@@ -236,16 +267,25 @@ def handler(event, context):
             stock = enrich_stock(stock, price, metrics, target)
             metrics_fetched += 1
 
+            # Only fetch institutional ownership for stocks likely to pass
+            # (have P/E < 50, positive margins, etc.) — saves API calls
+            if (stock.get("pe_ratio") and stock["pe_ratio"] < 50 and
+                stock.get("operating_margin") and stock["operating_margin"] > 0 and
+                stock.get("peg_ratio") and stock["peg_ratio"] < 1):
+                inst_data = fetch_finnhub_institutional(symbol, finnhub_key)
+                stock["institutional_transactions"] = inst_data
+                time.sleep(1)  # Extra call — add 1s pacing
+
         enriched.append(stock)
 
         # Progress logging
         if (i + 1) % 50 == 0:
             print(f"  [{i+1}/{len(passing)}] enriched {metrics_fetched} so far")
 
-        # Pacing: 60 calls/min = 1/sec. We make 2 calls per stock (metric + target)
-        # So pace at 2 seconds per stock to stay safe
+        # Pacing: Finnhub allows 60 calls/min. We make 2-3 calls per stock.
+        # 3 seconds between stocks = safe margin under 60/min limit.
         if i < len(passing) - 1:
-            time.sleep(2)
+            time.sleep(3)
 
     # Output
     end_time = datetime.now(timezone.utc)
