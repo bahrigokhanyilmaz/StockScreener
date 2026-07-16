@@ -119,6 +119,8 @@
       "max": 50,
       "step": 1,
       "data_format": "percent_as_decimal",
+      "deferred": true,
+      "deferred_reason": "13F filings are quarterly and complex to parse. Finnhub endpoint requires testing with fresh quota. Re-enable when verified working.",
       "description": "Net institutional buying (%). Positive = smart money is buying."
     },
     "target_price_upside": {
