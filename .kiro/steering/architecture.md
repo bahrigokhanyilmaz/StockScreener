@@ -263,12 +263,14 @@ stock-screener/
 
 | Phase | Status | What's Done |
 |-------|--------|-------------|
-| 1. Fundamentals pipeline | COMPLETE | EDGAR bulk + Alpha Vantage enrichment |
+| 1. Fundamentals pipeline | COMPLETE | EDGAR bulk + Polygon prices + Finnhub metrics |
 | 2. News + Sentiment | COMPLETE | TickerTick + Bedrock/Claude |
 | 3. Scoring + Alerts + Tracking | COMPLETE | Investability score + DynamoDB + SNS |
-| 4. API Gateway | COMPLETE | REST endpoints, all verified |
-| 5. React dashboard | NEXT | Sliders, tables, charts |
-| 6. Retroactive analysis | FUTURE | Athena + historical trends |
+| 4. API Gateway | COMPLETE | REST endpoints + live news |
+| 5. React dashboard | IN PROGRESS | Table with all metrics + sliders + detail panel + news |
+| 6. Amplify deployment | NEXT | Permanent public URL |
+| 7. Company descriptions | NEXT | Finnhub /stock/profile2 |
+| 8. Retroactive analysis | FUTURE | Athena + historical trends |
 
 ### Conventions
 
