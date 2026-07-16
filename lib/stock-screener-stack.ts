@@ -217,6 +217,7 @@ export class StockScreenerStack extends cdk.Stack {
       memorySize: 128,
       environment: {
         DATA_TABLE_NAME: dataTable.tableName,
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
       description: 'REST API for the stock screener dashboard',
     });
@@ -244,6 +245,9 @@ export class StockScreenerStack extends cdk.Stack {
 
     const historyResource = singleStockResource.addResource('history');
     historyResource.addMethod('GET', lambdaIntegration);
+
+    const newsResource = singleStockResource.addResource('news');
+    newsResource.addMethod('GET', lambdaIntegration);
 
     const trackResource = singleStockResource.addResource('track');
     trackResource.addMethod('POST', lambdaIntegration);
@@ -297,8 +301,9 @@ export class StockScreenerStack extends cdk.Stack {
     // Step 8: SNS
     alertTopic.grantPublish(alertChecker);
 
-    // API: DynamoDB read/write
+    // API: DynamoDB read/write + S3 read (for news articles)
     dataTable.grantReadWriteData(apiHandler);
+    rawDataBucket.grantRead(apiHandler);
 
     // ==========================================
     // STEP FUNCTIONS — 8-Step Pipeline

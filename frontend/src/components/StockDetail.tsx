@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react';
-import { getStockDetail, getStockHistory } from '../api.ts';
-import type { Stock, ScoreHistoryPoint } from '../api.ts';
+import { getStockDetail, getStockHistory, getStockNews } from '../api.ts';
+import type { Stock, ScoreHistoryPoint, NewsArticle } from '../api.ts';
 
 /**
- * StockDetail Component
- * 
- * Shows full detail for a selected stock:
- * - Company info (name, sector, price)
- * - Score breakdown (fundamental, sentiment, investability)
- * - Key financial metrics
- * - Score history over time (simple chart)
+ * StockDetail Component (Simplified)
+ *
+ * Shows when a stock row is clicked:
+ * - Company description (real business summary)
+ * - Three score cards (investability, fundamental, sentiment)
+ * - Recent news articles (expandable, fetched live)
  * - Risk flags if any
+ *
+ * Metrics are shown in the main table, not here.
  */
 
 interface Props {
@@ -21,18 +22,23 @@ interface Props {
 export default function StockDetail({ ticker, onClose }: Props) {
   const [stock, setStock] = useState<Stock | null>(null);
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([]);
+  const [news, setNews] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
+  const [newsExpanded, setNewsExpanded] = useState(true);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
+      setNewsExpanded(true);
       try {
-        const [detailData, historyData] = await Promise.all([
+        const [detailData, historyData, newsData] = await Promise.all([
           getStockDetail(ticker),
           getStockHistory(ticker),
+          getStockNews(ticker),
         ]);
         setStock(detailData.stock);
         setHistory(historyData.history);
+        setNews(newsData.articles || []);
       } catch (err) {
         console.error('Failed to load stock detail:', err);
       } finally {
@@ -47,58 +53,35 @@ export default function StockDetail({ ticker, onClose }: Props) {
 
   return (
     <div className="stock-detail">
+      {/* Header */}
       <div className="detail-header">
         <div>
           <h2>{stock.symbol}</h2>
           <p className="company-name">{stock.company_name}</p>
-          <p className="sector-info">{stock.sector} / {stock.industry}</p>
+          <p className="sector-info">{stock.sector}{stock.industry ? ` / ${stock.industry}` : ''}</p>
         </div>
         <button className="close-btn" onClick={onClose}>Close</button>
       </div>
 
+      {/* Score Cards */}
       <div className="score-section">
-        <ScoreCard
-          label="Investability"
-          value={stock.investability_score}
-          max={100}
-          color={scoreColor(stock.investability_score)}
-        />
-        <ScoreCard
-          label="Fundamental"
-          value={stock.fundamental_score}
-          max={100}
-          color="#3b82f6"
-        />
-        <ScoreCard
-          label="Sentiment"
-          value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null}
-          max={100}
-          min={-100}
-          color={sentimentColor(stock.sentiment_score)}
-        />
+        <ScoreCard label="Investability" value={stock.investability_score} max={100} color={scoreColor(stock.investability_score)} />
+        <ScoreCard label="Fundamental" value={stock.fundamental_score} max={100} color="#3b82f6" />
+        <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)} />
       </div>
 
-      <div className="metrics-grid">
-        <MetricItem label="Price" value={stock.price ? `$${stock.price.toFixed(2)}` : '—'} />
-        <MetricItem label="P/E" value={stock.pe_ratio?.toFixed(1) ?? '—'} />
-        <MetricItem label="PEG" value={stock.peg_ratio?.toFixed(2) ?? '—'} />
-        <MetricItem label="Debt/Equity" value={stock.debt_to_equity?.toFixed(2) ?? '—'} />
-        <MetricItem label="Quick Ratio" value={stock.quick_ratio?.toFixed(2) ?? '—'} />
-        <MetricItem label="Op Margin" value={stock.operating_margin ? `${(stock.operating_margin * 100).toFixed(1)}%` : '—'} />
-        <MetricItem label="Target Upside" value={stock.target_price_upside ? `${(stock.target_price_upside * 100).toFixed(1)}%` : '—'} />
-        <MetricItem label="Status" value={stock.tracking_status} />
-      </div>
-
+      {/* Risk Flags */}
       {stock.risk_flags && stock.risk_flags.length > 0 && (
         <div className="risk-flags">
           <h4>Risk Flags</h4>
-          {stock.risk_flags.map((flag, i) => (
+          {stock.risk_flags.map((flag: string, i: number) => (
             <span key={i} className="risk-flag-badge">{flag}</span>
           ))}
         </div>
       )}
 
-      {history.length > 0 && (
+      {/* Score History */}
+      {history.length > 1 && (
         <div className="history-section">
           <h4>Score History ({history.length} days)</h4>
           <div className="history-chart">
@@ -118,6 +101,34 @@ export default function StockDetail({ ticker, onClose }: Props) {
         </div>
       )}
 
+      {/* Recent News */}
+      <div className="news-section">
+        <div className="news-header" onClick={() => setNewsExpanded(!newsExpanded)}>
+          <h4>Recent News {news.length > 0 ? `(${news.length})` : ''}</h4>
+          <span className="expand-icon">{newsExpanded ? '▼' : '▶'}</span>
+        </div>
+        {newsExpanded && (
+          <div className="news-list">
+            {news.length === 0 ? (
+              <p className="news-empty">Loading news...</p>
+            ) : (
+              news.map((article, i) => (
+                <a key={i} href={article.url} target="_blank" rel="noopener noreferrer" className="news-item">
+                  <span className="news-title">{article.title}</span>
+                  <span className="news-meta">
+                    {article.source}
+                    {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
+                  </span>
+                  {article.description && (
+                    <span className="news-desc">{article.description.slice(0, 120)}...</span>
+                  )}
+                </a>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="detail-footer">
         <small>Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString() : '—'}</small>
       </div>
@@ -130,7 +141,6 @@ function ScoreCard({ label, value, max, min = 0, color }: {
 }) {
   const display = value !== null ? value.toFixed(0) : '—';
   const percentage = value !== null ? ((value - min) / (max - min)) * 100 : 0;
-
   return (
     <div className="score-card">
       <div className="score-value" style={{ color }}>{display}</div>
@@ -138,15 +148,6 @@ function ScoreCard({ label, value, max, min = 0, color }: {
         <div className="score-bar-fill" style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, backgroundColor: color }} />
       </div>
       <div className="score-label">{label}</div>
-    </div>
-  );
-}
-
-function MetricItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric-item">
-      <span className="metric-label">{label}</span>
-      <span className="metric-value">{value}</span>
     </div>
   );
 }
@@ -163,4 +164,15 @@ function sentimentColor(score: number | null): string {
   if (score > 0.1) return '#22c55e';
   if (score < -0.1) return '#ef4444';
   return '#f59e0b';
+}
+
+function formatTimeAgo(timestamp: number): string {
+  const now = Date.now();
+  const ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
+  const diff = now - ms;
+  const hours = Math.floor(diff / 3600000);
+  if (hours < 1) return 'just now';
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }

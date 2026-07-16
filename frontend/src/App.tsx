@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getStocks, getPipelineStatus } from './api.ts';
+import { getStocks, getPipelineStatus, untrackStock } from './api.ts';
 import type { Stock, PipelineStatus } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
@@ -45,10 +45,18 @@ function App() {
     loadData();
   }, []);
 
-  // Apply filters client-side (instant, no API call)
+  // Apply filters client-side (instant, no API call), sort by score
   const filteredStocks = useMemo(() => {
-    return applyFilters(allStocks as Record<string, unknown>[], filters) as unknown as Stock[];
+    const filtered = applyFilters(allStocks as Record<string, unknown>[], filters) as unknown as Stock[];
+    return filtered.sort((a, b) => (b.investability_score ?? 0) - (a.investability_score ?? 0));
   }, [allStocks, filters]);
+
+  // Default to first stock when data loads or filters change
+  useEffect(() => {
+    if (filteredStocks.length > 0 && !selectedTicker) {
+      setSelectedTicker(filteredStocks[0].symbol);
+    }
+  }, [filteredStocks, selectedTicker]);
 
   return (
     <div className="app">
@@ -90,6 +98,10 @@ function App() {
                 stocks={filteredStocks}
                 selectedTicker={selectedTicker}
                 onSelectStock={setSelectedTicker}
+                onRelease={async (ticker) => {
+                  await untrackStock(ticker);
+                  setAllStocks(allStocks.filter(s => s.symbol !== ticker));
+                }}
               />
             </div>
 

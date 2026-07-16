@@ -20,11 +20,17 @@ export interface Stock {
   sentiment_confidence: number | null;
   tracking_status: string;
   pe_ratio: number | null;
+  forward_pe: number | null;
   peg_ratio: number | null;
+  price_to_fcf: number | null;
   debt_to_equity: number | null;
   quick_ratio: number | null;
   operating_margin: number | null;
+  eps_growth_yoy: number | null;
+  revenue_growth_yoy: number | null;
+  est_lt_growth: number | null;
   target_price_upside: number | null;
+  analyst_target_price: number | null;
   risk_flags: string[];
   last_updated: string;
 }
@@ -63,6 +69,18 @@ export async function getStockDetail(ticker: string): Promise<{ stock: Stock }> 
 
 export async function getStockHistory(ticker: string): Promise<{ history: ScoreHistoryPoint[]; data_points: number }> {
   return fetchJson(`/stocks/${ticker}/history`);
+}
+
+export interface NewsArticle {
+  title: string;
+  description: string;
+  url: string;
+  source: string;
+  published_at: number;
+}
+
+export async function getStockNews(ticker: string): Promise<{ articles: NewsArticle[]; count: number }> {
+  return fetchJson(`/stocks/${ticker}/news`);
 }
 
 export async function trackStock(ticker: string): Promise<{ message: string }> {

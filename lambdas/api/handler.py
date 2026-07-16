@@ -172,6 +172,50 @@ def get_stock_history(ticker: str):
     })
 
 
+def get_stock_news(ticker: str):
+    """
+    GET /stocks/{ticker}/news — Recent news articles for a stock.
+
+    Fetches live from TickerTick API (free, no key needed).
+    Falls back to S3 pipeline cache if TickerTick is unavailable.
+    """
+    import requests as http_requests
+
+    # Fetch live from TickerTick
+    try:
+        url = "https://api.tickertick.com/feed"
+        params = {"q": f"tt:{ticker.lower()}", "lang": "en", "n": 15}
+        resp = http_requests.get(url, params=params, timeout=10)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            stories = data.get("stories", [])
+            articles = [{
+                "title": s.get("title", ""),
+                "description": s.get("description", ""),
+                "url": s.get("url", ""),
+                "source": s.get("site", ""),
+                "published_at": s.get("time", 0),
+            } for s in stories]
+
+            return response(200, {
+                "ticker": ticker.upper(),
+                "articles": articles,
+                "count": len(articles),
+                "source": "tickertick_live",
+            })
+    except Exception:
+        pass
+
+    # Fallback: no news available
+    return response(200, {
+        "ticker": ticker.upper(),
+        "articles": [],
+        "count": 0,
+        "source": "none",
+    })
+
+
 def track_stock(ticker: str):
     """
     POST /stocks/{ticker}/track — Manually track a stock.
@@ -290,6 +334,11 @@ def handler(event, context):
         elif "/history" in path and method == "GET":
             ticker = path_params.get("ticker") or path.split("/")[2]
             return get_stock_history(ticker)
+
+        # Route: GET /stocks/{ticker}/news
+        elif "/news" in path and method == "GET":
+            ticker = path_params.get("ticker") or path.split("/")[2]
+            return get_stock_news(ticker)
 
         # Route: POST /stocks/{ticker}/track
         elif "/track" in path and method == "POST":

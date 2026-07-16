@@ -12,18 +12,20 @@ import { useState } from 'react';
  */
 
 // Filter definitions matching shared/config/screener-filters.json
+// Slider ranges capped at pipeline defaults — you can only tighten, not loosen
+// (loosening would show no additional stocks since the pipeline already filtered them)
 const FILTER_CONFIG = [
-  { key: 'pe_ratio', label: 'P/E Ratio', type: 'max', default: 50, min: 5, max: 100, step: 1, format: 'ratio' },
-  { key: 'forward_pe', label: 'Forward P/E', type: 'max', default: 20, min: 5, max: 50, step: 1, format: 'ratio' },
-  { key: 'peg_ratio', label: 'PEG Ratio', type: 'max', default: 1.0, min: 0.1, max: 3.0, step: 0.1, format: 'ratio' },
-  { key: 'price_to_fcf', label: 'Price / FCF', type: 'max', default: 20, min: 5, max: 50, step: 1, format: 'ratio' },
-  { key: 'debt_to_equity', label: 'Debt / Equity', type: 'max', default: 1.0, min: 0.0, max: 3.0, step: 0.1, format: 'ratio' },
-  { key: 'quick_ratio', label: 'Quick Ratio', type: 'min', default: 1.0, min: 0.5, max: 5.0, step: 0.1, format: 'ratio' },
-  { key: 'operating_margin', label: 'Operating Margin %', type: 'min', default: 0, min: -20, max: 50, step: 1, format: 'percent' },
-  { key: 'eps_growth_yoy', label: 'EPS Growth %', type: 'min', default: 0, min: -50, max: 100, step: 1, format: 'percent' },
-  { key: 'revenue_growth_yoy', label: 'Revenue Growth %', type: 'min', default: 0, min: -50, max: 100, step: 1, format: 'percent' },
-  { key: 'est_lt_growth', label: 'LT Growth %', type: 'min', default: 0, min: -10, max: 50, step: 1, format: 'percent' },
-  { key: 'target_price_upside', label: 'Target Upside %', type: 'min', default: 20, min: 0, max: 100, step: 5, format: 'percent' },
+  { key: 'pe_ratio', label: 'P/E Ratio', type: 'max', default: 50, min: 5, max: 50, step: 1, format: 'ratio' },
+  { key: 'forward_pe', label: 'Forward P/E', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
+  { key: 'peg_ratio', label: 'PEG Ratio', type: 'max', default: 1.0, min: 0.1, max: 1.0, step: 0.1, format: 'ratio' },
+  { key: 'price_to_fcf', label: 'Price / FCF', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
+  { key: 'debt_to_equity', label: 'Debt / Equity', type: 'max', default: 1.0, min: 0.0, max: 1.0, step: 0.1, format: 'ratio' },
+  { key: 'quick_ratio', label: 'Quick Ratio', type: 'min', default: 1.0, min: 1.0, max: 5.0, step: 0.1, format: 'ratio' },
+  { key: 'operating_margin', label: 'Operating Margin %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
+  { key: 'eps_growth_yoy', label: 'EPS Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
+  { key: 'revenue_growth_yoy', label: 'Revenue Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
+  { key: 'est_lt_growth', label: 'LT Growth %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
+  { key: 'target_price_upside', label: 'Target Upside %', type: 'min', default: 20, min: 20, max: 100, step: 5, format: 'percent' },
 ];
 
 export interface FilterValues {
