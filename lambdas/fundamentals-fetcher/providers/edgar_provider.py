@@ -39,12 +39,15 @@ class EdgarProvider(DataProvider):
     }
 
     # Metrics we fetch from the Frames API
-    # Format: (XBRL tag, unit, frame_suffix, is_instant)
-    # frame_suffix: "CY2024" = full year duration, "CY2024Q4I" = instant (balance sheet)
+    # Format: (XBRL tag, unit, is_instant)
+    # Duration (income statement): CY{year}
+    # Instant (balance sheet): CY{year}Q4I
     FRAME_METRICS = {
         "net_income": ("NetIncomeLoss", "USD", False),
         "revenue": ("RevenueFromContractWithCustomerExcludingAssessedTax", "USD", False),
         "operating_income": ("OperatingIncomeLoss", "USD", False),
+        "operating_cash_flow": ("NetCashProvidedByUsedInOperatingActivities", "USD", False),
+        "capex": ("PaymentsToAcquirePropertyPlantAndEquipment", "USD", False),
         "stockholders_equity": ("StockholdersEquity", "USD", True),
         "long_term_debt": ("LongTermDebt", "USD", True),
         "assets_current": ("AssetsCurrent", "USD", True),
@@ -61,7 +64,7 @@ class EdgarProvider(DataProvider):
         "SalesRevenueNet",
     ]
 
-    def __init__(self, fiscal_year: int = 2024, min_market_cap: float = 300_000_000, **kwargs):
+    def __init__(self, fiscal_year: int = 2025, min_market_cap: float = 300_000_000, **kwargs):
         """
         Initialize the EDGAR provider.
 
@@ -104,7 +107,7 @@ class EdgarProvider(DataProvider):
 
         print(f"  Loaded {len(self._ticker_to_cik)} ticker mappings")
 
-    def _fetch_frame(self, xbrl_tag: str, unit: str, is_instant: bool) -> dict[int, float]:
+    def _fetch_frame(self, xbrl_tag: str, unit: str, is_instant: bool, year: int = None) -> dict[int, float]:
         """
         Fetch a single metric for all companies via the Frames API.
 
@@ -113,17 +116,16 @@ class EdgarProvider(DataProvider):
             unit: The unit (e.g., "USD" or "shares")
             is_instant: True for balance sheet items (point-in-time),
                        False for income statement items (period/duration)
+            year: Fiscal year to fetch (defaults to self._fiscal_year)
 
         Returns:
             Dict mapping CIK → value for all companies that reported this metric
         """
-        # Build the frame identifier
-        # Duration (income statement): CY2024
-        # Instant (balance sheet): CY2024Q4I
+        fiscal_year = year or self._fiscal_year
         if is_instant:
-            frame = f"CY{self._fiscal_year}Q4I"
+            frame = f"CY{fiscal_year}Q4I"
         else:
-            frame = f"CY{self._fiscal_year}"
+            frame = f"CY{fiscal_year}"
 
         url = f"{self.EDGAR_BASE_URL}/us-gaap/{xbrl_tag}/{unit}/{frame}.json"
 
@@ -151,28 +153,45 @@ class EdgarProvider(DataProvider):
 
     def _fetch_all_frames(self) -> dict[str, dict[int, float]]:
         """
-        Fetch all metrics we need from the Frames API.
+        Fetch all metrics from the Frames API for CURRENT and PRIOR year.
+
+        Current year (CY2025): used for ratios and current financials.
+        Prior year (CY2024): used to calculate YoY growth.
 
         Returns:
             Dict mapping metric_name → {CIK: value} for each metric.
-            ~10 API calls total for the entire US market.
+            Also includes prior year keyed as "prev_net_income", "prev_revenue".
         """
-        print(f"  Fetching EDGAR frames for fiscal year {self._fiscal_year}...")
+        prior_year = self._fiscal_year - 1
+        print(f"  Fetching EDGAR frames for CY{self._fiscal_year} (current) + CY{prior_year} (prior)...")
         all_data = {}
 
+        # Current year metrics
         for metric_name, (xbrl_tag, unit, is_instant) in self.FRAME_METRICS.items():
-            frame_data = self._fetch_frame(xbrl_tag, unit, is_instant)
+            frame_data = self._fetch_frame(xbrl_tag, unit, is_instant, year=self._fiscal_year)
             all_data[metric_name] = frame_data
             count = len(frame_data)
-            print(f"    {metric_name} ({xbrl_tag}): {count} companies")
-            time.sleep(0.1)  # Respectful pacing (SEC asks for ≤10 req/sec)
+            print(f"    {metric_name}: {count} companies")
+            time.sleep(0.1)
 
-        # Try alternative revenue tags if primary didn't get many companies
+        # Prior year: only need net_income and revenue for growth calculation
+        prev_net_income = self._fetch_frame("NetIncomeLoss", "USD", False, year=prior_year)
+        all_data["prev_net_income"] = prev_net_income
+        print(f"    prev_net_income (CY{prior_year}): {len(prev_net_income)} companies")
+        time.sleep(0.1)
+
+        prev_revenue = self._fetch_frame(
+            "RevenueFromContractWithCustomerExcludingAssessedTax", "USD", False, year=prior_year
+        )
+        all_data["prev_revenue"] = prev_revenue
+        print(f"    prev_revenue (CY{prior_year}): {len(prev_revenue)} companies")
+        time.sleep(0.1)
+
+        # Try alternative revenue tags for current year
         if len(all_data.get("revenue", {})) < 2000:
-            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:  # Skip the first (already tried)
-                alt_data = self._fetch_frame(alt_tag, "USD", False)
+            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
+                alt_data = self._fetch_frame(alt_tag, "USD", False, year=self._fiscal_year)
                 if alt_data:
-                    # Merge: only add companies we don't already have
                     existing = all_data.get("revenue", {})
                     added = 0
                     for cik, val in alt_data.items():
@@ -180,7 +199,21 @@ class EdgarProvider(DataProvider):
                             existing[cik] = val
                             added += 1
                     all_data["revenue"] = existing
-                    print(f"    revenue (alt: {alt_tag}): +{added} companies (total: {len(existing)})")
+                    print(f"    revenue (alt: {alt_tag}): +{added} (total: {len(existing)})")
+                time.sleep(0.1)
+
+        # Try alternative revenue for prior year too
+        if len(all_data.get("prev_revenue", {})) < 2000:
+            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
+                alt_data = self._fetch_frame(alt_tag, "USD", False, year=prior_year)
+                if alt_data:
+                    existing = all_data.get("prev_revenue", {})
+                    added = 0
+                    for cik, val in alt_data.items():
+                        if cik not in existing:
+                            existing[cik] = val
+                            added += 1
+                    all_data["prev_revenue"] = existing
                 time.sleep(0.1)
 
         return all_data
@@ -335,6 +368,8 @@ class EdgarProvider(DataProvider):
             net_income = all_frames.get("net_income", {}).get(cik)
             revenue = all_frames.get("revenue", {}).get(cik)
             operating_income = all_frames.get("operating_income", {}).get(cik)
+            operating_cf = all_frames.get("operating_cash_flow", {}).get(cik)
+            capex = all_frames.get("capex", {}).get(cik)
             equity = all_frames.get("stockholders_equity", {}).get(cik)
             debt = all_frames.get("long_term_debt", {}).get(cik)
             assets_current = all_frames.get("assets_current", {}).get(cik)
@@ -342,11 +377,15 @@ class EdgarProvider(DataProvider):
             shares = all_frames.get("shares_outstanding", {}).get(cik)
             inventory = all_frames.get("inventory", {}).get(cik)
 
+            # Prior year data for growth calculations
+            prev_net_income = all_frames.get("prev_net_income", {}).get(cik)
+            prev_revenue = all_frames.get("prev_revenue", {}).get(cik)
+
             # Need at least net income and equity to be useful
             if net_income is None and equity is None:
                 continue
 
-            # Calculate ratios from raw data
+            # Calculate ratios
             eps = net_income / shares if net_income and shares and shares > 0 else None
             debt_to_equity = debt / equity if debt and equity and equity > 0 else None
             current_ratio = assets_current / liabilities_current if assets_current and liabilities_current and liabilities_current > 0 else None
@@ -355,49 +394,59 @@ class EdgarProvider(DataProvider):
             net_margin = net_income / revenue if net_income and revenue and revenue > 0 else None
             roe = net_income / equity if net_income and equity and equity > 0 else None
 
+            # Growth (calculated locally from prior year comparison)
+            eps_growth = None
+            if net_income and prev_net_income and shares and shares > 0 and prev_net_income != 0:
+                prev_eps = prev_net_income / shares
+                curr_eps = net_income / shares
+                if prev_eps > 0:
+                    eps_growth = (curr_eps - prev_eps) / prev_eps
+
+            revenue_growth = None
+            if revenue and prev_revenue and prev_revenue > 0:
+                revenue_growth = (revenue - prev_revenue) / prev_revenue
+
+            # Free cash flow per share (operating cash flow - capex) / shares
+            fcf_per_share = None
+            if operating_cf and shares and shares > 0:
+                fcf = operating_cf - (capex or 0)  # capex is typically positive in EDGAR
+                fcf_per_share = fcf / shares
+
             stock = StockFundamentals(
                 symbol=symbol,
                 company_name=self._cik_to_company.get(cik, ""),
                 sector="",
                 industry="",
-                market_cap=None,  # Requires price (separate source)
+                market_cap=None,
                 price=None,
                 exchange="",
-                # Valuation (requires price — filled later by price enrichment step)
-                pe_ratio=None,
-                forward_pe=None,
-                peg_ratio=None,
-                price_to_fcf=None,
+                pe_ratio=None,  # Filled by enrichment (Price / EPS)
+                forward_pe=None,  # Requires analyst estimates (Finnhub)
+                peg_ratio=None,  # Filled by enrichment (P/E / growth)
+                price_to_fcf=None,  # Filled by enrichment (Price / FCF per share)
                 price_to_book=None,
                 price_to_sales=None,
                 ev_to_ebitda=None,
-                # Balance sheet (directly calculated)
                 debt_to_equity=debt_to_equity,
                 quick_ratio=quick_ratio,
                 current_ratio=current_ratio,
-                # Profitability (directly calculated)
                 operating_margin=operating_margin,
                 net_profit_margin=net_margin,
                 gross_margin=None,
                 return_on_equity=roe,
-                # Growth (requires prior year — TODO: fetch CY2023 too)
-                eps_growth_yoy=None,
-                revenue_growth_yoy=None,
+                eps_growth_yoy=eps_growth,
+                revenue_growth_yoy=revenue_growth,
                 revenue_growth_qoq=None,
                 earnings_growth_qoq=None,
-                estimated_lt_growth=None,
-                # Analyst (not in EDGAR — supplemented by Alpha Vantage)
+                estimated_lt_growth=None,  # Requires analyst estimates (Finnhub)
                 analyst_recommendation=None,
                 analyst_target_price=None,
-                target_price_upside=None,
-                # Institutional (not in Frames — available in per-company filings)
+                target_price_upside=None,  # Requires analyst target (Finnhub)
                 institutional_ownership=None,
                 institutional_transactions=None,
-                # Per-share
                 eps=eps,
                 revenue_per_share=revenue / shares if revenue and shares and shares > 0 else None,
-                fcf_per_share=None,
-                # Dividend
+                fcf_per_share=fcf_per_share,
                 dividend_yield=None,
                 payout_ratio=None,
             )

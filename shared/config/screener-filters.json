@@ -131,6 +131,8 @@
       "max": 100,
       "step": 5,
       "data_format": "percent_as_decimal",
+      "deferred": true,
+      "deferred_reason": "Finnhub price-target endpoint requires paid tier. Re-enable when paid source available.",
       "description": "How far current price is below analyst target. Higher = more upside potential."
     },
     "sentiment_score": {

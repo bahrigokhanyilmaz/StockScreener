@@ -56,7 +56,7 @@ for event in history.get("events", []):
         elif "passing_count" in meta:
             info = f"{meta['passing_count']} pass, {meta.get('near_miss_count', 0)} near-miss, {meta.get('rejected_count', 0)} rejected"
         elif "prices_matched" in meta:
-            info = f"prices={meta['prices_matched']}, metrics={meta.get('metrics_fetched', 0)}, P/E={meta.get('pe_available', 0)}, PEG={meta.get('peg_available', 0)}"
+            info = f"prices={meta['prices_matched']}, finnhub={meta.get('finnhub_enriched', 0)}, P/E={meta.get('pe_available', 0)}, PEG={meta.get('peg_available', 0)}"
         elif "articles_fetched" in meta:
             info = f"{meta['articles_fetched']} articles for {meta['stocks_requested']} stocks"
         elif "total_articles_analyzed" in meta:

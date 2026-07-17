@@ -124,6 +124,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
         de = stock.get("debt_to_equity")
         qr = stock.get("quick_ratio")
         om = stock.get("operating_margin")
+        eps_g = stock.get("eps_growth_yoy")
+        rev_g = stock.get("revenue_growth_yoy")
 
         passes_prefilter = (
             price is not None
@@ -131,6 +133,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
             and de is not None and de < 1
             and qr is not None and qr > 1
             and om is not None and om > 0
+            and eps_g is not None and eps_g > 0
+            and rev_g is not None and rev_g > 0
         )
 
         if passes_prefilter:
@@ -175,42 +179,37 @@ def fetch_finnhub_price_target(symbol: str, key: str) -> dict:
 
 
 def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
-    """Apply Finnhub data to a stock that passed the local pre-filter."""
+    """Apply Finnhub data — ONLY fields that can't be computed from EDGAR/Polygon."""
     price = stock.get("price", 0)
 
-    # PEG: P/E ÷ EPS growth rate
+    # PEG: P/E ÷ EPS growth (EPS growth now comes from EDGAR, not Finnhub)
     pe = stock.get("pe_ratio")
-    eps_growth = metrics.get("epsGrowthTTMYoy") or metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
+    eps_growth = stock.get("eps_growth_yoy")  # Already computed from EDGAR
     if pe and eps_growth and eps_growth > 0:
-        stock["peg_ratio"] = round(pe / eps_growth, 2)
+        stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)  # growth is decimal, PEG uses %
 
-    # Forward P/E
+    # Price/FCF: Price ÷ FCF per share (FCF now comes from EDGAR)
+    fcf_ps = stock.get("fcf_per_share")
+    if price and fcf_ps and fcf_ps > 0:
+        stock["price_to_fcf"] = round(price / fcf_ps, 2)
+
+    # Forward P/E — ONLY from Finnhub (analyst estimate, can't compute from filings)
     stock["forward_pe"] = metrics.get("peNormalizedAnnual") or metrics.get("peExclExtraAnnual")
 
-    # Price/FCF from Finnhub (more accurate than EDGAR-derived)
-    stock["price_to_fcf"] = metrics.get("pfcfShareTTM")
-
-    # Growth metrics (Finnhub returns as percentage, convert to decimal)
-    eps_g = metrics.get("epsGrowthTTMYoy") or metrics.get("epsGrowth3Y")
-    rev_g = metrics.get("revenueGrowthTTMYoy")
+    # Est. LT Growth — ONLY from Finnhub (analyst consensus)
     lt_g = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
-    stock["eps_growth_yoy"] = eps_g / 100.0 if eps_g else None
-    stock["revenue_growth_yoy"] = rev_g / 100.0 if rev_g else None
     stock["est_lt_growth"] = lt_g / 100.0 if lt_g else None
 
-    # Analyst target price + upside
+    # Analyst target price + upside — ONLY from Finnhub
     target_mean = target.get("targetMean") or target.get("targetMedian")
     if target_mean and price and price > 0:
         stock["analyst_target_price"] = target_mean
         stock["target_price_upside"] = (target_mean - price) / price
 
-    # Market cap from Finnhub (more current than EDGAR)
-    stock["market_cap"] = metrics.get("marketCapitalization")
-    if stock["market_cap"]:
-        stock["market_cap"] = stock["market_cap"] * 1_000_000  # Finnhub returns in millions
-
-    # Sector/Industry
-    # (Finnhub metric endpoint doesn't include these — keep from EDGAR if available)
+    # Market cap from Finnhub (supplement)
+    mc = metrics.get("marketCapitalization")
+    if mc:
+        stock["market_cap"] = mc * 1_000_000
 
     return stock
 
