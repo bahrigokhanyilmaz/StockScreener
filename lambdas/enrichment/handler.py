@@ -178,6 +178,38 @@ def fetch_finnhub_price_target(symbol: str, key: str) -> dict:
     return {}
 
 
+def fetch_finnhub_recommendation(symbol: str, key: str) -> float:
+    """
+    Fetch analyst recommendation consensus. 1 API call.
+
+    Returns a score: 1=Strong Buy, 2=Buy, 3=Hold, 4=Sell, 5=Strong Sell.
+    Calculated from the most recent recommendation period.
+    Our filter: "Hold or better" = score <= 3.0.
+    """
+    url = f"{FINNHUB_BASE_URL}/stock/recommendation"
+    try:
+        response = http_requests.get(
+            url, params={"symbol": symbol, "token": key}, timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list) and data:
+                latest = data[0]  # Most recent period
+                strong_buy = latest.get("strongBuy", 0)
+                buy = latest.get("buy", 0)
+                hold = latest.get("hold", 0)
+                sell = latest.get("sell", 0)
+                strong_sell = latest.get("strongSell", 0)
+                total = strong_buy + buy + hold + sell + strong_sell
+                if total > 0:
+                    # Weighted average: 1×SB + 2×B + 3×H + 4×S + 5×SS / total
+                    score = (1*strong_buy + 2*buy + 3*hold + 4*sell + 5*strong_sell) / total
+                    return round(score, 2)
+    except Exception:
+        pass
+    return None
+
+
 def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
     """Apply Finnhub data — ONLY fields that can't be computed from EDGAR/Polygon."""
     price = stock.get("price", 0)
@@ -262,15 +294,20 @@ def handler(event, context):
 
         if metrics:
             enrich_with_finnhub(stock, metrics, target)
+            # Analyst recommendation (separate endpoint)
+            time.sleep(1)
+            rec_score = fetch_finnhub_recommendation(symbol, finnhub_key)
+            if rec_score is not None:
+                stock["analyst_recommendation"] = rec_score
             finnhub_enriched += 1
 
         if (i + 1) % 25 == 0:
             print(f"    [{i+1}/{len(candidates)}] enriched {finnhub_enriched}")
 
-        # Pacing: 2 calls done, wait before next stock.
-        # 2 calls + 1s internal + 2s here = ~3s per stock = 40 calls/min
+        # Pacing: Finnhub allows 60 calls/min. We make 3 calls per stock.
+        # 4 seconds between stocks = ~45 calls/min (safe margin).
         if i < len(candidates) - 1:
-            time.sleep(2)
+            time.sleep(4)
 
     # Output: return ALL stocks (enriched candidates + non-candidates with just price/P/E)
     end_time = datetime.now(timezone.utc)

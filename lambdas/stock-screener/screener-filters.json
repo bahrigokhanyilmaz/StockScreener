@@ -123,6 +123,16 @@
       "deferred_reason": "13F filings are quarterly and complex to parse. Finnhub endpoint requires testing with fresh quota. Re-enable when verified working.",
       "description": "Net institutional buying (%). Positive = smart money is buying."
     },
+    "analyst_recommendation": {
+      "label": "Analyst Recommendation",
+      "type": "max",
+      "default": 3.0,
+      "min": 1.0,
+      "max": 5.0,
+      "step": 0.5,
+      "data_format": "ratio",
+      "description": "Analyst consensus: 1=Strong Buy, 2=Buy, 3=Hold, 4=Sell, 5=Strong Sell. Lower is better."
+    },
     "target_price_upside": {
       "label": "Target Price Upside (%)",
       "type": "min",
