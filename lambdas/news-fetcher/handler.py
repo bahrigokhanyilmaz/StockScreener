@@ -128,14 +128,9 @@ def handler(event, context):
     # Read input from S3 if needed (Step Functions payload limit workaround)
     data = read_pipeline_input(event)
 
-    # Get the stocks we want news for
+    # Get passing stocks (Step Functions only passes stocks that cleared the full screen)
     passing_stocks = data.get("passing_stocks", [])
-    near_misses = data.get("near_misses", [])
-
-    # Fetch news ONLY for stocks that passed all filters.
-    # Near-misses don't get news/sentiment — they haven't earned tracking yet.
-    stocks_to_fetch = passing_stocks
-    symbols = [s.get("symbol") for s in stocks_to_fetch if s.get("symbol")]
+    symbols = [s.get("symbol") for s in passing_stocks if s.get("symbol")]
 
     if not symbols:
         print("No stocks to fetch news for")
@@ -162,7 +157,7 @@ def handler(event, context):
         articles = fetch_news_for_ticker(symbol, lookback_hours=lookback_hours)
         total_articles += len(articles)
 
-        stock_data = next((s for s in stocks_to_fetch if s.get("symbol") == symbol), {})
+        stock_data = next((s for s in passing_stocks if s.get("symbol") == symbol), {})
         stocks_with_news.append({
             **stock_data,
             "articles": articles,

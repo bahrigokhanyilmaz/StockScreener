@@ -344,4 +344,5 @@ def handler(event, context):
 
     # Write to S3 for next step (avoids Step Functions 256KB limit)
     from pipeline_io import write_pipeline_output
-    return write_pipeline_output(result, step_name="step2_screened")
+    step_name = "step2_prescreen" if is_prescreen_mode else "step4_fullscreen"
+    return write_pipeline_output(result, step_name=step_name)

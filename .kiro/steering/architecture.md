@@ -32,7 +32,7 @@ EventBridge (Mon-Fri 4PM ET)
     → Step Functions (stock-screener-pipeline, 8 steps)
         → Step 1: EDGAR Bulk Fundamentals (~10 API calls for ~5,097 companies)
         → Step 2: Pre-Screen (EDGAR-only filters: D/E, QR, OpMargin → ~233 pass)
-        → Step 3: Price Enrichment (Twelve Data for ALL ~233 passers)
+        → Step 3: Price Enrichment (Polygon bulk prices + Finnhub analyst data for ~50-80 candidates)
         → Step 4: Full Screen (all filters incl. P/E, Price/FCF)
         → Step 5: News Fetch (TickerTick — articles per final passer)
         → Step 6: Sentiment Analysis (Bedrock Claude Haiku 4.5)
@@ -99,7 +99,7 @@ API Gateway (REST)
 | Orchestration | Step Functions + EventBridge | Daily Mon-Fri 4PM ET |
 | Storage | S3 (raw data lake) + DynamoDB (live data) | Single-table design |
 | Fundamentals | SEC EDGAR Frames API | Free, unlimited, ~10 requests for all US stocks |
-| Price/Valuation | Twelve Data | Free, 800 req/day, 8 req/min |
+| Price/Valuation | Polygon.io Grouped Daily | Free, 1 call = all US stock prices |
 | News | TickerTick API | Free, no key, 10 req/min |
 | Sentiment | Amazon Bedrock (Claude Haiku 4.5) | ~$3.60/month |
 | Alerts | Amazon SNS | Email to bahrigokhanyilmaz@gmail.com |

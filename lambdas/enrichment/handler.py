@@ -232,7 +232,8 @@ def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
     lt_g = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
     stock["est_lt_growth"] = lt_g / 100.0 if lt_g else None
 
-    # Analyst target price + upside — ONLY from Finnhub
+    # Analyst target price + upside — DEFERRED (endpoint returns empty on free tier)
+    # Keeping the code path for when we find a working source
     target_mean = target.get("targetMean") or target.get("targetMedian")
     if target_mean and price and price > 0:
         stock["analyst_target_price"] = target_mean
@@ -289,11 +290,10 @@ def handler(event, context):
         symbol = stock.get("symbol", "")
 
         metrics = fetch_finnhub_metrics(symbol, finnhub_key)
-        time.sleep(1)  # 1s between the 2 calls for same stock
-        target = fetch_finnhub_price_target(symbol, finnhub_key)
+        time.sleep(1)
 
         if metrics:
-            enrich_with_finnhub(stock, metrics, target)
+            enrich_with_finnhub(stock, metrics, {})
             # Analyst recommendation (separate endpoint)
             time.sleep(1)
             rec_score = fetch_finnhub_recommendation(symbol, finnhub_key)
@@ -304,10 +304,10 @@ def handler(event, context):
         if (i + 1) % 25 == 0:
             print(f"    [{i+1}/{len(candidates)}] enriched {finnhub_enriched}")
 
-        # Pacing: Finnhub allows 60 calls/min. We make 3 calls per stock.
-        # 4 seconds between stocks = ~45 calls/min (safe margin).
+        # Pacing: Finnhub allows 60 calls/min. We make 2 calls per stock (metrics + recommendation).
+        # 3 seconds between stocks = safe margin under 60/min.
         if i < len(candidates) - 1:
-            time.sleep(4)
+            time.sleep(3)
 
     # Output: return ALL stocks (enriched candidates + non-candidates with just price/P/E)
     end_time = datetime.now(timezone.utc)

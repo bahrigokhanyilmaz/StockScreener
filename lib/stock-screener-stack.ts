@@ -116,7 +116,7 @@ export class StockScreenerStack extends cdk.Stack {
       description: 'Steps 2 & 4: Value filter (called twice — pre-screen + full screen)',
     });
 
-    // Step 3: Price Enrichment (Polygon bulk prices + Finnhub metrics)
+    // Step 3: Price Enrichment (Polygon bulk prices + Finnhub analyst metrics)
     const priceEnrichment = new PythonFunction(this, 'PriceEnrichment', {
       functionName: 'stock-screener-price-enrichment',
       entry: path.join(__dirname, '../lambdas/enrichment'),
@@ -124,14 +124,14 @@ export class StockScreenerStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(15), // 233 stocks × 2s pacing = ~8 min
+      timeout: cdk.Duration.minutes(15),
       memorySize: 256,
       environment: {
         POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
         FINNHUB_API_KEY_PARAM: '/stock-screener/finnhub-api-key',
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
-      description: 'Step 3: Polygon bulk prices + Finnhub full metrics (all filters evaluable)',
+      description: 'Step 3: Polygon bulk prices + Finnhub analyst data for candidates',
     });
 
     // Step 5: News Fetcher (TickerTick)
