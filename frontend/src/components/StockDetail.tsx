@@ -1,17 +1,23 @@
 import { useState, useEffect } from 'react';
 import { getStockDetail, getStockHistory, getStockNews } from '../api.ts';
 import type { Stock, ScoreHistoryPoint, NewsArticle } from '../api.ts';
+import MetricsGuide from './MetricsGuide.tsx';
 
 /**
- * StockDetail Component (Simplified)
+ * StockDetail Component
  *
- * Shows when a stock row is clicked:
- * - Company description (real business summary)
- * - Three score cards (investability, fundamental, sentiment)
- * - Recent news articles (expandable, fetched live)
- * - Risk flags if any
+ * Two-tab detail panel when a stock row is clicked:
  *
- * Metrics are shown in the main table, not here.
+ * Tab 1 — Overview:
+ *   - Company description (real business summary)
+ *   - Three score cards (investability, fundamental, sentiment)
+ *   - Recent news articles (expandable, fetched live)
+ *   - Risk flags if any
+ *
+ * Tab 2 — Metrics Guide:
+ *   - Industry average comparison for this stock
+ *   - Definitions of all monitored metrics
+ *   - Interpretation of movement in either direction
  */
 
 interface Props {
@@ -25,11 +31,13 @@ export default function StockDetail({ ticker, onClose }: Props) {
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [loading, setLoading] = useState(true);
   const [newsExpanded, setNewsExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview' | 'metrics'>('overview');
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       setNewsExpanded(true);
+      setActiveTab('overview');
       try {
         const [detailData, historyData, newsData] = await Promise.all([
           getStockDetail(ticker),
@@ -71,79 +79,104 @@ export default function StockDetail({ ticker, onClose }: Props) {
         <button className="close-btn" onClick={onClose}>Close</button>
       </div>
 
-      {/* Company Description / Business Model */}
-      {stock.company_description && (
-        <div className="company-profile">
-          <h4>Business Model</h4>
-          <p className="company-description">{stock.company_description}</p>
-        </div>
-      )}
-
-      {/* Score Cards */}
-      <div className="score-section">
-        <ScoreCard label="Investability" value={stock.investability_score} max={100} color={scoreColor(stock.investability_score)} />
-        <ScoreCard label="Fundamental" value={stock.fundamental_score} max={100} color="#3b82f6" />
-        <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)} />
+      {/* Tabs */}
+      <div className="detail-tabs">
+        <button
+          className={`detail-tab ${activeTab === 'overview' ? 'active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          Overview
+        </button>
+        <button
+          className={`detail-tab ${activeTab === 'metrics' ? 'active' : ''}`}
+          onClick={() => setActiveTab('metrics')}
+        >
+          Metrics Guide
+        </button>
       </div>
 
-      {/* Risk Flags */}
-      {stock.risk_flags && stock.risk_flags.length > 0 && (
-        <div className="risk-flags">
-          <h4>Risk Flags</h4>
-          {stock.risk_flags.map((flag: string, i: number) => (
-            <span key={i} className="risk-flag-badge">{flag}</span>
-          ))}
-        </div>
-      )}
+      {/* Tab Content */}
+      {activeTab === 'overview' ? (
+        <div className="tab-content">
+          {/* Company Description / Business Model */}
+          {stock.company_description && (
+            <div className="company-profile">
+              <h4>Business Model</h4>
+              <p className="company-description">{stock.company_description}</p>
+            </div>
+          )}
 
-      {/* Score History */}
-      {history.length > 1 && (
-        <div className="history-section">
-          <h4>Score History ({history.length} days)</h4>
-          <div className="history-chart">
-            {history.map((point, i) => (
-              <div key={i} className="history-bar-wrapper" title={`${point.date}: ${point.investability_score}`}>
-                <div
-                  className="history-bar"
-                  style={{
-                    height: `${Math.max(5, (point.investability_score ?? 0))}%`,
-                    backgroundColor: scoreColor(point.investability_score),
-                  }}
-                />
-                <span className="history-date">{point.date?.slice(5)}</span>
-              </div>
-            ))}
+          {/* Score Cards */}
+          <div className="score-section">
+            <ScoreCard label="Investability" value={stock.investability_score} max={100} color={scoreColor(stock.investability_score)} />
+            <ScoreCard label="Fundamental" value={stock.fundamental_score} max={100} color="#3b82f6" />
+            <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)} />
           </div>
-        </div>
-      )}
 
-      {/* Recent News */}
-      <div className="news-section">
-        <div className="news-header" onClick={() => setNewsExpanded(!newsExpanded)}>
-          <h4>Recent News {news.length > 0 ? `(${news.length})` : ''}</h4>
-          <span className="expand-icon">{newsExpanded ? '▼' : '▶'}</span>
-        </div>
-        {newsExpanded && (
-          <div className="news-list">
-            {news.length === 0 ? (
-              <p className="news-empty">Loading news...</p>
-            ) : (
-              news.map((article, i) => (
-                <a key={i} href={article.url} target="_blank" rel="noopener noreferrer" className="news-item">
-                  <span className="news-title">{article.title}</span>
-                  <span className="news-meta">
-                    {article.source}
-                    {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
-                  </span>
-                  {article.description && (
-                    <span className="news-desc">{article.description.slice(0, 120)}...</span>
-                  )}
-                </a>
-              ))
+          {/* Risk Flags */}
+          {stock.risk_flags && stock.risk_flags.length > 0 && (
+            <div className="risk-flags">
+              <h4>Risk Flags</h4>
+              {stock.risk_flags.map((flag: string, i: number) => (
+                <span key={i} className="risk-flag-badge">{flag}</span>
+              ))}
+            </div>
+          )}
+
+          {/* Score History */}
+          {history.length > 1 && (
+            <div className="history-section">
+              <h4>Score History ({history.length} days)</h4>
+              <div className="history-chart">
+                {history.map((point, i) => (
+                  <div key={i} className="history-bar-wrapper" title={`${point.date}: ${point.investability_score}`}>
+                    <div
+                      className="history-bar"
+                      style={{
+                        height: `${Math.max(5, (point.investability_score ?? 0))}%`,
+                        backgroundColor: scoreColor(point.investability_score),
+                      }}
+                    />
+                    <span className="history-date">{point.date?.slice(5)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recent News */}
+          <div className="news-section">
+            <div className="news-header" onClick={() => setNewsExpanded(!newsExpanded)}>
+              <h4>Recent News {news.length > 0 ? `(${news.length})` : ''}</h4>
+              <span className="expand-icon">{newsExpanded ? '▼' : '▶'}</span>
+            </div>
+            {newsExpanded && (
+              <div className="news-list">
+                {news.length === 0 ? (
+                  <p className="news-empty">Loading news...</p>
+                ) : (
+                  news.map((article, i) => (
+                    <a key={i} href={article.url} target="_blank" rel="noopener noreferrer" className="news-item">
+                      <span className="news-title">{article.title}</span>
+                      <span className="news-meta">
+                        {article.source}
+                        {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
+                      </span>
+                      {article.description && (
+                        <span className="news-desc">{article.description.slice(0, 120)}...</span>
+                      )}
+                    </a>
+                  ))
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="tab-content">
+          <MetricsGuide stock={stock} />
+        </div>
+      )}
 
       <div className="detail-footer">
         <small>Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString() : '—'}</small>
