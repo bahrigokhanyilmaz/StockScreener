@@ -15,6 +15,7 @@ export interface Stock {
   weburl: string;
   sector: string;
   industry: string;
+  sic_industry: string;
   price: number | null;
   market_cap: number | null;
   investability_score: number | null;

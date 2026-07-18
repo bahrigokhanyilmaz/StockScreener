@@ -225,18 +225,19 @@ export default function MetricsGuide({ stock }: Props) {
         const data = await getIndustryAverages();
         const industries = data.industries || {};
 
-        // Find matching industry (exact match first, then partial)
-        const stockIndustry = stock.industry || '';
+        // Match using SEC SIC industry (exact match against DynamoDB keys)
+        const sicIndustry = stock.sic_industry || '';
         let matched: IndustryMetrics | null = null;
         let matchedName = '';
 
-        if (industries[stockIndustry]) {
-          matched = industries[stockIndustry];
-          matchedName = stockIndustry;
+        if (sicIndustry && industries[sicIndustry]) {
+          matched = industries[sicIndustry];
+          matchedName = sicIndustry;
         } else {
-          // Try partial match on SEC SIC descriptions
-          const lower = stockIndustry.toLowerCase();
+          // Fallback: try Finnhub industry with partial matching
+          const stockIndustry = stock.industry || '';
           for (const [key, val] of Object.entries(industries)) {
+            const lower = stockIndustry.toLowerCase();
             if (key.toLowerCase().includes(lower) || lower.includes(key.toLowerCase())) {
               matched = val as IndustryMetrics;
               matchedName = key;
@@ -246,7 +247,7 @@ export default function MetricsGuide({ stock }: Props) {
         }
 
         setIndustryData(matched);
-        setIndustryName(matchedName || stockIndustry);
+        setIndustryName(matchedName || sicIndustry || stock.industry || '');
         setSampleSize((matched as IndustryMetrics)?.sample_size || 0);
       } catch (err) {
         console.error('Failed to load industry averages:', err);
@@ -255,7 +256,7 @@ export default function MetricsGuide({ stock }: Props) {
       }
     }
     loadAverages();
-  }, [stock.industry]);
+  }, [stock.sic_industry, stock.industry]);
 
   return (
     <div className="metrics-guide">

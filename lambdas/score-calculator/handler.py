@@ -69,6 +69,35 @@ def fetch_company_description(symbol: str) -> str:
     return ""
 
 
+def enrich_with_sic_industry(stocks: list):
+    """
+    Add SEC SIC industry label to each stock from the static reference map.
+    This label matches the INDUSTRY_AVG# keys in DynamoDB for comparison.
+    """
+    import json
+    bucket = os.environ.get("RAW_DATA_BUCKET", "")
+    if not bucket:
+        return
+
+    try:
+        s3 = boto3.client("s3")
+        resp = s3.get_object(Bucket=bucket, Key="reference/ticker_industry_map.json")
+        industry_map = json.loads(resp["Body"].read().decode("utf-8"))
+    except Exception as e:
+        print(f"  Warning: Could not load industry map: {e}")
+        return
+
+    mapped = 0
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        entry = industry_map.get(symbol)
+        if entry:
+            stock["sic_industry"] = entry.get("industry", "")
+            mapped += 1
+
+    print(f"  Mapped {mapped}/{len(stocks)} stocks to SIC industries")
+
+
 # Risk flag penalties — severe issues get hard score reductions
 RISK_FLAG_PENALTIES = {
     "SEC_investigation": -30,
@@ -215,6 +244,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "analyst_recommendation": stock.get("analyst_recommendation"),
                 "target_price_upside": stock.get("target_price_upside"),
                 "institutional_transactions": stock.get("institutional_transactions"),
+                "sic_industry": stock.get("sic_industry", ""),
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status
                 "tracking_status": "ACTIVE" if stock.get("passes_screen") else "GRACE",
@@ -310,6 +340,9 @@ def handler(event, context):
             # Polygon free: 5 calls/min → 12s pacing
             if i < len(scored) - 1:
                 time.sleep(12.5)
+
+    # Enrich with SEC SIC industry labels (for industry comparison matching)
+    enrich_with_sic_industry(scored)
 
     # Persist to DynamoDB
     persist_to_dynamodb(scored, today)
