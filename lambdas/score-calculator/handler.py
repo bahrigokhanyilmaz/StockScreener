@@ -144,6 +144,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
             now_iso = datetime.now(timezone.utc).isoformat()
 
             # Item 1: LATEST (current state — overwritten each run)
+            # Persist ALL screener metrics so the dashboard can display them
             latest_item = {
                 "PK": f"STOCK#{symbol}",
                 "SK": "LATEST",
@@ -159,12 +160,20 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "sentiment_confidence": stock.get("sentiment", {}).get("confidence"),
                 "risk_flags": stock.get("sentiment", {}).get("risk_flags", []),
                 "passes_screen": stock.get("passes_screen", False),
+                # All screener filter metrics (must match screener-filters.json keys)
                 "pe_ratio": stock.get("pe_ratio"),
+                "forward_pe": stock.get("forward_pe"),
                 "peg_ratio": stock.get("peg_ratio"),
+                "price_to_fcf": stock.get("price_to_fcf"),
                 "debt_to_equity": stock.get("debt_to_equity"),
                 "quick_ratio": stock.get("quick_ratio"),
                 "operating_margin": stock.get("operating_margin"),
+                "eps_growth_yoy": stock.get("eps_growth_yoy"),
+                "revenue_growth_yoy": stock.get("revenue_growth_yoy"),
+                "est_lt_growth": stock.get("est_lt_growth"),
+                "analyst_recommendation": stock.get("analyst_recommendation"),
                 "target_price_upside": stock.get("target_price_upside"),
+                "institutional_transactions": stock.get("institutional_transactions"),
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status
                 "tracking_status": "ACTIVE" if stock.get("passes_screen") else "GRACE",
