@@ -235,6 +235,52 @@ th.sticky-col {
   font-size: 0.8rem;
 }
 
+.detail-header-left {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.company-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #1e293b;
+}
+
+.company-link {
+  color: #60a5fa;
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+
+.company-link:hover {
+  text-decoration: underline;
+}
+
+.company-profile {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.company-profile h4 {
+  color: #e2e8f0;
+  margin: 0 0 0.5rem 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.company-description {
+  color: #cbd5e1;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
 .close-btn {
   background: #334155;
   border: none;

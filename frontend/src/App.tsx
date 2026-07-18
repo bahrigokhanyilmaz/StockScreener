@@ -47,7 +47,7 @@ function App() {
 
   // Apply filters client-side (instant, no API call), sort by score
   const filteredStocks = useMemo(() => {
-    const filtered = applyFilters(allStocks as Record<string, unknown>[], filters) as unknown as Stock[];
+    const filtered = applyFilters(allStocks as unknown as Record<string, unknown>[], filters) as unknown as Stock[];
     return filtered.sort((a, b) => (b.investability_score ?? 0) - (a.investability_score ?? 0));
   }, [allStocks, filters]);
 

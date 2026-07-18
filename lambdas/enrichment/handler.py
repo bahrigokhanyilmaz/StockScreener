@@ -178,6 +178,47 @@ def fetch_finnhub_price_target(symbol: str, key: str) -> dict:
     return {}
 
 
+def fetch_finnhub_profile(symbol: str, key: str) -> dict:
+    """
+    Fetch company profile from Finnhub /stock/profile2. 1 API call.
+
+    Returns: name, finnhubIndustry, weburl, logo, country, exchange,
+    marketCapitalization. Note: free tier does NOT return 'description'.
+    """
+    url = f"{FINNHUB_BASE_URL}/stock/profile2"
+    try:
+        response = http_requests.get(
+            url, params={"symbol": symbol, "token": key}, timeout=10
+        )
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 429:
+            print(f"    Rate limited on profile for {symbol}")
+            time.sleep(5)
+    except Exception as e:
+        print(f"    Finnhub profile error for {symbol}: {e}")
+    return {}
+
+
+def fetch_polygon_description(symbol: str, polygon_key: str) -> str:
+    """
+    Fetch company description from Polygon /v3/reference/tickers/{ticker}.
+    Polygon free tier includes full company descriptions.
+    Rate limit: 5 calls/min — only call for final candidates (~6-10 stocks).
+    """
+    url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
+    try:
+        response = http_requests.get(
+            url, params={"apiKey": polygon_key}, timeout=10
+        )
+        if response.status_code == 200:
+            results = response.json().get("results", {})
+            return results.get("description", "")
+    except Exception as e:
+        print(f"    Polygon description error for {symbol}: {e}")
+    return ""
+
+
 def fetch_finnhub_recommendation(symbol: str, key: str) -> float:
     """
     Fetch analyst recommendation consensus. 1 API call.
@@ -301,13 +342,29 @@ def handler(event, context):
                 stock["analyst_recommendation"] = rec_score
             finnhub_enriched += 1
 
+        # Company profile (logo, industry, website) from Finnhub
+        time.sleep(1)
+        profile = fetch_finnhub_profile(symbol, finnhub_key)
+        if profile:
+            stock["logo"] = profile.get("logo", "")
+            stock["weburl"] = profile.get("weburl", "")
+            # Supplement sector/industry if not already set
+            if not stock.get("industry") and profile.get("finnhubIndustry"):
+                stock["industry"] = profile.get("finnhubIndustry")
+
         if (i + 1) % 25 == 0:
             print(f"    [{i+1}/{len(candidates)}] enriched {finnhub_enriched}")
 
-        # Pacing: Finnhub allows 60 calls/min. We make 2 calls per stock (metrics + recommendation).
-        # 3 seconds between stocks = safe margin under 60/min.
+        # Pacing: Finnhub allows 60 calls/min. We make 3 calls per stock
+        # (metrics + recommendation + profile). 3s between stocks = safe.
         if i < len(candidates) - 1:
             time.sleep(3)
+
+    # STAGE 3b: Polygon descriptions (only for candidates, 5/min rate limit)
+    # Polygon descriptions take 12s each. For ~50-80 candidates, too slow.
+    # Instead, we'll fetch descriptions only in the score-calculator step
+    # after full screen narrows to ~6-10 final stocks.
+    # The enrichment step passes logo/industry/weburl through from Finnhub.
 
     # Output: return ALL stocks (enriched candidates + non-candidates with just price/P/E)
     end_time = datetime.now(timezone.utc)
@@ -326,11 +383,11 @@ def handler(event, context):
             "pe_available": pe_count,
             "peg_available": peg_count,
             "trading_date": trading_date,
-            "finnhub_calls": finnhub_enriched * 2,
+            "finnhub_calls": finnhub_enriched * 3,
             "duration_seconds": duration,
             "timestamp": end_time.isoformat(),
         },
     }
 
-    print(f"Done in {duration:.1f}s. Finnhub calls: {finnhub_enriched * 2}")
+    print(f"Done in {duration:.1f}s. Finnhub calls: {finnhub_enriched * 3}")
     return write_pipeline_output(result, step_name="step3_enriched")

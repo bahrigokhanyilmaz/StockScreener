@@ -168,22 +168,24 @@ export class StockScreenerStack extends cdk.Stack {
       description: 'Step 6: Bedrock/Claude sentiment analysis per article',
     });
 
-    // Step 7: Score Calculator (+ DynamoDB persistence)
-    const scoreCalculator = new lambda.Function(this, 'ScoreCalculator', {
+    // Step 7: Score Calculator (+ DynamoDB persistence + Polygon descriptions)
+    const scoreCalculator = new PythonFunction(this, 'ScoreCalculator', {
       functionName: 'stock-screener-score-calculator',
+      entry: path.join(__dirname, '../lambdas/score-calculator'),
+      index: 'handler.py',
+      handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/score-calculator')),
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.minutes(5),
       memorySize: 128,
       environment: {
         FUNDAMENTAL_WEIGHT: '0.7',
         SENTIMENT_WEIGHT: '0.3',
         DATA_TABLE_NAME: dataTable.tableName,
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
+        POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
       },
-      description: 'Step 7: Investability score + DynamoDB persistence',
+      description: 'Step 7: Investability score + company profiles + DynamoDB persistence',
     });
 
     // Step 8: Alert Checker (+ tracking lifecycle)
@@ -297,6 +299,19 @@ export class StockScreenerStack extends cdk.Stack {
     dataTable.grantReadWriteData(alertChecker);
     rawDataBucket.grantReadWrite(scoreCalculator);
     rawDataBucket.grantReadWrite(alertChecker);
+
+    // Step 7: SSM read (Polygon key for company descriptions)
+    scoreCalculator.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/stock-screener/*`],
+    }));
+    scoreCalculator.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:Decrypt'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
+    }));
 
     // Step 8: SNS
     alertTopic.grantPublish(alertChecker);

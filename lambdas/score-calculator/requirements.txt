@@ -1,2 +1,3 @@
-# No external dependencies — pure computation.
+# requests for Polygon API calls (company descriptions)
 # boto3 included in Lambda runtime by default.
+requests

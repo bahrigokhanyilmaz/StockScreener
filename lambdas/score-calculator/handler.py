@@ -1,16 +1,18 @@
 """
 Score Calculator Lambda
 ========================
-Step 5 in the pipeline.
+Step 7 in the pipeline.
 
 Combines the fundamental score (from Step 2: stock-screener) with the
-sentiment score (from Step 4: sentiment-analyzer) into a single
+sentiment score (from Step 6: sentiment-analyzer) into a single
 **Investability Score** per stock.
 
-Also persists results to DynamoDB:
-- LATEST item: current scores (overwritten each run)
-- SCORE#date item: historical score (appended daily, never overwritten)
-- TRACKING item: tracking status (ACTIVE if passes screen)
+Also:
+- Fetches company descriptions from Polygon (only for final ~6-10 stocks)
+- Persists results to DynamoDB:
+  - LATEST item: current scores (overwritten each run)
+  - SCORE#date item: historical score (appended daily, never overwritten)
+  - TRACKING item: tracking status (ACTIVE if passes screen)
 
 This is what enables retroactive analysis — every day's scores are preserved
 so you can look back and see how a stock's investability changed over time.
@@ -19,17 +21,53 @@ Environment Variables:
     FUNDAMENTAL_WEIGHT - Weight for fundamental score (default: 0.7)
     SENTIMENT_WEIGHT   - Weight for sentiment adjustment (default: 0.3)
     DATA_TABLE_NAME    - DynamoDB table for persistence
+    RAW_DATA_BUCKET    - S3 bucket for pipeline I/O
 """
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+import requests as http_requests
 
 # DynamoDB client
 dynamodb = boto3.resource("dynamodb")
+
+# SSM client for API keys
+ssm_client = boto3.client("ssm")
+
+# Cache
+_polygon_key = None
+
+
+def get_polygon_key() -> str:
+    """Get Polygon API key from SSM (cached)."""
+    global _polygon_key
+    if not _polygon_key:
+        param = os.environ.get("POLYGON_API_KEY_PARAM", "/stock-screener/polygon-api-key")
+        _polygon_key = ssm_client.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
+    return _polygon_key
+
+
+def fetch_company_description(symbol: str) -> str:
+    """
+    Fetch company description from Polygon /v3/reference/tickers/{ticker}.
+    Only called for final passing stocks (~6-10), so 5/min limit is fine.
+    """
+    try:
+        key = get_polygon_key()
+        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
+        response = http_requests.get(url, params={"apiKey": key}, timeout=10)
+        if response.status_code == 200:
+            results = response.json().get("results", {})
+            return results.get("description", "")
+    except Exception as e:
+        print(f"  Warning: Polygon description error for {symbol}: {e}")
+    return ""
+
 
 # Risk flag penalties — severe issues get hard score reductions
 RISK_FLAG_PENALTIES = {
@@ -150,6 +188,9 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "SK": "LATEST",
                 "symbol": symbol,
                 "company_name": stock.get("company_name", ""),
+                "company_description": stock.get("company_description", ""),
+                "logo": stock.get("logo", ""),
+                "weburl": stock.get("weburl", ""),
                 "sector": stock.get("sector", ""),
                 "industry": stock.get("industry", ""),
                 "price": stock.get("price"),
@@ -256,6 +297,19 @@ def handler(event, context):
     highly_investable = [s for s in scored if s["investability_score"] >= 70]
     moderately_investable = [s for s in scored if 40 <= s["investability_score"] < 70]
     low_investability = [s for s in scored if s["investability_score"] < 40]
+
+    # Fetch company descriptions from Polygon (only ~6-10 stocks, 5/min is fine)
+    print(f"Fetching company descriptions from Polygon for {len(scored)} stocks...")
+    for i, stock in enumerate(scored):
+        symbol = stock.get("symbol", "")
+        if symbol and not stock.get("company_description"):
+            desc = fetch_company_description(symbol)
+            if desc:
+                stock["company_description"] = desc
+                print(f"  {symbol}: got description ({len(desc)} chars)")
+            # Polygon free: 5 calls/min → 12s pacing
+            if i < len(scored) - 1:
+                time.sleep(12.5)
 
     # Persist to DynamoDB
     persist_to_dynamodb(scored, today)

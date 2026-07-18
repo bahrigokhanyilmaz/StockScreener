@@ -10,6 +10,9 @@ import { API_BASE_URL } from './config.ts';
 export interface Stock {
   symbol: string;
   company_name: string;
+  company_description: string;
+  logo: string;
+  weburl: string;
   sector: string;
   industry: string;
   price: number | null;

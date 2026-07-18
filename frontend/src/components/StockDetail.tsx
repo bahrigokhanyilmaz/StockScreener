@@ -55,13 +55,29 @@ export default function StockDetail({ ticker, onClose }: Props) {
     <div className="stock-detail">
       {/* Header */}
       <div className="detail-header">
-        <div>
-          <h2>{stock.symbol}</h2>
-          <p className="company-name">{stock.company_name}</p>
-          <p className="sector-info">{stock.sector}{stock.industry ? ` / ${stock.industry}` : ''}</p>
+        <div className="detail-header-left">
+          {stock.logo && <img src={stock.logo} alt={stock.symbol} className="company-logo" />}
+          <div>
+            <h2>{stock.symbol}</h2>
+            <p className="company-name">{stock.company_name}</p>
+            <p className="sector-info">{stock.sector}{stock.industry ? ` / ${stock.industry}` : ''}</p>
+            {stock.weburl && (
+              <a href={stock.weburl} target="_blank" rel="noopener noreferrer" className="company-link">
+                {stock.weburl.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+              </a>
+            )}
+          </div>
         </div>
         <button className="close-btn" onClick={onClose}>Close</button>
       </div>
+
+      {/* Company Description / Business Model */}
+      {stock.company_description && (
+        <div className="company-profile">
+          <h4>Business Model</h4>
+          <p className="company-description">{stock.company_description}</p>
+        </div>
+      )}
 
       {/* Score Cards */}
       <div className="score-section">
