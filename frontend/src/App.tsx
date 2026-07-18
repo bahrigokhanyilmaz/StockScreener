@@ -82,8 +82,8 @@ function App() {
         {error && <div className="error">Error: {error}</div>}
 
         {!loading && !error && (
-          <div className="content-layout">
-            <div className="sidebar">
+          <>
+            <div className="top-filters">
               <FilterSliders
                 filters={filters}
                 onChange={setFilters}
@@ -93,27 +93,29 @@ function App() {
               />
             </div>
 
-            <div className="table-section">
-              <StockTable
-                stocks={filteredStocks}
-                selectedTicker={selectedTicker}
-                onSelectStock={setSelectedTicker}
-                onRelease={async (ticker) => {
-                  await untrackStock(ticker);
-                  setAllStocks(allStocks.filter(s => s.symbol !== ticker));
-                }}
-              />
-            </div>
-
-            {selectedTicker && (
-              <div className="detail-section">
-                <StockDetail
-                  ticker={selectedTicker}
-                  onClose={() => setSelectedTicker(null)}
+            <div className="content-layout">
+              <div className="table-section">
+                <StockTable
+                  stocks={filteredStocks}
+                  selectedTicker={selectedTicker}
+                  onSelectStock={setSelectedTicker}
+                  onRelease={async (ticker) => {
+                    await untrackStock(ticker);
+                    setAllStocks(allStocks.filter(s => s.symbol !== ticker));
+                  }}
                 />
               </div>
-            )}
-          </div>
+
+              {selectedTicker && (
+                <div className="detail-section">
+                  <StockDetail
+                    ticker={selectedTicker}
+                    onClose={() => setSelectedTicker(null)}
+                  />
+                </div>
+              )}
+            </div>
+          </>
         )}
       </main>
     </div>

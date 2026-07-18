@@ -66,7 +66,7 @@ export function applyFilters(stocks: Record<string, unknown>[], filters: FilterV
 }
 
 export default function FilterSliders({ filters, onChange, onReset, matchCount, totalCount }: Props) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   function handleSliderChange(key: string, value: number) {
     onChange({ ...filters, [key]: value });
@@ -82,7 +82,7 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
         <div className="filter-actions">
           <button className="btn-reset" onClick={onReset}>Reset</button>
           <button className="btn-collapse" onClick={() => setCollapsed(!collapsed)}>
-            {collapsed ? 'Show' : 'Hide'}
+            {collapsed ? '▼ Expand' : '▲ Collapse'}
           </button>
         </div>
       </div>
