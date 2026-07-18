@@ -1,7 +1,7 @@
 """
 Stock Screener Lambda
 =====================
-Step 2 in the pipeline.
+Steps 2 & 4 in the pipeline.
 
 Takes the enriched fundamental data from Step 1 (fundamentals-fetcher)
 and applies value investing filter criteria to identify passing stocks.
@@ -9,6 +9,12 @@ and applies value investing filter criteria to identify passing stocks.
 For each stock that passes ALL filters, calculates a "fundamental score"
 representing HOW STRONGLY it passes (a stock barely passing vs. one
 that crushes every metric should be distinguished).
+
+When running as Step 2 (pre-screen with is_prescreen=True):
+- Also loads the static ticker→industry reference map from S3
+- Joins industry labels to all ~5,097 stocks in memory
+- Computes TRUE industry medians from the full unfiltered universe
+- Persists medians to DynamoDB as INDUSTRY_AVG#{industry} items
 
 Input (from Step Functions / fundamentals-fetcher):
     event["stocks"] — list of stock dicts with fundamental data
@@ -267,6 +273,118 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
     }
 
 
+def compute_and_persist_industry_medians(stocks: list[dict]):
+    """
+    Compute TRUE industry medians from the full 5,097-stock universe.
+
+    Architecture: "Static Reference Map" pattern.
+    1. Load ticker_industry_map.json from S3 (200KB, maps every ticker to SIC industry)
+    2. Join industry labels to all stocks in memory
+    3. Compute median for each metric per industry
+    4. Persist to DynamoDB as INDUSTRY_AVG#{industry} items
+
+    This runs once per pipeline execution during pre-screen (Step 2).
+    Uses the full unfiltered dataset — not just the 50-80 survivors.
+    Zero additional API calls. ~15ms compute time.
+    """
+    import boto3
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from collections import defaultdict
+
+    bucket = os.environ.get("RAW_DATA_BUCKET", "")
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+
+    if not bucket or not table_name:
+        print("  Warning: RAW_DATA_BUCKET or DATA_TABLE_NAME not set — skipping industry medians")
+        return
+
+    # Step 1: Load the static industry map from S3
+    try:
+        s3 = boto3.client("s3")
+        resp = s3.get_object(Bucket=bucket, Key="reference/ticker_industry_map.json")
+        industry_map = json.loads(resp["Body"].read().decode("utf-8"))
+        print(f"  Loaded industry map: {len(industry_map)} tickers")
+    except Exception as e:
+        print(f"  Warning: Could not load industry map from S3: {e}")
+        return
+
+    # Step 2: Join industry to all stocks in memory
+    metrics_to_compute = [
+        "pe_ratio", "debt_to_equity", "quick_ratio", "operating_margin",
+        "eps_growth_yoy", "revenue_growth_yoy",
+    ]
+
+    # Group metric values by industry
+    industry_data: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    mapped_count = 0
+
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        entry = industry_map.get(symbol)
+        if not entry:
+            continue
+        industry = entry.get("industry", "")
+        if not industry:
+            continue
+
+        mapped_count += 1
+        for metric in metrics_to_compute:
+            val = stock.get(metric)
+            if val is not None and isinstance(val, (int, float)):
+                industry_data[industry][metric].append(val)
+
+    print(f"  Mapped {mapped_count}/{len(stocks)} stocks to industries, "
+          f"{len(industry_data)} unique industries")
+
+    # Step 3: Compute medians (require at least 5 data points for statistical relevance)
+    def median(values):
+        s = sorted(values)
+        n = len(s)
+        mid = n // 2
+        return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+    industry_medians = {}
+    for industry, metrics in industry_data.items():
+        avgs = {}
+        sample_size = 0
+        for metric, values in metrics.items():
+            if len(values) >= 5:
+                avgs[metric] = round(median(values), 4)
+                sample_size = max(sample_size, len(values))
+        if avgs:
+            avgs["sample_size"] = sample_size
+            industry_medians[industry] = avgs
+
+    print(f"  Computed medians for {len(industry_medians)} industries (min 5 stocks each)")
+
+    # Step 4: Persist to DynamoDB
+    dynamodb = boto3.resource("dynamodb")
+    table = dynamodb.Table(table_name)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def to_decimal(val):
+        if isinstance(val, float):
+            return Decimal(str(round(val, 6)))
+        return val
+
+    with table.batch_writer() as batch:
+        for industry, metrics in industry_medians.items():
+            item = {
+                "PK": f"INDUSTRY_AVG#{industry}",
+                "SK": "METRICS",
+                "industry": industry,
+                "updated_date": today,
+                "last_updated": now_iso,
+            }
+            for k, v in metrics.items():
+                item[k] = to_decimal(v) if isinstance(v, float) else v
+            batch.put_item(Item=item)
+
+    print(f"  Persisted {len(industry_medians)} industry averages to DynamoDB")
+
+
 def handler(event, context):
     """
     Lambda entry point. Called by Step Functions after fundamentals-fetcher.
@@ -346,4 +464,10 @@ def handler(event, context):
     # Write to S3 for next step (avoids Step Functions 256KB limit)
     from pipeline_io import write_pipeline_output
     step_name = "step2_prescreen" if is_prescreen_mode else "step4_fullscreen"
+
+    # When running as pre-screen (Step 2), compute and persist industry medians
+    # from the FULL 5,097-stock universe before filtering narrows the pool.
+    if is_prescreen_mode:
+        compute_and_persist_industry_medians(stocks)
+
     return write_pipeline_output(result, step_name=step_name)

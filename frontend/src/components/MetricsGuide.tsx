@@ -1,4 +1,6 @@
-import type { Stock } from '../api.ts';
+import { useState, useEffect } from 'react';
+import { getIndustryAverages } from '../api.ts';
+import type { Stock, IndustryAverages } from '../api.ts';
 
 /**
  * MetricsGuide Component
@@ -6,6 +8,7 @@ import type { Stock } from '../api.ts';
  * Two sections:
  * 1. Metric definitions with interpretation of movement in either direction
  * 2. Industry average comparison for the selected stock's industry
+ *    (real medians computed from ~5,097 stocks, persisted daily by pipeline)
  *
  * Displayed as a tab in the detail panel when a stock is selected.
  */
@@ -166,118 +169,17 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
 ];
 
 // ==========================================
-// INDUSTRY AVERAGES
+// INDUSTRY AVERAGES (fetched from API — real medians from 5,097 stocks)
 // ==========================================
 
-// Industry average data derived from broad market research.
-// These represent typical values for healthy companies in each sector.
-interface IndustryAverages {
-  pe_ratio: number;
-  forward_pe: number;
-  peg_ratio: number;
-  price_to_fcf: number;
-  debt_to_equity: number;
-  quick_ratio: number;
-  operating_margin: number;
-  eps_growth_yoy: number;
-  revenue_growth_yoy: number;
-}
-
-const INDUSTRY_AVERAGES: Record<string, IndustryAverages> = {
-  'Technology': {
-    pe_ratio: 28, forward_pe: 24, peg_ratio: 1.5, price_to_fcf: 25,
-    debt_to_equity: 0.45, quick_ratio: 2.5, operating_margin: 0.22,
-    eps_growth_yoy: 0.15, revenue_growth_yoy: 0.12,
-  },
-  'Construction': {
-    pe_ratio: 16, forward_pe: 14, peg_ratio: 1.1, price_to_fcf: 14,
-    debt_to_equity: 0.7, quick_ratio: 1.3, operating_margin: 0.08,
-    eps_growth_yoy: 0.10, revenue_growth_yoy: 0.08,
-  },
-  'Professional Services': {
-    pe_ratio: 22, forward_pe: 19, peg_ratio: 1.3, price_to_fcf: 20,
-    debt_to_equity: 0.5, quick_ratio: 1.8, operating_margin: 0.15,
-    eps_growth_yoy: 0.12, revenue_growth_yoy: 0.10,
-  },
-  'Diversified Consumer Services': {
-    pe_ratio: 20, forward_pe: 17, peg_ratio: 1.2, price_to_fcf: 16,
-    debt_to_equity: 0.55, quick_ratio: 1.5, operating_margin: 0.12,
-    eps_growth_yoy: 0.10, revenue_growth_yoy: 0.09,
-  },
-  'Packaging': {
-    pe_ratio: 18, forward_pe: 15, peg_ratio: 1.4, price_to_fcf: 15,
-    debt_to_equity: 0.8, quick_ratio: 1.2, operating_margin: 0.10,
-    eps_growth_yoy: 0.07, revenue_growth_yoy: 0.05,
-  },
-  'Commercial Services & Supplies': {
-    pe_ratio: 19, forward_pe: 16, peg_ratio: 1.3, price_to_fcf: 17,
-    debt_to_equity: 0.6, quick_ratio: 1.4, operating_margin: 0.11,
-    eps_growth_yoy: 0.09, revenue_growth_yoy: 0.07,
-  },
-  // Broad fallback for industries not explicitly listed
-  'Healthcare': {
-    pe_ratio: 24, forward_pe: 20, peg_ratio: 1.4, price_to_fcf: 22,
-    debt_to_equity: 0.5, quick_ratio: 2.0, operating_margin: 0.18,
-    eps_growth_yoy: 0.12, revenue_growth_yoy: 0.10,
-  },
-  'Financial Services': {
-    pe_ratio: 14, forward_pe: 12, peg_ratio: 1.1, price_to_fcf: 12,
-    debt_to_equity: 1.5, quick_ratio: 0.8, operating_margin: 0.30,
-    eps_growth_yoy: 0.08, revenue_growth_yoy: 0.06,
-  },
-  'Consumer Cyclical': {
-    pe_ratio: 20, forward_pe: 17, peg_ratio: 1.3, price_to_fcf: 18,
-    debt_to_equity: 0.6, quick_ratio: 1.3, operating_margin: 0.10,
-    eps_growth_yoy: 0.10, revenue_growth_yoy: 0.08,
-  },
-  'Industrials': {
-    pe_ratio: 20, forward_pe: 17, peg_ratio: 1.4, price_to_fcf: 18,
-    debt_to_equity: 0.65, quick_ratio: 1.4, operating_margin: 0.12,
-    eps_growth_yoy: 0.09, revenue_growth_yoy: 0.07,
-  },
-  'Energy': {
-    pe_ratio: 12, forward_pe: 10, peg_ratio: 0.9, price_to_fcf: 10,
-    debt_to_equity: 0.45, quick_ratio: 1.2, operating_margin: 0.15,
-    eps_growth_yoy: 0.05, revenue_growth_yoy: 0.04,
-  },
-  'Materials': {
-    pe_ratio: 16, forward_pe: 14, peg_ratio: 1.2, price_to_fcf: 14,
-    debt_to_equity: 0.55, quick_ratio: 1.5, operating_margin: 0.13,
-    eps_growth_yoy: 0.08, revenue_growth_yoy: 0.06,
-  },
-  'Utilities': {
-    pe_ratio: 18, forward_pe: 16, peg_ratio: 2.0, price_to_fcf: 20,
-    debt_to_equity: 1.2, quick_ratio: 0.7, operating_margin: 0.25,
-    eps_growth_yoy: 0.05, revenue_growth_yoy: 0.04,
-  },
-  'Real Estate': {
-    pe_ratio: 30, forward_pe: 25, peg_ratio: 2.5, price_to_fcf: 28,
-    debt_to_equity: 1.0, quick_ratio: 0.9, operating_margin: 0.30,
-    eps_growth_yoy: 0.06, revenue_growth_yoy: 0.05,
-  },
-  'Communication Services': {
-    pe_ratio: 22, forward_pe: 18, peg_ratio: 1.3, price_to_fcf: 20,
-    debt_to_equity: 0.6, quick_ratio: 1.5, operating_margin: 0.20,
-    eps_growth_yoy: 0.11, revenue_growth_yoy: 0.08,
-  },
-};
-
-const DEFAULT_AVERAGES: IndustryAverages = {
-  pe_ratio: 20, forward_pe: 17, peg_ratio: 1.3, price_to_fcf: 18,
-  debt_to_equity: 0.6, quick_ratio: 1.5, operating_margin: 0.12,
-  eps_growth_yoy: 0.10, revenue_growth_yoy: 0.07,
-};
-
-function getIndustryAverages(industry: string): IndustryAverages {
-  if (INDUSTRY_AVERAGES[industry]) return INDUSTRY_AVERAGES[industry];
-  // Try partial matching
-  const lower = industry.toLowerCase();
-  for (const [key, val] of Object.entries(INDUSTRY_AVERAGES)) {
-    if (lower.includes(key.toLowerCase()) || key.toLowerCase().includes(lower)) {
-      return val;
-    }
-  }
-  return DEFAULT_AVERAGES;
+interface IndustryMetrics {
+  pe_ratio?: number;
+  debt_to_equity?: number;
+  quick_ratio?: number;
+  operating_margin?: number;
+  eps_growth_yoy?: number;
+  revenue_growth_yoy?: number;
+  sample_size?: number;
 }
 
 function comparisonLabel(stockValue: number | null, industryAvg: number, type: 'max' | 'min'): { label: string; color: string } {
@@ -311,35 +213,85 @@ const CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_ORDER = ['valuation', 'financial_health', 'growth', 'sentiment'];
 
 export default function MetricsGuide({ stock }: Props) {
-  const industryAvg = getIndustryAverages(stock.industry || '');
-  const industryName = stock.industry || 'All Sectors';
+  const [industryData, setIndustryData] = useState<IndustryMetrics | null>(null);
+  const [industryName, setIndustryName] = useState<string>('');
+  const [sampleSize, setSampleSize] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadAverages() {
+      setLoading(true);
+      try {
+        const data = await getIndustryAverages();
+        const industries = data.industries || {};
+
+        // Find matching industry (exact match first, then partial)
+        const stockIndustry = stock.industry || '';
+        let matched: IndustryMetrics | null = null;
+        let matchedName = '';
+
+        if (industries[stockIndustry]) {
+          matched = industries[stockIndustry];
+          matchedName = stockIndustry;
+        } else {
+          // Try partial match on SEC SIC descriptions
+          const lower = stockIndustry.toLowerCase();
+          for (const [key, val] of Object.entries(industries)) {
+            if (key.toLowerCase().includes(lower) || lower.includes(key.toLowerCase())) {
+              matched = val as IndustryMetrics;
+              matchedName = key;
+              break;
+            }
+          }
+        }
+
+        setIndustryData(matched);
+        setIndustryName(matchedName || stockIndustry);
+        setSampleSize((matched as IndustryMetrics)?.sample_size || 0);
+      } catch (err) {
+        console.error('Failed to load industry averages:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadAverages();
+  }, [stock.industry]);
 
   return (
     <div className="metrics-guide">
       {/* Industry Comparison Header */}
       <div className="industry-comparison-header">
-        <h4>vs. Industry Average</h4>
-        <span className="industry-name">{industryName}</span>
+        <h4>vs. Industry Median</h4>
+        <span className="industry-name">
+          {industryName || 'Unknown'}
+          {sampleSize > 0 && <span className="sample-size"> ({sampleSize} companies)</span>}
+        </span>
       </div>
 
       {/* Comparison Table */}
-      <div className="comparison-table">
-        <div className="comparison-row comparison-header-row">
-          <span className="comp-metric">Metric</span>
-          <span className="comp-stock">{stock.symbol}</span>
-          <span className="comp-avg">Ind. Avg</span>
-          <span className="comp-verdict">vs. Industry</span>
+      {loading ? (
+        <p style={{ color: '#64748b', fontSize: '0.8rem', padding: '0.5rem' }}>Loading industry data...</p>
+      ) : !industryData ? (
+        <p style={{ color: '#64748b', fontSize: '0.8rem', padding: '0.5rem' }}>
+          No industry average data available for "{stock.industry || 'unknown'}".
+          Industry medians are computed on each pipeline run.
+        </p>
+      ) : (
+        <div className="comparison-table">
+          <div className="comparison-row comparison-header-row">
+            <span className="comp-metric">Metric</span>
+            <span className="comp-stock">{stock.symbol}</span>
+            <span className="comp-avg">Ind. Median</span>
+            <span className="comp-verdict">vs. Industry</span>
+          </div>
+          {industryData.pe_ratio != null && renderComparisonRow('P/E', stock.pe_ratio, industryData.pe_ratio, 'max')}
+          {industryData.debt_to_equity != null && renderComparisonRow('D/E', stock.debt_to_equity, industryData.debt_to_equity, 'max')}
+          {industryData.quick_ratio != null && renderComparisonRow('Quick Ratio', stock.quick_ratio, industryData.quick_ratio, 'min')}
+          {industryData.operating_margin != null && renderComparisonRow('Op Margin', stock.operating_margin, industryData.operating_margin, 'min', true)}
+          {industryData.eps_growth_yoy != null && renderComparisonRow('EPS Growth', stock.eps_growth_yoy, industryData.eps_growth_yoy, 'min', true)}
+          {industryData.revenue_growth_yoy != null && renderComparisonRow('Rev Growth', stock.revenue_growth_yoy, industryData.revenue_growth_yoy, 'min', true)}
         </div>
-        {renderComparisonRow('P/E', stock.pe_ratio, industryAvg.pe_ratio, 'max')}
-        {renderComparisonRow('Fwd P/E', stock.forward_pe, industryAvg.forward_pe, 'max')}
-        {renderComparisonRow('PEG', stock.peg_ratio, industryAvg.peg_ratio, 'max')}
-        {renderComparisonRow('P/FCF', stock.price_to_fcf, industryAvg.price_to_fcf, 'max')}
-        {renderComparisonRow('D/E', stock.debt_to_equity, industryAvg.debt_to_equity, 'max')}
-        {renderComparisonRow('Quick Ratio', stock.quick_ratio, industryAvg.quick_ratio, 'min')}
-        {renderComparisonRow('Op Margin', stock.operating_margin, industryAvg.operating_margin, 'min', true)}
-        {renderComparisonRow('EPS Growth', stock.eps_growth_yoy, industryAvg.eps_growth_yoy, 'min', true)}
-        {renderComparisonRow('Rev Growth', stock.revenue_growth_yoy, industryAvg.revenue_growth_yoy, 'min', true)}
-      </div>
+      )}
 
       {/* Metric Definitions by Category */}
       <div className="definitions-section">

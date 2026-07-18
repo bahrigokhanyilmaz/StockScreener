@@ -112,8 +112,9 @@ export class StockScreenerStack extends cdk.Stack {
       memorySize: 256,
       environment: {
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
+        DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Steps 2 & 4: Value filter (called twice — pre-screen + full screen)',
+      description: 'Steps 2 & 4: Value filter (pre-screen computes industry medians)',
     });
 
     // Step 3: Price Enrichment (Polygon bulk prices + Finnhub analyst metrics)
@@ -259,6 +260,9 @@ export class StockScreenerStack extends cdk.Stack {
     const statusResource = pipelineResource.addResource('status');
     statusResource.addMethod('GET', lambdaIntegration);
 
+    const industriesResource = api.root.addResource('industries');
+    industriesResource.addMethod('GET', lambdaIntegration);
+
     // ==========================================
     // PERMISSIONS
     // ==========================================
@@ -266,8 +270,9 @@ export class StockScreenerStack extends cdk.Stack {
     // Step 1: S3 write
     rawDataBucket.grantWrite(fundamentalsFetcher);
 
-    // Steps 2 & 4: S3 read/write (pipeline I/O)
+    // Steps 2 & 4: S3 read/write (pipeline I/O) + DynamoDB write (industry medians)
     rawDataBucket.grantReadWrite(stockScreener);
+    dataTable.grantWriteData(stockScreener);
 
     // Step 3: SSM read (Twelve Data key) + S3 read/write (pipeline I/O)
     rawDataBucket.grantReadWrite(priceEnrichment);

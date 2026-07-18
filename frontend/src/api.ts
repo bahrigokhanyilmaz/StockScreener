@@ -97,3 +97,19 @@ export async function untrackStock(ticker: string): Promise<{ message: string }>
 export async function getPipelineStatus(): Promise<PipelineStatus> {
   return fetchJson('/pipeline/status');
 }
+
+export interface IndustryAverages {
+  [industry: string]: {
+    pe_ratio?: number;
+    debt_to_equity?: number;
+    quick_ratio?: number;
+    operating_margin?: number;
+    eps_growth_yoy?: number;
+    revenue_growth_yoy?: number;
+    sample_size?: number;
+  };
+}
+
+export async function getIndustryAverages(): Promise<{ industries: IndustryAverages; count: number }> {
+  return fetchJson('/industries');
+}

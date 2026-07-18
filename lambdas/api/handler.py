@@ -295,6 +295,36 @@ def get_pipeline_status():
     })
 
 
+def get_industry_averages():
+    """
+    GET /industries — Industry median benchmarks.
+
+    Returns median values for key metrics computed from the full 5,097-stock universe,
+    grouped by SEC SIC industry classification.
+
+    These are recalculated on every pipeline run from real market data.
+    The frontend uses them to compare individual stocks against their industry peers.
+    """
+    table = get_table()
+
+    # Scan for all INDUSTRY_AVG# items
+    result = table.scan(
+        FilterExpression=Attr("PK").begins_with("INDUSTRY_AVG#"),
+    )
+
+    industries = {}
+    for item in result.get("Items", []):
+        industry_name = item.get("industry", "")
+        if not industry_name:
+            continue
+        industries[industry_name] = decimal_to_float(item)
+
+    return response(200, {
+        "industries": industries,
+        "count": len(industries),
+    })
+
+
 # ==========================================
 # ROUTER
 # ==========================================
@@ -329,6 +359,10 @@ def handler(event, context):
         # Route: GET /pipeline/status
         elif path == "/pipeline/status" and method == "GET":
             return get_pipeline_status()
+
+        # Route: GET /industries
+        elif path == "/industries" and method == "GET":
+            return get_industry_averages()
 
         # Route: GET /stocks/{ticker}/history
         elif "/history" in path and method == "GET":
