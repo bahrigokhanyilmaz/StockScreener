@@ -199,9 +199,10 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
             # - Full screen (Step 4): FAIL on any missing data (stock must prove it qualifies)
             # Sentiment is always skippable (calculated later in pipeline)
             is_prescreen = is_prescreen  # Use the explicit flag, not data inference
-            price_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
-                                       "eps_growth_yoy", "revenue_growth_yoy", "est_lt_growth",
-                                       "institutional_transactions", "target_price_upside"}
+            # Filters that require enrichment data (not available during pre-screen)
+            enrichment_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
+                                            "est_lt_growth", "target_price_upside",
+                                            "institutional_transactions", "analyst_recommendation"}
 
             if filter_name == "sentiment_score":
                 # Always skip sentiment — calculated in Step 6
@@ -218,7 +219,7 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                     "passes": None, "skipped": True, "reason": "deferred",
                 }
                 continue
-            elif is_prescreen and filter_name in price_dependent_filters:
+            elif is_prescreen and filter_name in enrichment_dependent_filters:
                 # Pre-screen: skip price-dependent filters (not available yet)
                 filter_results[filter_name] = {
                     "value": None, "threshold": threshold, "type": filter_type,
