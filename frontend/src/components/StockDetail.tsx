@@ -101,7 +101,7 @@ export default function StockDetail({ ticker, onClose }: Props) {
           {/* Company Description / Business Model */}
           {stock.company_description && (
             <div className="company-profile">
-              <h4>Business Model</h4>
+              <h4>Company Profile</h4>
               <p className="company-description">{stock.company_description}</p>
             </div>
           )}

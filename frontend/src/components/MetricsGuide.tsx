@@ -338,17 +338,17 @@ export default function MetricsGuide({ stock }: Props) {
             <span className="def-name">Sentiment Score (-100 to +100)</span>
           </div>
           <p className="def-text">
-            AI-analyzed news sentiment from the past 7 days. Claude AI reads each article about the stock, rates it from -1.0 (extremely negative) to +1.0 (extremely positive), and assigns a confidence level (0–1).
+            AI-analyzed news sentiment from the past 7 days. Claude AI reads each article about the stock, rates it from -1.0 (extremely negative) to +1.0 (extremely positive), and assigns a confidence level (0–1). The final score is displayed scaled to -100 to +100 in the UI.
           </p>
           <div className="def-formula">
-            <span className="formula-label">Method:</span> For each relevant article: Claude assigns (sentiment, confidence). Final score = sum(sentiment × confidence) / sum(confidence) across all relevant articles.
+            <span className="formula-label">Method:</span> For each relevant article: Claude assigns (sentiment, confidence). Raw score = sum(sentiment × confidence) / sum(confidence). Displayed as raw score × 100.
           </div>
           <div className="score-breakdown-details">
             <p><strong>Step 1:</strong> Fetch up to 10 recent articles per stock from 10,000+ news sources.</p>
-            <p><strong>Step 2:</strong> Claude AI reads each article and rates: Is it relevant to this stock? What's the sentiment? How confident is it?</p>
+            <p><strong>Step 2:</strong> Claude AI reads each article and rates: Is it relevant to this stock? What's the sentiment (-1 to +1)? How confident is it (0 to 1)?</p>
             <p><strong>Step 3:</strong> Irrelevant articles are discarded. Remaining articles are averaged, weighted by confidence (a definitive article with confidence 0.9 counts more than a vague one at 0.3).</p>
             <p><strong>Step 4:</strong> Risk flags extracted (fraud allegations, SEC investigations, lawsuits, etc.) — these become hard penalties on the Investability Score.</p>
-            <p><strong>Example:</strong> 3 relevant articles with (sentiment=+0.6, conf=0.9), (sentiment=+0.2, conf=0.5), (sentiment=-0.3, conf=0.7). Score = (0.6×0.9 + 0.2×0.5 + -0.3×0.7) / (0.9 + 0.5 + 0.7) = 0.44 / 2.1 = <strong>+0.21</strong></p>
+            <p><strong>Example:</strong> 3 relevant articles with (sentiment=+0.6, conf=0.9), (sentiment=+0.2, conf=0.5), (sentiment=-0.3, conf=0.7). Raw score = (0.6×0.9 + 0.2×0.5 + -0.3×0.7) / (0.9 + 0.5 + 0.7) = 0.44 / 2.1 = <strong>+0.21</strong> → displayed as <strong>+21</strong> in the UI.</p>
           </div>
         </div>
       </div>
