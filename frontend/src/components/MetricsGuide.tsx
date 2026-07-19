@@ -328,11 +328,10 @@ export default function MetricsGuide({ stock }: Props) {
           </div>
           <div className="score-breakdown-details">
             <p><strong>Per-filter scoring (0 to 1):</strong></p>
-            <p>• At the threshold = 0.5 (you passed, but barely)</p>
+            <p>• At the threshold = 0 (you just barely passed)</p>
             <p>• At the best end of the range = 1.0 (you crushed it)</p>
-            <p>• The "× 0.5 + 0.5" formula ensures passing always scores at least 0.5</p>
             <p><strong>Final score:</strong> average of all per-filter scores × 100</p>
-            <p><strong>Example:</strong> P/E threshold is 50 (range 5–50). Stock with P/E 12: per-filter score = (50-12)/(50-5) × 0.5 + 0.5 = 0.92. Stock at P/E 48: score = 0.52 (barely passed). If all 12 filters average 0.73, the Fundamental Score = 73.</p>
+            <p><strong>Example:</strong> P/E threshold is 50 (best possible is 5). Stock with P/E 12: score = (50 - 12) / (50 - 5) = 0.84. Stock at P/E 48: score = (50 - 48) / (50 - 5) = 0.04 (barely passed). If all 12 filters average 0.60, the Fundamental Score = <strong>60</strong>.</p>
           </div>
         </div>
 

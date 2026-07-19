@@ -115,13 +115,12 @@ def calculate_fundamental_score(stock: dict, filters: dict) -> float:
     """
     Calculate how STRONGLY a stock passes the filters (0-100 scale).
 
-    A stock that barely passes every filter gets a low score.
-    A stock that crushes every filter gets a high score.
+    A stock that barely passes every filter scores 0.
+    A stock that crushes every filter scores 100.
 
     Scoring method:
-    - For each filter, calculate how far beyond the threshold the stock is
-    - Normalize each to a 0-1 scale based on realistic ranges
-    - Average all individual scores → final fundamental score (0-100)
+    - For each filter, score 0-1: 0 = exactly at threshold, 1 = best possible value
+    - Average all per-filter scores × 100 = final fundamental score (0-100)
 
     This score is used for ranking — which value stocks are the MOST compelling?
     """
@@ -137,26 +136,22 @@ def calculate_fundamental_score(stock: dict, filters: dict) -> float:
         filter_min = filter_config.get("min", 0)
         filter_max = filter_config.get("max", 100)
 
-        # Calculate how far beyond the threshold this stock is
+        # Calculate how far beyond the threshold this stock is (0 to 1)
         if filter_type == "max":
-            # Lower is better. Score = how far below threshold (normalized)
-            # Best case: value = filter_min, Score = 1.0
-            # Threshold case: value = threshold, Score = 0.5
-            # Range: filter_min to threshold (maps to 1.0 to 0.5)
+            # Lower is better.
+            # At threshold = 0 (barely passing), at filter_min = 1.0 (best)
             if threshold == filter_min:
                 score = 1.0 if value <= threshold else 0.0
             else:
-                # How much room between filter_min and threshold did we use?
-                score = max(0.0, min(1.0, (threshold - value) / (threshold - filter_min) * 0.5 + 0.5))
+                score = max(0.0, min(1.0, (threshold - value) / (threshold - filter_min)))
 
         elif filter_type == "min":
-            # Higher is better. Score = how far above threshold (normalized)
-            # Threshold case: value = threshold, Score = 0.5
-            # Best case: value = filter_max, Score = 1.0
+            # Higher is better.
+            # At threshold = 0 (barely passing), at filter_max = 1.0 (best)
             if filter_max == threshold:
                 score = 1.0 if value >= threshold else 0.0
             else:
-                score = max(0.0, min(1.0, (value - threshold) / (filter_max - threshold) * 0.5 + 0.5))
+                score = max(0.0, min(1.0, (value - threshold) / (filter_max - threshold)))
         else:
             continue
 
@@ -165,7 +160,7 @@ def calculate_fundamental_score(stock: dict, filters: dict) -> float:
     if not scores:
         return 0.0
 
-    # Average all individual filter scores, scale to 0-100
+    # Average per-filter scores (each 0-1) and scale to 0-100
     return round((sum(scores) / len(scores)) * 100, 1)
 
 
