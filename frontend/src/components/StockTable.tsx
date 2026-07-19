@@ -149,13 +149,20 @@ function renderTrendCell(trend: TrendData | undefined) {
 
   const pct = trend.changePercent;
   const arrow = pct >= 0 ? '↑' : '↓';
-  const color = trend.isFalling ? '#ef4444' : pct >= 0.05 ? '#4ade80' : pct <= -0.05 ? '#fb923c' : '#94a3b8';
+  const color = trend.isFalling ? '#ef4444'
+    : trend.isRecovering ? '#4ade80'
+    : trend.isStabilizing ? '#fbbf24'
+    : pct >= 0.05 ? '#4ade80'
+    : pct <= -0.05 ? '#fb923c'
+    : '#94a3b8';
   const label = `${arrow} ${(Math.abs(pct) * 100).toFixed(1)}%`;
 
   return (
     <span className="trend-cell" style={{ color }}>
       {label}
       {trend.isFalling && <span className="falling-badge">FALLING</span>}
+      {trend.isStabilizing && <span className="stabilizing-badge">STABILIZING</span>}
+      {trend.isRecovering && <span className="recovering-badge">RECOVERING</span>}
     </span>
   );
 }

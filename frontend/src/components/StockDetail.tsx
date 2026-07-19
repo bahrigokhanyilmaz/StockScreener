@@ -141,6 +141,16 @@ export default function StockDetail({ ticker, onClose }: Props) {
                   {trend.change10d <= -0.15 ? `, ${(trend.change10d * 100).toFixed(1)}% in 10d` : ''})
                 </div>
               )}
+              {trend.isStabilizing && (
+                <div className="stabilizing-notice">
+                  ◆ Decline appears to be stabilizing — flat/up for {trend.consecutiveUpDays} day{trend.consecutiveUpDays > 1 ? 's' : ''} after a significant drop
+                </div>
+              )}
+              {trend.isRecovering && (
+                <div className="recovering-notice">
+                  ▲ Recovery underway — {trend.consecutiveUpDays} consecutive up days following a decline
+                </div>
+              )}
             </div>
           )}
 

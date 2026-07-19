@@ -1056,3 +1056,43 @@ th.sticky-col {
   padding: 0.3rem 0.5rem;
   border-radius: 4px;
 }
+
+
+/* Stabilizing & Recovering badges */
+.stabilizing-badge {
+  display: block;
+  font-size: 0.5rem;
+  background: #422006;
+  color: #fbbf24;
+  padding: 0.1rem 0.2rem;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+.recovering-badge {
+  display: block;
+  font-size: 0.5rem;
+  background: #052e16;
+  color: #4ade80;
+  padding: 0.1rem 0.2rem;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+.stabilizing-notice {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: #fbbf24;
+  background: #1c1917;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+}
+
+.recovering-notice {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: #86efac;
+  background: #052e16;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+}
