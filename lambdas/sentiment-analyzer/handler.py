@@ -50,14 +50,22 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
   "sentiment": <float from -1.0 to 1.0>,
   "confidence": <float from 0.0 to 1.0>,
   "summary": "<one sentence about the article's implication for investors>",
-  "risk_flags": [<list of strings, empty if none>]
+  "risk_flags": [<list of strings from allowed values only, empty if none>]
 }}
 
 Scoring guide:
 - relevant: Is this article actually about {ticker}? If it mentions the company only in passing, or is about a different topic, mark false.
 - sentiment: -1.0 = very negative for stock (fraud, lawsuits, bankruptcy). 0.0 = neutral. +1.0 = very positive (strong earnings beat, major contract win).
 - confidence: How confident you are in the sentiment score. Low confidence for short/vague articles.
-- risk_flags: Only include if serious. Examples: "SEC_investigation", "lawsuit", "fraud_allegation", "regulatory_risk", "management_departure", "accounting_irregularity", "product_recall"
+- risk_flags: Only include if the article describes one of these SPECIFIC situations. Use ONLY these exact values — do not invent new ones:
+  "SEC_investigation" — active SEC enforcement or investigation
+  "fraud_allegation" — alleged fraud by the company or executives
+  "accounting_irregularity" — restatements, audit concerns, material weakness
+  "lawsuit" — material litigation (class action, patent, antitrust)
+  "regulatory_risk" — new regulation threatening the business model
+  "management_departure" — sudden CEO/CFO exit without succession plan
+  "product_recall" — major product safety issue or recall
+  "revenue_risk" — significant revenue threat (major contract loss, key customer departure, partnership termination)
 
 Article title: {title}
 Article source: {source}

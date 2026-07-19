@@ -105,6 +105,7 @@ function formatRiskFlag(flag: string): string {
     'regulatory_risk': 'REG RISK',
     'management_departure': 'MGMT',
     'product_recall': 'RECALL',
+    'revenue_risk': 'REV RISK',
   };
   return map[flag] || flag.replace(/_/g, ' ').toUpperCase().slice(0, 8);
 }

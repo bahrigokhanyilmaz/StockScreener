@@ -107,6 +107,7 @@ RISK_FLAG_PENALTIES = {
     "regulatory_risk": -15,
     "management_departure": -10,
     "product_recall": -10,
+    "revenue_risk": -15,
 }
 
 
