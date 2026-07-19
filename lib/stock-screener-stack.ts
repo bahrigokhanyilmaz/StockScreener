@@ -249,6 +249,9 @@ export class StockScreenerStack extends cdk.Stack {
     const historyResource = singleStockResource.addResource('history');
     historyResource.addMethod('GET', lambdaIntegration);
 
+    const pricesResource = singleStockResource.addResource('prices');
+    pricesResource.addMethod('GET', lambdaIntegration);
+
     const newsResource = singleStockResource.addResource('news');
     newsResource.addMethod('GET', lambdaIntegration);
 

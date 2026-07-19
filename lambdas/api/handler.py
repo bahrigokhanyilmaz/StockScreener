@@ -295,6 +295,32 @@ def get_pipeline_status():
     })
 
 
+def get_price_history(ticker: str):
+    """
+    GET /stocks/{ticker}/prices — 30-day daily price history.
+
+    Returns OHLCV bars for the stock, used for trend detection and mini charts.
+    Data comes from Polygon via the score calculator's daily backfill.
+    """
+    table = get_table()
+
+    result = table.get_item(
+        Key={"PK": f"PRICE_HISTORY#{ticker.upper()}", "SK": "DAILY"}
+    )
+
+    item = result.get("Item")
+    if not item:
+        return response(200, {"ticker": ticker.upper(), "bars": [], "bar_count": 0})
+
+    return response(200, decimal_to_float({
+        "ticker": ticker.upper(),
+        "bars": item.get("bars", []),
+        "bar_count": item.get("bar_count", 0),
+        "from_date": item.get("from_date", ""),
+        "to_date": item.get("to_date", ""),
+    }))
+
+
 def get_industry_averages():
     """
     GET /industries — Industry median benchmarks.
@@ -368,6 +394,11 @@ def handler(event, context):
         elif "/history" in path and method == "GET":
             ticker = path_params.get("ticker") or path.split("/")[2]
             return get_stock_history(ticker)
+
+        # Route: GET /stocks/{ticker}/prices
+        elif "/prices" in path and method == "GET":
+            ticker = path_params.get("ticker") or path.split("/")[2]
+            return get_price_history(ticker)
 
         # Route: GET /stocks/{ticker}/news
         elif "/news" in path and method == "GET":

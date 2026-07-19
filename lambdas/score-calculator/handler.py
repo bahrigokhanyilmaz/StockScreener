@@ -98,6 +98,92 @@ def enrich_with_sic_industry(stocks: list):
     print(f"  Mapped {mapped}/{len(stocks)} stocks to SIC industries")
 
 
+def backfill_price_history(scored_stocks: list, today: str):
+    """
+    Fetch 30-day price history from Polygon for each passing stock.
+
+    Stores as PRICE_HISTORY#{ticker} in DynamoDB with a list of daily bars.
+    Only backfills if the stock doesn't already have recent price history
+    (avoids redundant calls on subsequent runs).
+
+    Polygon /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}: 5 calls/min.
+    For ~6 stocks = ~72 seconds with 12s pacing.
+    """
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if not table_name:
+        return
+
+    from datetime import timedelta
+
+    table = dynamodb.Table(table_name)
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+    from_date = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    symbols = [s.get("symbol", "") for s in scored_stocks if s.get("symbol")]
+    print(f"  Backfilling 30-day price history for {len(symbols)} stocks...")
+
+    for i, symbol in enumerate(symbols):
+        # Check if we already have recent history (skip if last backfill was today)
+        try:
+            existing = table.get_item(
+                Key={"PK": f"PRICE_HISTORY#{symbol}", "SK": "DAILY"},
+                ProjectionExpression="last_backfill",
+            ).get("Item", {})
+
+            if existing.get("last_backfill") == today:
+                print(f"    {symbol}: already backfilled today, skipping")
+                continue
+        except Exception:
+            pass
+
+        # Fetch from Polygon
+        try:
+            key = get_polygon_key()
+            url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{from_date}/{today}"
+            resp = http_requests.get(url, params={"apiKey": key, "adjusted": "true"}, timeout=15)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                bars = data.get("results", [])
+                if bars:
+                    # Store as compact list: [{d: "2026-07-01", c: 123.45, v: 1000000}, ...]
+                    price_history = []
+                    for bar in bars:
+                        ts = bar.get("t", 0) / 1000  # ms → seconds
+                        bar_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                        price_history.append({
+                            "d": bar_date,
+                            "o": round(bar.get("o", 0), 2),
+                            "h": round(bar.get("h", 0), 2),
+                            "l": round(bar.get("l", 0), 2),
+                            "c": round(bar.get("c", 0), 2),
+                            "v": bar.get("v", 0),
+                        })
+
+                    # Write to DynamoDB
+                    table.put_item(Item=_to_decimal({
+                        "PK": f"PRICE_HISTORY#{symbol}",
+                        "SK": "DAILY",
+                        "symbol": symbol,
+                        "bars": price_history,
+                        "bar_count": len(price_history),
+                        "from_date": from_date,
+                        "to_date": today,
+                        "last_backfill": today,
+                    }))
+                    print(f"    {symbol}: {len(price_history)} daily bars stored")
+                else:
+                    print(f"    {symbol}: no bars returned")
+            else:
+                print(f"    {symbol}: Polygon returned {resp.status_code}")
+        except Exception as e:
+            print(f"    {symbol}: error — {e}")
+
+        # Polygon rate limit: 5 calls/min → 12s pacing
+        if i < len(symbols) - 1:
+            time.sleep(12.5)
+
+
 # Risk flag penalties — severe issues get hard score reductions
 RISK_FLAG_PENALTIES = {
     "SEC_investigation": -30,
@@ -549,6 +635,9 @@ def handler(event, context):
 
     # Enrich with SEC SIC industry labels (for industry comparison matching)
     enrich_with_sic_industry(scored)
+
+    # Backfill 30-day price history from Polygon (for trend detection)
+    backfill_price_history(scored, today)
 
     # Persist to DynamoDB
     persist_to_dynamodb(scored, today)
