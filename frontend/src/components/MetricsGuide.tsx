@@ -324,12 +324,15 @@ export default function MetricsGuide({ stock }: Props) {
             Measures how strongly a stock passes each value filter. A stock that barely passes every metric scores low; one that crushes every threshold scores high.
           </p>
           <div className="def-formula">
-            <span className="formula-label">Method:</span> For each filter, score how far beyond the threshold the stock is (0–1 per filter), then average all scores × 100.
+            <span className="formula-label">Method:</span> Each filter is scored 0–1 individually, then all scores are averaged and multiplied by 100.
           </div>
           <div className="score-breakdown-details">
-            <p><strong>For "lower is better" filters</strong> (P/E, D/E): A value at the threshold = 0.5. A value at the best end of the range = 1.0.</p>
-            <p><strong>For "higher is better" filters</strong> (margins, growth): A value at the threshold = 0.5. A value at the top of the range = 1.0.</p>
-            <p><strong>Example:</strong> P/E filter threshold is 50, range 5–50. A stock with P/E of 12 scores: (50 - 12) / (50 - 5) × 0.5 + 0.5 = <strong>0.92</strong>. A stock at P/E 48 scores <strong>0.52</strong> (barely passing).</p>
+            <p><strong>Per-filter scoring (0 to 1):</strong></p>
+            <p>• At the threshold = 0.5 (you passed, but barely)</p>
+            <p>• At the best end of the range = 1.0 (you crushed it)</p>
+            <p>• The "× 0.5 + 0.5" formula ensures passing always scores at least 0.5</p>
+            <p><strong>Final score:</strong> average of all per-filter scores × 100</p>
+            <p><strong>Example:</strong> P/E threshold is 50 (range 5–50). Stock with P/E 12: per-filter score = (50-12)/(50-5) × 0.5 + 0.5 = 0.92. Stock at P/E 48: score = 0.52 (barely passed). If all 12 filters average 0.73, the Fundamental Score = 73.</p>
           </div>
         </div>
 
