@@ -93,6 +93,22 @@ function getDaysTracked(lastUpdated: string | null | undefined): string {
   return days <= 0 ? '<1' : String(days);
 }
 
+function formatRiskFlag(flag: string): string {
+  const map: Record<string, string> = {
+    'fraud_allegation': 'FRAUD',
+    'SEC_investigation': 'SEC',
+    'securities_fraud_investigation': 'SEC FRAUD',
+    'accounting_irregularity': 'ACCT',
+    'insider_selling': 'INSIDER',
+    'lawsuit': 'LAWSUIT',
+    'potential_class_action_lawsuit': 'LAWSUIT',
+    'regulatory_risk': 'REG RISK',
+    'management_departure': 'MGMT',
+    'product_recall': 'RECALL',
+  };
+  return map[flag] || flag.replace(/_/g, ' ').toUpperCase().slice(0, 8);
+}
+
 function getSellSignal(price: number | null, targetPrice: number | null): string {
   if (!price || !targetPrice || targetPrice <= 0) return '';
   const upside = (targetPrice - price) / price;
@@ -154,6 +170,15 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
                   <span className="score-badge" style={{ backgroundColor: getScoreColor(stock.investability_score) }}>
                     {stock.investability_score !== null ? stock.investability_score.toFixed(0) : '—'}
                   </span>
+                  {stock.risk_flags && stock.risk_flags.length > 0 && (
+                    <div className="table-risk-flags">
+                      {stock.risk_flags.map((flag: string, i: number) => (
+                        <span key={i} className="table-risk-badge" title={flag}>
+                          {formatRiskFlag(flag)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </td>
                 <td>
                   <span className={`status-pill ${stock.tracking_status === 'ACTIVE' ? 'status-active' : stock.tracking_status === 'GRACE' ? 'status-grace' : ''}`}>

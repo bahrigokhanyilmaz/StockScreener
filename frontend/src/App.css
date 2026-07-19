@@ -933,3 +933,24 @@ th.sticky-col {
 .score-breakdown-details strong {
   color: #cbd5e1;
 }
+
+
+/* Table Risk Flag Badges */
+.table-risk-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  margin-top: 0.2rem;
+}
+
+.table-risk-badge {
+  display: inline-block;
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
