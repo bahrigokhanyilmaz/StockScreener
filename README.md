@@ -32,8 +32,9 @@ API Gateway (REST) → Lambda → DynamoDB → React Dashboard
 
 ## Live Demo
 
+- **Dashboard**: https://main.d2ned6rk557ndc.amplifyapp.com
 - **API**: https://kw8mlahpj2.execute-api.us-east-2.amazonaws.com/prod/
-- **Frontend**: Run locally with `cd frontend && npm run dev`
+- **Frontend (local)**: `cd frontend && npm run dev`
 
 ## Quick Start
 

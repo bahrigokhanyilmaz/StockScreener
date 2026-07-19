@@ -150,6 +150,7 @@ Total: ~15-20 minutes per run.
 | Lambda (Step 7) | stock-screener-score-calculator |
 | Lambda (Step 8) | stock-screener-alert-checker |
 | Lambda (API) | stock-screener-api |
+| Amplify Hosting | d2ned6rk557ndc (https://main.d2ned6rk557ndc.amplifyapp.com) |
 
 ### SSM Parameters
 
@@ -259,7 +260,7 @@ Final: clamped 0-100
 | API Gateway (REST) | COMPLETE |
 | React dashboard (table + detail + news) | COMPLETE |
 | Company profiles (Finnhub + Polygon) | COMPLETE |
-| Amplify deployment (public URL) | NEXT |
+| Amplify deployment (public URL) | COMPLETE |
 | Retroactive analysis (Athena) | FUTURE |
 
 ### Conventions
