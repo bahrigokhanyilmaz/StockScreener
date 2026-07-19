@@ -104,6 +104,14 @@ def analyze_article(article: dict, ticker: str, company_name: str, model_id: str
         response_body = json.loads(response["body"].read())
         content = response_body.get("content", [{}])[0].get("text", "")
 
+        # Strip markdown code fences if Claude wraps its JSON response
+        content = content.strip()
+        if content.startswith("```"):
+            # Remove opening fence (```json or ```)
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3].strip()
+
         # Parse Claude's JSON response
         analysis = json.loads(content)
 
