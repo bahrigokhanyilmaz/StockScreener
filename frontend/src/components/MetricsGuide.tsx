@@ -303,16 +303,18 @@ export default function MetricsGuide({ stock }: Props) {
             <span className="def-name">Investability Score (0–100)</span>
           </div>
           <p className="def-text">
-            The final ranking score that combines fundamentals and market sentiment.
+            The final ranking score that combines fundamentals and market sentiment. Both components are on a 0–100 scale, so the result properly fills 0–100.
           </p>
           <div className="def-formula">
-            <span className="formula-label">Formula:</span> (0.7 × Fundamental Score) + (0.3 × Sentiment Adjustment) + Risk Penalties
+            <span className="formula-label">Formula:</span> (0.7 × Fundamental Score) + (0.3 × Sentiment Normalized) + Risk Penalties
           </div>
           <div className="score-breakdown-details">
-            <p><strong>Sentiment Adjustment</strong> = Sentiment Score × 25 × Confidence</p>
-            <p>Range: -7.5 to +7.5 (sentiment can add up to 7.5 points or subtract up to 7.5 points)</p>
-            <p><strong>Risk Penalties:</strong> Fraud allegation (-35), SEC investigation (-30), accounting irregularity (-25), regulatory risk (-15), lawsuit/management departure/product recall (-10)</p>
-            <p><strong>Example:</strong> Fundamental 60, Sentiment +0.4 with confidence 0.8, no risk flags → (0.7 × 60) + (0.3 × 0.4 × 25 × 0.8) = 42 + 2.4 = <strong>44.4</strong></p>
+            <p><strong>Sentiment Normalized (0–100):</strong> 50 + (raw_sentiment × 50 × confidence)</p>
+            <p>• Neutral news or low confidence → 50 (no impact)</p>
+            <p>• Very positive, high confidence → approaches 100 (boosts score)</p>
+            <p>• Very negative, high confidence → approaches 0 (drags score down)</p>
+            <p><strong>Risk Penalties:</strong> Fraud (-35), SEC investigation (-30), accounting irregularity (-25), revenue risk (-15), regulatory risk (-15), lawsuit/management/recall (-10)</p>
+            <p><strong>Example:</strong> Fundamental 64, Sentiment raw -0.28 with confidence 0.55 → Sentiment normalized = 50 + (-0.28 × 50 × 0.55) = 42.3 → Investability = (0.7 × 64) + (0.3 × 42.3) = 44.8 + 12.7 = <strong>57.5</strong> before penalties.</p>
           </div>
         </div>
 

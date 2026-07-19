@@ -350,10 +350,18 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     """
     Calculate the final Investability Score for a single stock.
 
-    Combines:
-    1. Fundamental score (0-100) — how well it passes value filters
-    2. Sentiment score (-1 to +1) — news/market perception
-    3. Risk flag penalties — tiered with time-decay for one-time events
+    Formula: (0.7 × fundamental) + (0.3 × sentiment_normalized) + risk_penalties
+
+    All components on 0-100 scale:
+    - Fundamental: 0 = barely passed, 100 = crushed every filter
+    - Sentiment normalized: 0 = worst possible, 50 = neutral, 100 = best possible
+      Blended toward neutral (50) when confidence is low:
+      sentiment_normalized = 50 + (raw_sentiment × 50 × confidence)
+
+    This ensures:
+    - Max possible (before penalties): (0.7 × 100) + (0.3 × 100) = 100
+    - Neutral sentiment, perfect fundamentals: (0.7 × 100) + (0.3 × 50) = 85
+    - Min possible: (0.7 × 0) + (0.3 × 0) = 0
     """
     fundamental_score = stock.get("fundamental_score", 0.0)
     sentiment_data = stock.get("sentiment", {})
@@ -363,9 +371,12 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     w_fundamental = float(os.environ.get("FUNDAMENTAL_WEIGHT", "0.7"))
     w_sentiment = float(os.environ.get("SENTIMENT_WEIGHT", "0.3"))
 
-    max_sentiment_bonus = 25.0
-    sentiment_adjustment = sentiment_score * max_sentiment_bonus * sentiment_confidence
-    base_score = (w_fundamental * fundamental_score) + (w_sentiment * sentiment_adjustment)
+    # Normalize sentiment to 0-100 scale, blended toward neutral by confidence
+    # raw=-1,conf=1 → 0 | raw=0 or conf=0 → 50 | raw=+1,conf=1 → 100
+    sentiment_normalized = 50 + (sentiment_score * 50 * sentiment_confidence)
+    sentiment_normalized = max(0.0, min(100.0, sentiment_normalized))
+
+    base_score = (w_fundamental * fundamental_score) + (w_sentiment * sentiment_normalized)
 
     # Build/update risk flag ledger — use risk_flags_with_dates (has article publication dates)
     # Falls back to plain risk_flags list for backward compat
@@ -386,8 +397,8 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
             "fundamental_weighted": round(w_fundamental * fundamental_score, 1),
             "sentiment_score": sentiment_score,
             "sentiment_confidence": sentiment_confidence,
-            "sentiment_adjustment": round(sentiment_adjustment, 1),
-            "sentiment_weighted": round(w_sentiment * sentiment_adjustment, 1),
+            "sentiment_normalized": round(sentiment_normalized, 1),
+            "sentiment_weighted": round(w_sentiment * sentiment_normalized, 1),
             "risk_penalties": applied_penalties,
             "total_penalty": total_penalty,
             "base_score_before_penalty": round(base_score, 1),
