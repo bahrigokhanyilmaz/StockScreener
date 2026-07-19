@@ -244,6 +244,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "analyst_recommendation": stock.get("analyst_recommendation"),
                 "target_price_upside": stock.get("target_price_upside"),
                 "institutional_transactions": stock.get("institutional_transactions"),
+                "interest_coverage_ratio": stock.get("interest_coverage_ratio"),
                 "sic_industry": stock.get("sic_industry", ""),
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status

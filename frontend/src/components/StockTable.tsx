@@ -44,6 +44,14 @@ function metricColor(key: string, value: number | null | undefined): string {
   return passes ? '#4ade80' : '#f87171'; // green or red
 }
 
+function icrColor(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '#64748b';
+  if (value >= 5) return '#4ade80';   // strong
+  if (value >= 3) return '#86efac';   // comfortable
+  if (value >= 1) return '#fbbf24';   // tight
+  return '#f87171';                    // can't cover interest
+}
+
 function formatNum(value: number | null | undefined, decimals = 2): string {
   if (value === null || value === undefined) return '—';
   return value.toFixed(decimals);
@@ -110,6 +118,7 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
             <th>PEG</th>
             <th>P/FCF</th>
             <th>D/E</th>
+            <th>ICR</th>
             <th>QR</th>
             <th>Op Margin</th>
             <th>EPS Gr</th>
@@ -151,6 +160,7 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
                 <td style={{ color: metricColor('peg_ratio', stock.peg_ratio) }}>{formatNum(stock.peg_ratio)}</td>
                 <td style={{ color: metricColor('price_to_fcf', stock.price_to_fcf as number | null) }}>{formatNum(stock.price_to_fcf as number | null, 1)}</td>
                 <td style={{ color: metricColor('debt_to_equity', stock.debt_to_equity) }}>{formatNum(stock.debt_to_equity)}</td>
+                <td style={{ color: icrColor(stock.interest_coverage_ratio) }}>{formatNum(stock.interest_coverage_ratio, 1)}</td>
                 <td style={{ color: metricColor('quick_ratio', stock.quick_ratio) }}>{formatNum(stock.quick_ratio)}</td>
                 <td style={{ color: metricColor('operating_margin', stock.operating_margin) }}>{formatPct(stock.operating_margin)}</td>
                 <td style={{ color: metricColor('eps_growth_yoy', stock.eps_growth_yoy as number | null) }}>{formatPct(stock.eps_growth_yoy as number | null)}</td>

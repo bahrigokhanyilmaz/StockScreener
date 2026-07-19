@@ -74,6 +74,7 @@ class StockFundamentals:
     debt_to_equity: Optional[float] = None  # Total Debt / Shareholders Equity
     quick_ratio: Optional[float] = None  # (Cash + Receivables) / Current Liabilities
     current_ratio: Optional[float] = None  # Current Assets / Current Liabilities
+    interest_coverage_ratio: Optional[float] = None  # Operating Income / Interest Expense (>3 = safe)
 
     # === Profitability ===
     operating_margin: Optional[float] = None  # Operating Income / Revenue (as decimal)

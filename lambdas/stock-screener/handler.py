@@ -242,6 +242,28 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                 continue
 
         passes = apply_filter(value, filter_type, threshold, data_format)
+
+        # CONDITIONAL OVERRIDE: Debt/Equity can be overridden by Interest Coverage Ratio.
+        # A company with high D/E but strong ability to service its debt (ICR > 3.0)
+        # is fundamentally different from one that's overleveraged and struggling.
+        if filter_name == "debt_to_equity" and not passes:
+            icr = stock.get("interest_coverage_ratio")
+            if icr is not None and icr > 3.0:
+                passes = True  # Override: company earns 3x+ its interest payments
+                filter_results[filter_name] = {
+                    "value": value,
+                    "threshold": threshold,
+                    "type": filter_type,
+                    "passes": True,
+                    "skipped": False,
+                    "override": "interest_coverage_ratio",
+                    "override_value": round(icr, 2),
+                    "override_reason": f"D/E {value:.2f} exceeds {threshold}, but ICR of {icr:.1f}x proves debt is serviceable",
+                }
+                evaluated_count += 1
+                passed_count += 1
+                continue
+
         filter_results[filter_name] = {
             "value": value,
             "threshold": threshold,

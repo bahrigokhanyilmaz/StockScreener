@@ -35,6 +35,7 @@ export interface Stock {
   est_lt_growth: number | null;
   target_price_upside: number | null;
   analyst_target_price: number | null;
+  interest_coverage_ratio: number | null;
   risk_flags: string[];
   last_updated: string;
 }

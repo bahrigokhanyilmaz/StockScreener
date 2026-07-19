@@ -55,6 +55,7 @@ class EdgarProvider(DataProvider):
         "shares_outstanding": ("CommonStockSharesOutstanding", "shares", True),
         "inventory": ("InventoryNet", "USD", True),
         "cash": ("CashAndCashEquivalentsAtCarryingValue", "USD", True),
+        "interest_expense": ("InterestExpense", "USD", False),
     }
 
     # Alternative revenue tags (companies use different XBRL tags)
@@ -376,6 +377,7 @@ class EdgarProvider(DataProvider):
             liabilities_current = all_frames.get("liabilities_current", {}).get(cik)
             shares = all_frames.get("shares_outstanding", {}).get(cik)
             inventory = all_frames.get("inventory", {}).get(cik)
+            interest_expense = all_frames.get("interest_expense", {}).get(cik)
 
             # Prior year data for growth calculations
             prev_net_income = all_frames.get("prev_net_income", {}).get(cik)
@@ -412,6 +414,13 @@ class EdgarProvider(DataProvider):
                 fcf = operating_cf - (capex or 0)  # capex is typically positive in EDGAR
                 fcf_per_share = fcf / shares
 
+            # Interest Coverage Ratio: Operating Income / Interest Expense
+            # Measures how easily a company can pay interest on its debt.
+            # > 3.0 = comfortable, > 5.0 = strong, < 1.0 = can't cover interest
+            interest_coverage = None
+            if operating_income and interest_expense and interest_expense > 0:
+                interest_coverage = operating_income / interest_expense
+
             stock = StockFundamentals(
                 symbol=symbol,
                 company_name=self._cik_to_company.get(cik, ""),
@@ -430,6 +439,7 @@ class EdgarProvider(DataProvider):
                 debt_to_equity=debt_to_equity,
                 quick_ratio=quick_ratio,
                 current_ratio=current_ratio,
+                interest_coverage_ratio=interest_coverage,
                 operating_margin=operating_margin,
                 net_profit_margin=net_margin,
                 gross_margin=None,
