@@ -58,7 +58,14 @@ export function applyFilters(stocks: Record<string, unknown>[], filters: FilterV
       // Convert percent filters: slider shows 20 (meaning 20%), data stores 0.20
       const effectiveThreshold = config.format === 'percent' ? threshold / 100 : threshold;
 
-      if (config.type === 'max' && value > effectiveThreshold) return false;
+      if (config.type === 'max' && value > effectiveThreshold) {
+        // D/E override: skip if Interest Coverage Ratio > 3.0 (debt is serviceable)
+        if (config.key === 'debt_to_equity') {
+          const icr = stock['interest_coverage_ratio'] as number | null | undefined;
+          if (icr !== null && icr !== undefined && icr > 3.0) continue; // override
+        }
+        return false;
+      }
       if (config.type === 'min' && value < effectiveThreshold) return false;
     }
     return true;
@@ -111,6 +118,9 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
                   onChange={(e) => handleSliderChange(config.key, parseFloat(e.target.value))}
                   className="slider-input"
                 />
+                {config.key === 'debt_to_equity' && (
+                  <span className="override-note">or ICR &gt; 3.0x</span>
+                )}
               </div>
             );
           })}

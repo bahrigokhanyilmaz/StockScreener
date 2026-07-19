@@ -52,6 +52,14 @@ function icrColor(value: number | null | undefined): string {
   return '#f87171';                    // can't cover interest
 }
 
+function deColor(de: number | null | undefined, icr: number | null | undefined): string {
+  if (de === null || de === undefined) return '#64748b';
+  if (de <= 1.0) return '#4ade80'; // passes threshold — green
+  // Exceeds threshold — check ICR override
+  if (icr !== null && icr !== undefined && icr > 3.0) return '#fbbf24'; // amber: overridden
+  return '#f87171'; // red: fails with no override
+}
+
 function formatNum(value: number | null | undefined, decimals = 2): string {
   if (value === null || value === undefined) return '—';
   return value.toFixed(decimals);
@@ -159,7 +167,12 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
                 <td style={{ color: metricColor('forward_pe', stock.forward_pe as number | null) }}>{formatNum(stock.forward_pe as number | null, 1)}</td>
                 <td style={{ color: metricColor('peg_ratio', stock.peg_ratio) }}>{formatNum(stock.peg_ratio)}</td>
                 <td style={{ color: metricColor('price_to_fcf', stock.price_to_fcf as number | null) }}>{formatNum(stock.price_to_fcf as number | null, 1)}</td>
-                <td style={{ color: metricColor('debt_to_equity', stock.debt_to_equity) }}>{formatNum(stock.debt_to_equity)}</td>
+                <td style={{ color: deColor(stock.debt_to_equity, stock.interest_coverage_ratio) }}>
+                  {formatNum(stock.debt_to_equity)}
+                  {stock.debt_to_equity !== null && stock.debt_to_equity > 1.0 && stock.interest_coverage_ratio !== null && stock.interest_coverage_ratio > 3.0 && (
+                    <span className="icr-override-badge">ICR✓</span>
+                  )}
+                </td>
                 <td style={{ color: icrColor(stock.interest_coverage_ratio) }}>{formatNum(stock.interest_coverage_ratio, 1)}</td>
                 <td style={{ color: metricColor('quick_ratio', stock.quick_ratio) }}>{formatNum(stock.quick_ratio)}</td>
                 <td style={{ color: metricColor('operating_margin', stock.operating_margin) }}>{formatPct(stock.operating_margin)}</td>

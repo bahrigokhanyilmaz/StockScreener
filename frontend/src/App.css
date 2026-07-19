@@ -892,3 +892,25 @@ th.sticky-col {
   flex-shrink: 0;
   width: 1rem;
 }
+
+
+/* D/E Override Indicators */
+.override-note {
+  display: block;
+  font-size: 0.62rem;
+  color: #fbbf24;
+  margin-top: 0.15rem;
+  font-style: italic;
+}
+
+.icr-override-badge {
+  display: inline-block;
+  font-size: 0.55rem;
+  color: #fbbf24;
+  background: #422006;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  margin-left: 0.25rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
