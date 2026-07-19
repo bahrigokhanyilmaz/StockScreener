@@ -978,3 +978,81 @@ th.sticky-col {
   font-size: 0.65rem;
   color: #64748b;
 }
+
+
+/* Price Trend */
+.trend-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.falling-badge {
+  display: block;
+  font-size: 0.55rem;
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+/* Sparkline in Detail Panel */
+.sparkline-section {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.sparkline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.3rem;
+}
+
+.sparkline-label {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sparkline-stats {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.sparkline-days {
+  color: #64748b;
+  font-size: 0.65rem;
+  font-weight: 400;
+}
+
+.sparkline-chart {
+  display: flex;
+  justify-content: center;
+}
+
+.sparkline-svg {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+}
+
+.falling-warning {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: #fca5a5;
+  background: #450a0a;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+}

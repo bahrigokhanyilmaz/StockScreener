@@ -1,4 +1,5 @@
 import type { Stock } from '../api.ts';
+import type { TrendData } from '../utils/trends.ts';
 
 /**
  * StockTable Component
@@ -9,6 +10,7 @@ import type { Stock } from '../api.ts';
 
 interface Props {
   stocks: Stock[];
+  trends: Record<string, TrendData>;
   selectedTicker: string | null;
   onSelectStock: (ticker: string) => void;
   onRelease: (ticker: string) => void;
@@ -142,7 +144,23 @@ function getSellSignal(price: number | null, targetPrice: number | null): string
   return '';
 }
 
-export default function StockTable({ stocks, selectedTicker, onSelectStock, onRelease }: Props) {
+function renderTrendCell(trend: TrendData | undefined) {
+  if (!trend) return <span style={{ color: '#64748b' }}>—</span>;
+
+  const pct = trend.changePercent;
+  const arrow = pct >= 0 ? '↑' : '↓';
+  const color = trend.isFalling ? '#ef4444' : pct >= 0.05 ? '#4ade80' : pct <= -0.05 ? '#fb923c' : '#94a3b8';
+  const label = `${arrow} ${(Math.abs(pct) * 100).toFixed(1)}%`;
+
+  return (
+    <span className="trend-cell" style={{ color }}>
+      {label}
+      {trend.isFalling && <span className="falling-badge">FALLING</span>}
+    </span>
+  );
+}
+
+export default function StockTable({ stocks, trends, selectedTicker, onSelectStock, onRelease }: Props) {
   if (stocks.length === 0) {
     return (
       <div className="empty-state">
@@ -162,6 +180,7 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
             <th>Days</th>
             <th>Price</th>
             <th>Mkt Cap</th>
+            <th>30d</th>
             <th>P/E</th>
             <th>Fwd P/E</th>
             <th>PEG</th>
@@ -220,6 +239,7 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
                 <td className="days-cell">{getDaysTracked(stock.last_updated)}</td>
                 <td>${formatNum(stock.price)}</td>
                 <td>{formatMarketCap(stock.market_cap)}</td>
+                <td>{renderTrendCell(trends[stock.symbol])}</td>
                 <td style={{ color: metricColor('pe_ratio', stock.pe_ratio) }}>{formatNum(stock.pe_ratio, 1)}</td>
                 <td style={{ color: metricColor('forward_pe', stock.forward_pe as number | null) }}>{formatNum(stock.forward_pe as number | null, 1)}</td>
                 <td style={{ color: metricColor('peg_ratio', stock.peg_ratio) }}>{formatNum(stock.peg_ratio)}</td>

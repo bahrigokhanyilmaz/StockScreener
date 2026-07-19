@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getStocks, getPipelineStatus, untrackStock } from './api.ts';
+import { getStocks, getPipelineStatus, getStockPrices, untrackStock } from './api.ts';
 import type { Stock, PipelineStatus } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
 import FilterSliders, { getDefaultFilters, applyFilters } from './components/FilterSliders.tsx';
 import type { FilterValues } from './components/FilterSliders.tsx';
+import { calculateTrend } from './utils/trends.ts';
+import type { TrendData } from './utils/trends.ts';
 import './App.css';
 
 /**
@@ -20,6 +22,7 @@ function App() {
   const [allStocks, setAllStocks] = useState<Stock[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+  const [trends, setTrends] = useState<Record<string, TrendData>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterValues>(getDefaultFilters());
@@ -36,6 +39,19 @@ function App() {
         setAllStocks(stocksData.stocks);
         setPipelineStatus(statusData);
         setError(null);
+
+        // Fetch price trends for all stocks (parallel)
+        const symbols = stocksData.stocks.map((s: Stock) => s.symbol);
+        const trendResults: Record<string, TrendData> = {};
+        const pricePromises = symbols.map(async (sym: string) => {
+          try {
+            const priceData = await getStockPrices(sym);
+            const trend = calculateTrend(priceData.bars);
+            if (trend) trendResults[sym] = trend;
+          } catch { /* skip if no price data */ }
+        });
+        await Promise.all(pricePromises);
+        setTrends(trendResults);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load data');
       } finally {
@@ -97,6 +113,7 @@ function App() {
               <div className="table-section">
                 <StockTable
                   stocks={filteredStocks}
+                  trends={trends}
                   selectedTicker={selectedTicker}
                   onSelectStock={setSelectedTicker}
                   onRelease={async (ticker) => {

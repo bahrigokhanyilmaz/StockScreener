@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { getStockDetail, getStockHistory, getStockNews } from '../api.ts';
-import type { Stock, ScoreHistoryPoint, NewsArticle } from '../api.ts';
+import { getStockDetail, getStockHistory, getStockNews, getStockPrices } from '../api.ts';
+import type { Stock, ScoreHistoryPoint, NewsArticle, PriceBar } from '../api.ts';
+import { calculateTrend } from '../utils/trends.ts';
+import type { TrendData } from '../utils/trends.ts';
 import MetricsGuide from './MetricsGuide.tsx';
 
 /**
@@ -29,6 +31,8 @@ export default function StockDetail({ ticker, onClose }: Props) {
   const [stock, setStock] = useState<Stock | null>(null);
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([]);
   const [news, setNews] = useState<NewsArticle[]>([]);
+  const [priceBars, setPriceBars] = useState<PriceBar[]>([]);
+  const [trend, setTrend] = useState<TrendData | null>(null);
   const [loading, setLoading] = useState(true);
   const [newsExpanded, setNewsExpanded] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'metrics'>('overview');
@@ -39,14 +43,17 @@ export default function StockDetail({ ticker, onClose }: Props) {
       setNewsExpanded(true);
       setActiveTab('overview');
       try {
-        const [detailData, historyData, newsData] = await Promise.all([
+        const [detailData, historyData, newsData, priceData] = await Promise.all([
           getStockDetail(ticker),
           getStockHistory(ticker),
           getStockNews(ticker),
+          getStockPrices(ticker),
         ]);
         setStock(detailData.stock);
         setHistory(historyData.history);
         setNews(newsData.articles || []);
+        setPriceBars(priceData.bars || []);
+        setTrend(calculateTrend(priceData.bars || []));
       } catch (err) {
         console.error('Failed to load stock detail:', err);
       } finally {
@@ -112,6 +119,30 @@ export default function StockDetail({ ticker, onClose }: Props) {
             <ScoreCard label="Fundamental" value={stock.fundamental_score} max={100} color="#3b82f6" />
             <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)} />
           </div>
+
+          {/* Price Sparkline */}
+          {priceBars.length > 1 && trend && (
+            <div className="sparkline-section">
+              <div className="sparkline-header">
+                <span className="sparkline-label">30-Day Price</span>
+                <span className="sparkline-stats">
+                  <span style={{ color: trend.changePercent >= 0 ? '#4ade80' : '#f87171' }}>
+                    {trend.changePercent >= 0 ? '↑' : '↓'} {(Math.abs(trend.changePercent) * 100).toFixed(1)}%
+                  </span>
+                  <span className="sparkline-days">{priceBars.length}d</span>
+                </span>
+              </div>
+              <div className="sparkline-chart">
+                <Sparkline closes={trend.closes} isFalling={trend.isFalling} />
+              </div>
+              {trend.isFalling && (
+                <div className="falling-warning">
+                  ⚠ Sustained decline detected ({trend.consecutiveDownDays} consecutive down days
+                  {trend.change10d <= -0.15 ? `, ${(trend.change10d * 100).toFixed(1)}% in 10d` : ''})
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Risk Flags */}
           {stock.risk_flags && stock.risk_flags.length > 0 && (
@@ -203,6 +234,39 @@ export default function StockDetail({ ticker, onClose }: Props) {
         <small>Last updated: {stock.last_updated ? new Date(stock.last_updated).toLocaleString() : '—'}</small>
       </div>
     </div>
+  );
+}
+
+function Sparkline({ closes, isFalling }: { closes: number[]; isFalling: boolean }) {
+  if (closes.length < 2) return null;
+
+  const width = 280;
+  const height = 40;
+  const padding = 2;
+
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+
+  const points = closes.map((c, i) => {
+    const x = padding + (i / (closes.length - 1)) * (width - padding * 2);
+    const y = padding + (1 - (c - min) / range) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(' ');
+
+  const color = isFalling ? '#ef4444' : closes[closes.length - 1] >= closes[0] ? '#4ade80' : '#fb923c';
+
+  return (
+    <svg width={width} height={height} className="sparkline-svg">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

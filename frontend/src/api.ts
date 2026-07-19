@@ -88,6 +88,19 @@ export async function getStockNews(ticker: string): Promise<{ articles: NewsArti
   return fetchJson(`/stocks/${ticker}/news`);
 }
 
+export interface PriceBar {
+  d: string;   // date YYYY-MM-DD
+  o: number;   // open
+  h: number;   // high
+  l: number;   // low
+  c: number;   // close
+  v: number;   // volume
+}
+
+export async function getStockPrices(ticker: string): Promise<{ bars: PriceBar[]; bar_count: number }> {
+  return fetchJson(`/stocks/${ticker}/prices`);
+}
+
 export async function trackStock(ticker: string): Promise<{ message: string }> {
   return fetchJson(`/stocks/${ticker}/track`, { method: 'POST' });
 }
