@@ -135,23 +135,27 @@ def calculate_fundamental_score(stock: dict, filters: dict) -> float:
         filter_type = filter_config["type"]
         filter_min = filter_config.get("min", 0)
         filter_max = filter_config.get("max", 100)
+        data_format = filter_config.get("data_format", "ratio")
+
+        # Convert percent_as_decimal: data stores 0.15 (15%), config uses 15
+        effective_value = value * 100 if data_format == "percent_as_decimal" else value
 
         # Calculate how far beyond the threshold this stock is (0 to 1)
         if filter_type == "max":
             # Lower is better.
             # At threshold = 0 (barely passing), at filter_min = 1.0 (best)
             if threshold == filter_min:
-                score = 1.0 if value <= threshold else 0.0
+                score = 1.0 if effective_value <= threshold else 0.0
             else:
-                score = max(0.0, min(1.0, (threshold - value) / (threshold - filter_min)))
+                score = max(0.0, min(1.0, (threshold - effective_value) / (threshold - filter_min)))
 
         elif filter_type == "min":
             # Higher is better.
             # At threshold = 0 (barely passing), at filter_max = 1.0 (best)
             if filter_max == threshold:
-                score = 1.0 if value >= threshold else 0.0
+                score = 1.0 if effective_value >= threshold else 0.0
             else:
-                score = max(0.0, min(1.0, (value - threshold) / (filter_max - threshold)))
+                score = max(0.0, min(1.0, (effective_value - threshold) / (filter_max - threshold)))
         else:
             continue
 
