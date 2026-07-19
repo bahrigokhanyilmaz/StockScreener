@@ -914,3 +914,22 @@ th.sticky-col {
   font-weight: 600;
   vertical-align: middle;
 }
+
+
+/* Score Breakdown Details */
+.score-breakdown-details {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  line-height: 1.6;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid #1e293b;
+}
+
+.score-breakdown-details p {
+  margin: 0.25rem 0;
+}
+
+.score-breakdown-details strong {
+  color: #cbd5e1;
+}

@@ -296,6 +296,65 @@ export default function MetricsGuide({ stock }: Props) {
 
       {/* Metric Definitions by Category */}
       <div className="definitions-section">
+        <h4>How Scores Are Calculated</h4>
+
+        <div className="definition-card">
+          <div className="def-header">
+            <span className="def-name">Investability Score (0–100)</span>
+          </div>
+          <p className="def-text">
+            The final ranking score that combines fundamentals and market sentiment.
+          </p>
+          <div className="def-formula">
+            <span className="formula-label">Formula:</span> (0.7 × Fundamental Score) + (0.3 × Sentiment Adjustment) + Risk Penalties
+          </div>
+          <div className="score-breakdown-details">
+            <p><strong>Sentiment Adjustment</strong> = Sentiment Score × 25 × Confidence</p>
+            <p>Range: -7.5 to +7.5 (sentiment can add up to 7.5 points or subtract up to 7.5 points)</p>
+            <p><strong>Risk Penalties:</strong> Fraud allegation (-35), SEC investigation (-30), accounting irregularity (-25), regulatory risk (-15), lawsuit/management departure/product recall (-10)</p>
+            <p><strong>Example:</strong> Fundamental 60, Sentiment +0.4 with confidence 0.8, no risk flags → (0.7 × 60) + (0.3 × 0.4 × 25 × 0.8) = 42 + 2.4 = <strong>44.4</strong></p>
+          </div>
+        </div>
+
+        <div className="definition-card">
+          <div className="def-header">
+            <span className="def-name">Fundamental Score (0–100)</span>
+          </div>
+          <p className="def-text">
+            Measures how strongly a stock passes each value filter. A stock that barely passes every metric scores low; one that crushes every threshold scores high.
+          </p>
+          <div className="def-formula">
+            <span className="formula-label">Method:</span> For each filter, score how far beyond the threshold the stock is (0–1 per filter), then average all scores × 100.
+          </div>
+          <div className="score-breakdown-details">
+            <p><strong>For "lower is better" filters</strong> (P/E, D/E): A value at the threshold = 0.5. A value at the best end of the range = 1.0.</p>
+            <p><strong>For "higher is better" filters</strong> (margins, growth): A value at the threshold = 0.5. A value at the top of the range = 1.0.</p>
+            <p><strong>Example:</strong> P/E filter threshold is 50, range 5–50. A stock with P/E of 12 scores: (50 - 12) / (50 - 5) × 0.5 + 0.5 = <strong>0.92</strong>. A stock at P/E 48 scores <strong>0.52</strong> (barely passing).</p>
+          </div>
+        </div>
+
+        <div className="definition-card">
+          <div className="def-header">
+            <span className="def-name">Sentiment Score (-100 to +100)</span>
+          </div>
+          <p className="def-text">
+            AI-analyzed news sentiment from the past 7 days. Claude AI reads each article about the stock, rates it from -1.0 (extremely negative) to +1.0 (extremely positive), and assigns a confidence level (0–1).
+          </p>
+          <div className="def-formula">
+            <span className="formula-label">Method:</span> For each relevant article: Claude assigns (sentiment, confidence). Final score = sum(sentiment × confidence) / sum(confidence) across all relevant articles.
+          </div>
+          <div className="score-breakdown-details">
+            <p><strong>Step 1:</strong> Fetch up to 10 recent articles per stock from 10,000+ news sources.</p>
+            <p><strong>Step 2:</strong> Claude AI reads each article and rates: Is it relevant to this stock? What's the sentiment? How confident is it?</p>
+            <p><strong>Step 3:</strong> Irrelevant articles are discarded. Remaining articles are averaged, weighted by confidence (a definitive article with confidence 0.9 counts more than a vague one at 0.3).</p>
+            <p><strong>Step 4:</strong> Risk flags extracted (fraud allegations, SEC investigations, lawsuits, etc.) — these become hard penalties on the Investability Score.</p>
+            <p><strong>Example:</strong> 3 relevant articles with (sentiment=+0.6, conf=0.9), (sentiment=+0.2, conf=0.5), (sentiment=-0.3, conf=0.7). Score = (0.6×0.9 + 0.2×0.5 + -0.3×0.7) / (0.9 + 0.5 + 0.7) = 0.44 / 2.1 = <strong>+0.21</strong></p>
+          </div>
+        </div>
+      </div>
+
+      {/* Metric Definitions by Category */}
+      <div className="definitions-section">
         <h4>Metric Definitions & Interpretation</h4>
         {CATEGORY_ORDER.map(cat => {
           const metrics = METRIC_DEFINITIONS.filter(m => m.category === cat);
