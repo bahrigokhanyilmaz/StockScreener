@@ -93,8 +93,23 @@ function getDaysTracked(lastUpdated: string | null | undefined): string {
   return days <= 0 ? '<1' : String(days);
 }
 
-function formatRiskFlag(flag: string): string {
-  const map: Record<string, string> = {
+function formatRiskFlag(flag: string | Record<string, unknown>): { label: string; status: string; tooltip: string } {
+  // Handle both old format (string) and new ledger format (object)
+  let flagName: string;
+  let status = '';
+  let daysActive = 0;
+  let firstSeen = '';
+
+  if (typeof flag === 'string') {
+    flagName = flag;
+  } else {
+    flagName = (flag.flag as string) || '';
+    status = (flag.status as string) || '';
+    daysActive = (flag.days_active as number) || 0;
+    firstSeen = (flag.first_seen as string) || '';
+  }
+
+  const labelMap: Record<string, string> = {
     'fraud_allegation': 'FRAUD',
     'SEC_investigation': 'SEC',
     'securities_fraud_investigation': 'SEC FRAUD',
@@ -107,7 +122,16 @@ function formatRiskFlag(flag: string): string {
     'product_recall': 'RECALL',
     'revenue_risk': 'REV RISK',
   };
-  return map[flag] || flag.replace(/_/g, ' ').toUpperCase().slice(0, 8);
+
+  const label = labelMap[flagName] || flagName.replace(/_/g, ' ').toUpperCase().slice(0, 8);
+
+  let tooltip = flagName.replace(/_/g, ' ');
+  if (firstSeen) tooltip += ` | since ${firstSeen}`;
+  if (daysActive > 1) tooltip += ` | ${daysActive} days confirmed`;
+  if (status === 'decayed') tooltip += ' | (priced in)';
+  if (status === 'decaying') tooltip += ' | (decaying)';
+
+  return { label, status, tooltip };
 }
 
 function getSellSignal(price: number | null, targetPrice: number | null): string {
@@ -173,11 +197,18 @@ export default function StockTable({ stocks, selectedTicker, onSelectStock, onRe
                   </span>
                   {stock.risk_flags && stock.risk_flags.length > 0 && (
                     <div className="table-risk-flags">
-                      {stock.risk_flags.map((flag: string, i: number) => (
-                        <span key={i} className="table-risk-badge" title={flag}>
-                          {formatRiskFlag(flag)}
-                        </span>
-                      ))}
+                      {stock.risk_flags.map((flag: string | Record<string, unknown>, i: number) => {
+                        const { label, status, tooltip } = formatRiskFlag(flag);
+                        return (
+                          <span
+                            key={i}
+                            className={`table-risk-badge ${status === 'decayed' ? 'risk-decayed' : status === 'decaying' ? 'risk-decaying' : ''}`}
+                            title={tooltip}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
                 </td>

@@ -110,21 +110,169 @@ RISK_FLAG_PENALTIES = {
     "revenue_risk": -15,
 }
 
+# Flags with uncertain/escalating outcomes — penalty persists until flag disappears
+UNCERTAIN_FLAGS = {"SEC_investigation", "fraud_allegation", "accounting_irregularity", "lawsuit", "regulatory_risk"}
 
-def calculate_investability_score(stock: dict) -> dict:
+# Flags for one-time events — penalty decays over 5 days (market prices it in)
+ONE_TIME_FLAGS = {"management_departure", "product_recall", "revenue_risk"}
+
+# Days after last_seen before a flag is removed from the ledger entirely
+FLAG_EXPIRY_DAYS = 14
+
+# Days over which one-time event penalties decay to zero
+DECAY_DAYS = 5
+
+
+def build_risk_flag_ledger(new_flags: list, existing_ledger: list, today: str) -> list:
+    """
+    Merge today's detected flags with the existing ledger.
+
+    Rules:
+    1. New flag found today that's already in ledger → update last_seen, increment days_active
+    2. New flag not in ledger → add with first_seen = article publication date (not today)
+    3. Existing flag NOT found today → keep but don't update last_seen
+    4. Remove flags where today - last_seen > 14 days (resolved)
+
+    Args:
+        new_flags: list of flag dicts with {"flag": str, "article_date": str} from sentiment
+                   (or plain strings for backward compat)
+        existing_ledger: list of flag dicts from DynamoDB (previous state)
+        today: current date string YYYY-MM-DD
+
+    Returns:
+        Updated ledger (list of flag dicts)
+    """
+    from datetime import datetime, timedelta
+
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+
+    # Index existing ledger by flag name
+    ledger_map = {}
+    for entry in existing_ledger:
+        if isinstance(entry, dict) and "flag" in entry:
+            ledger_map[entry["flag"]] = entry
+        elif isinstance(entry, str):
+            # Migration: old-style string flags → convert to ledger entry
+            ledger_map[entry] = {"flag": entry, "first_seen": today, "last_seen": today, "days_active": 1}
+
+    # Process today's flags
+    for flag_entry in new_flags:
+        # Handle both formats: {"flag": "...", "article_date": "..."} or plain string
+        if isinstance(flag_entry, dict):
+            flag_name = flag_entry.get("flag", "")
+            article_date = flag_entry.get("article_date", "") or today
+        else:
+            flag_name = flag_entry
+            article_date = today
+
+        if not flag_name:
+            continue
+
+        if flag_name in ledger_map:
+            # Re-confirmed: update last_seen and increment days_active
+            ledger_map[flag_name]["last_seen"] = today
+            ledger_map[flag_name]["days_active"] = ledger_map[flag_name].get("days_active", 0) + 1
+            # Update first_seen if article_date is earlier
+            if article_date < ledger_map[flag_name].get("first_seen", today):
+                ledger_map[flag_name]["first_seen"] = article_date
+        else:
+            # New flag — first_seen is the article publication date, not today
+            ledger_map[flag_name] = {
+                "flag": flag_name,
+                "first_seen": article_date,
+                "last_seen": today,
+                "days_active": 1,
+            }
+
+    # Remove expired flags (not seen in 14+ days)
+    result = []
+    for entry in ledger_map.values():
+        last_seen_dt = datetime.strptime(entry["last_seen"], "%Y-%m-%d")
+        days_since_last_seen = (today_dt - last_seen_dt).days
+        if days_since_last_seen <= FLAG_EXPIRY_DAYS:
+            entry["days_since_last_seen"] = days_since_last_seen
+            result.append(entry)
+
+    return result
+
+
+def calculate_penalty_from_ledger(ledger: list, today: str) -> tuple[float, list]:
+    """
+    Calculate total penalty from the risk flag ledger with time-decay.
+
+    Uncertain/escalating risks (fraud, SEC, accounting): Full penalty persists
+    as long as the flag is in the ledger. No decay.
+
+    One-time events (revenue_risk, management, recall): Full penalty on day 0,
+    linear decay to 0 over DECAY_DAYS. After that, flag remains informational
+    (visible in UI) but contributes no penalty.
+
+    Returns:
+        (total_penalty, applied_penalties_list)
+    """
+    from datetime import datetime
+
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+    total_penalty = 0.0
+    applied = []
+
+    for entry in ledger:
+        flag = entry["flag"]
+        base_penalty = RISK_FLAG_PENALTIES.get(flag, -5)
+        first_seen_dt = datetime.strptime(entry["first_seen"], "%Y-%m-%d")
+        days_since_first = (today_dt - first_seen_dt).days
+
+        if flag in UNCERTAIN_FLAGS:
+            # Full penalty — persists until flag expires from ledger
+            penalty = base_penalty
+            status = "active"
+        elif flag in ONE_TIME_FLAGS:
+            # Time-decay: full on day 0, zero after DECAY_DAYS
+            if days_since_first >= DECAY_DAYS:
+                penalty = 0
+                status = "decayed"
+            else:
+                decay_factor = 1.0 - (days_since_first / DECAY_DAYS)
+                penalty = round(base_penalty * decay_factor, 1)
+                status = "decaying"
+        else:
+            # Unknown flag type — treat as one-time with decay
+            if days_since_first >= DECAY_DAYS:
+                penalty = 0
+                status = "decayed"
+            else:
+                decay_factor = 1.0 - (days_since_first / DECAY_DAYS)
+                penalty = round(base_penalty * decay_factor, 1)
+                status = "decaying"
+
+        total_penalty += penalty
+        applied.append({
+            "flag": flag,
+            "base_penalty": base_penalty,
+            "effective_penalty": penalty,
+            "status": status,
+            "first_seen": entry["first_seen"],
+            "last_seen": entry["last_seen"],
+            "days_active": entry.get("days_active", 1),
+            "days_since_first": days_since_first,
+        })
+
+    return total_penalty, applied
+
+
+def calculate_investability_score(stock: dict, existing_ledger: list, today: str) -> dict:
     """
     Calculate the final Investability Score for a single stock.
 
     Combines:
     1. Fundamental score (0-100) — how well it passes value filters
     2. Sentiment score (-1 to +1) — news/market perception
-    3. Risk flag penalties — hard deductions for serious issues
+    3. Risk flag penalties — tiered with time-decay for one-time events
     """
     fundamental_score = stock.get("fundamental_score", 0.0)
     sentiment_data = stock.get("sentiment", {})
     sentiment_score = sentiment_data.get("sentiment_score", 0.0)
     sentiment_confidence = sentiment_data.get("confidence", 0.0)
-    risk_flags = sentiment_data.get("risk_flags", [])
 
     w_fundamental = float(os.environ.get("FUNDAMENTAL_WEIGHT", "0.7"))
     w_sentiment = float(os.environ.get("SENTIMENT_WEIGHT", "0.3"))
@@ -133,18 +281,20 @@ def calculate_investability_score(stock: dict) -> dict:
     sentiment_adjustment = sentiment_score * max_sentiment_bonus * sentiment_confidence
     base_score = (w_fundamental * fundamental_score) + (w_sentiment * sentiment_adjustment)
 
-    total_penalty = 0
-    applied_penalties = []
-    for flag in risk_flags:
-        penalty = RISK_FLAG_PENALTIES.get(flag, -5)
-        total_penalty += penalty
-        applied_penalties.append({"flag": flag, "penalty": penalty})
+    # Build/update risk flag ledger — use risk_flags_with_dates (has article publication dates)
+    # Falls back to plain risk_flags list for backward compat
+    new_flags_input = sentiment_data.get("risk_flags_with_dates") or sentiment_data.get("risk_flags", [])
+    risk_ledger = build_risk_flag_ledger(new_flags_input, existing_ledger, today)
+
+    # Calculate penalty from ledger (with time-decay)
+    total_penalty, applied_penalties = calculate_penalty_from_ledger(risk_ledger, today)
 
     final_score = max(0.0, min(100.0, base_score + total_penalty))
 
     return {
         **stock,
         "investability_score": round(final_score, 1),
+        "risk_ledger": risk_ledger,
         "score_breakdown": {
             "fundamental_score": fundamental_score,
             "fundamental_weighted": round(w_fundamental * fundamental_score, 1),
@@ -170,6 +320,51 @@ def _to_decimal(obj):
         return {k: _to_decimal(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_to_decimal(i) for i in obj]
+    return obj
+
+
+def load_existing_risk_ledgers(symbols: list) -> dict:
+    """
+    Load existing risk_flags (ledger) from DynamoDB for each stock.
+    
+    This allows the score calculator to merge new flags with existing ones
+    rather than replacing them — enabling lifecycle tracking.
+    
+    Returns: { "LRN": [{"flag": "...", "first_seen": "...", ...}], ... }
+    """
+    table_name = os.environ.get("DATA_TABLE_NAME")
+    if not table_name:
+        return {}
+
+    table = dynamodb.Table(table_name)
+    ledgers = {}
+
+    for symbol in symbols:
+        if not symbol:
+            continue
+        try:
+            resp = table.get_item(
+                Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                ProjectionExpression="risk_flags",
+            )
+            item = resp.get("Item", {})
+            flags = item.get("risk_flags", [])
+            # Convert Decimal back to float/int for processing
+            ledgers[symbol] = _from_decimal(flags) if flags else []
+        except Exception:
+            ledgers[symbol] = []
+
+    return ledgers
+
+
+def _from_decimal(obj):
+    """Convert DynamoDB Decimals back to Python floats."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: _from_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_from_decimal(i) for i in obj]
     return obj
 
 
@@ -229,7 +424,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "fundamental_score": stock.get("fundamental_score"),
                 "sentiment_score": stock.get("sentiment", {}).get("sentiment_score"),
                 "sentiment_confidence": stock.get("sentiment", {}).get("confidence"),
-                "risk_flags": stock.get("sentiment", {}).get("risk_flags", []),
+                "risk_flags": stock.get("risk_ledger", []),
                 "passes_screen": stock.get("passes_screen", False),
                 # All screener filter metrics (must match screener-filters.json keys)
                 "pe_ratio": stock.get("pe_ratio"),
@@ -321,8 +516,17 @@ def handler(event, context):
 
     print(f"Calculating investability scores for {len(stocks)} stocks...")
 
-    # Calculate scores
-    scored = [calculate_investability_score(stock) for stock in stocks]
+    # Load existing risk flag ledgers from DynamoDB (for lifecycle management)
+    existing_ledgers = load_existing_risk_ledgers([s.get("symbol", "") for s in stocks])
+
+    # Calculate scores (passing existing ledger for each stock)
+    scored = []
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        existing_ledger = existing_ledgers.get(symbol, [])
+        scored_stock = calculate_investability_score(stock, existing_ledger, today)
+        scored.append(scored_stock)
+
     scored.sort(key=lambda s: s["investability_score"], reverse=True)
 
     # Categorize

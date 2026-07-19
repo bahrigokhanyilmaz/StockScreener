@@ -117,9 +117,30 @@ export default function StockDetail({ ticker, onClose }: Props) {
           {stock.risk_flags && stock.risk_flags.length > 0 && (
             <div className="risk-flags">
               <h4>Risk Flags</h4>
-              {stock.risk_flags.map((flag: string, i: number) => (
-                <span key={i} className="risk-flag-badge">{flag}</span>
-              ))}
+              {stock.risk_flags.map((flag: string | Record<string, unknown>, i: number) => {
+                const entry = typeof flag === 'string'
+                  ? { flag, first_seen: '', last_seen: '', days_active: 0, status: '' }
+                  : flag as Record<string, unknown>;
+                const flagName = (entry.flag as string) || (typeof flag === 'string' ? flag : '');
+                const firstSeen = entry.first_seen as string || '';
+                const daysActive = entry.days_active as number || 0;
+                const status = entry.status as string || '';
+                return (
+                  <div key={i} className="risk-flag-item">
+                    <span className={`risk-flag-badge ${status === 'decayed' ? 'risk-decayed' : ''}`}>
+                      {flagName.replace(/_/g, ' ')}
+                    </span>
+                    {firstSeen && (
+                      <span className="risk-flag-meta">
+                        since {firstSeen}{daysActive > 1 ? ` · ${daysActive}d confirmed` : ''}
+                        {status === 'decayed' && ' · priced in'}
+                        {status === 'decaying' && ' · decaying'}
+                        {status === 'active' && ' · active'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 

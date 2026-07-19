@@ -36,7 +36,7 @@ export interface Stock {
   target_price_upside: number | null;
   analyst_target_price: number | null;
   interest_coverage_ratio: number | null;
-  risk_flags: string[];
+  risk_flags: (string | Record<string, unknown>)[];
   last_updated: string;
 }
 
