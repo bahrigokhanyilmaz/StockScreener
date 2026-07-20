@@ -49,20 +49,21 @@ Total: ~15-20 minutes per run.
 
 **Step 1 — EDGAR Bulk Fetch** (~4 seconds)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
-- ~10 API calls → bulk financials for ALL ~5,097 US public companies
-- Data: Net Income, Revenue, Operating Income, Equity, Debt, Assets, Liabilities, Shares, Cash, CapEx, Operating CF
-- Calculates locally: EPS, D/E, Quick Ratio, Operating Margin, EPS Growth YoY, Revenue Growth YoY, FCF per share
+- ~11 API calls → bulk financials for ALL ~5,097 US public companies
+- Data: Net Income, Revenue, Operating Income, Equity, Debt, Assets, Liabilities, Shares, Cash, CapEx, Operating CF, Interest Expense
+- Calculates locally: EPS, D/E, Quick Ratio, Operating Margin, EPS Growth YoY, Revenue Growth YoY, FCF per share, Interest Coverage Ratio
 - CY2025 primary, CY2024 prior year for growth calculations
 - Output: S3 `step1_fundamentals_*.json`
 
 **Step 2 — Pre-Screen** (instant)
 - Applies 5 EDGAR-evaluable filters:
-  - Debt/Equity < 1.0
+  - Debt/Equity < 1.0 (overridable if ICR > 3.0)
   - Quick Ratio > 1.0
   - Operating Margin > 0%
   - EPS Growth YoY > 0%
   - Revenue Growth YoY > 0%
 - 5,097 → ~69 pass
+- Also computes industry medians: loads `ticker_industry_map.json` from S3, groups all stocks by SEC SIC industry, computes medians, persists to DynamoDB as `INDUSTRY_AVG#` items
 - Output: S3 `step2_prescreen_*.json` (passing_stocks + all_screened)
 
 **Step 3 — Price + Metrics Enrichment** (~5-8 minutes)
@@ -97,13 +98,15 @@ Total: ~15-20 minutes per run.
 - Cost: ~$0.12/day for ~60 articles
 - Output: S3 `step6_sentiment_*.json`
 
-**Step 7 — Score Calculator** (~75 seconds)
-- Investability formula: `(0.7 × fundamental) + (0.3 × sentiment_adj) + risk_penalties`
-- Fetches company descriptions from Polygon `/v3/reference/tickers/{ticker}` (12s pacing, 5/min)
-- Persists ALL metrics to DynamoDB:
-  - LATEST item: all scores, fundamentals, sentiment, profile data
-  - SCORE#date item: historical snapshot (for trend charts)
-  - TRACKING item: status (ACTIVE/GRACE/MANUAL)
+**Step 7 — Score Calculator** (~2-3 minutes)
+- Loads existing risk flag ledgers from DynamoDB (for lifecycle management)
+- Investability formula: `(0.7 × fundamental) + (0.3 × sentiment_normalized) + risk_penalties`
+- Sentiment normalized: `50 + (raw × 50 × confidence)` — maps to 0-100
+- Risk flag ledger: merges new flags from sentiment with existing, applies time-decay
+- Fetches company descriptions from Polygon `/v3/reference/tickers/{ticker}` (12s pacing)
+- Enriches stocks with `sic_industry` from S3 industry map
+- Backfills 30-day price history from Polygon `/v2/aggs/ticker/{ticker}/range/1/day/` (12s pacing)
+- Persists ALL to DynamoDB: LATEST, SCORE#date, TRACKING, PRICE_HISTORY#
 - Output: S3 `step7_scores_*.json`
 
 **Step 8 — Alert Checker** (instant)
@@ -169,10 +172,12 @@ Total: ~15-20 minutes per run.
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
 | STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day, never overwritten) |
 | STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL) |
+| PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV price bars (overwritten daily) |
+| INDUSTRY_AVG#{industry} | METRICS | Industry median benchmarks (overwritten each pipeline run) |
 
 **GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated, projection: ALL)
 
-**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, risk_flags, passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, target_price_upside, institutional_transactions, last_updated
+**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, target_price_upside, institutional_transactions, last_updated
 
 ### API Endpoints
 
@@ -181,22 +186,29 @@ Total: ~15-20 minutes per run.
 | GET | /stocks | All tracked stocks with latest scores (sorted by investability) |
 | GET | /stocks/{ticker} | Full stock detail (profile + fundamentals + sentiment) |
 | GET | /stocks/{ticker}/history | Score history time series (for trend charts) |
+| GET | /stocks/{ticker}/prices | 30-day OHLCV price bars (for sparkline + trend) |
 | GET | /stocks/{ticker}/news | Live news from TickerTick |
 | POST | /stocks/{ticker}/track | Manually track a stock |
 | DELETE | /stocks/{ticker}/track | Stop tracking |
+| GET | /industries | Industry median benchmarks (from SEC SIC data) |
 | GET | /pipeline/status | Pipeline summary (active/grace counts) |
 
 ### Frontend (React + TypeScript, Vite 8)
 
-Located at `frontend/`. Three-panel layout:
-- **Left**: Stock list (sorted by investability score)
-- **Center**: Metrics table (horizontally scrollable, color-coded pass=green/fail=red)
-- **Right**: Detail panel (company profile + business model + scores + news)
+Located at `frontend/`. Deployed to Amplify: https://main.d2ned6rk557ndc.amplifyapp.com
+Deploy script: `./scripts/deploy_frontend.sh`
+
+Layout: Filters (collapsible top bar) → 2-column (table + detail panel)
 
 Components:
-- `StockTable.tsx` — Metrics table with all 12+ filter metrics, color-coded
-- `StockDetail.tsx` — Company description, score cards, risk flags, live news
-- `App.tsx` — Layout + filter sliders + state management
+- `App.tsx` — Layout, filter sliders at top, fetches trends for all stocks on load
+- `StockTable.tsx` — All metrics + 30d trend column + risk badges + ICR override badge
+- `StockDetail.tsx` — Two tabs:
+  - Overview: Company profile, score cards, sparkline chart, risk flags (with ledger metadata), news
+  - Metrics Guide: Industry comparison (real medians from SEC SIC data), scoring methodology, metric definitions with interpretation
+- `FilterSliders.tsx` — Client-side re-filtering with D/E override note ("or ICR > 3.0x")
+- `MetricsGuide.tsx` — Industry averages (fetched from API), metric definitions, scoring formulas explained
+- `utils/trends.ts` — calculateTrend: changePercent, consecutiveDown/Up, isFalling/isStabilizing/isRecovering
 
 ### Screening Filters Config
 
@@ -222,13 +234,86 @@ Source of truth: `shared/config/screener-filters.json`
 ### Investability Score Formula
 
 ```
-investability = (0.7 × fundamental_score) + (0.3 × sentiment_adjustment) + risk_penalties
+investability = (0.7 × fundamental_score) + (0.3 × sentiment_normalized) + risk_penalties
 
-fundamental_score: 0-100 (how strongly stock passes value filters)
-sentiment_adjustment: sentiment_score × 25 × confidence
-risk_penalties: -10 to -35 per flag (SEC investigation, fraud, etc.)
-Final: clamped 0-100
+fundamental_score: 0-100
+  Per filter: 0 = at threshold (barely passed), 1.0 = best possible
+  For percent_as_decimal filters: value × 100 before comparing to config ranges
+  Final = average(per_filter_scores) × 100
+
+sentiment_normalized: 0-100
+  = 50 + (raw_sentiment × 50 × confidence)
+  Where raw_sentiment is -1 to +1, confidence is 0 to 1
+  Neutral (no news or low confidence) = 50
+  
+risk_penalties: applied from risk flag ledger (see below)
+Final: clamped [0, 100]
+
+Range verification:
+  Max: (0.7 × 100) + (0.3 × 100) = 100 ✓
+  Min: 0 (clamped) ✓
+  Neutral midpoint: (0.7 × 50) + (0.3 × 50) = 50 ✓
 ```
+
+### Risk Flag System
+
+**Constrained flag list** (Claude can ONLY return these 8 flags):
+| Flag | Penalty | Category |
+|------|---------|----------|
+| fraud_allegation | -35 | Uncertain (persists) |
+| SEC_investigation | -30 | Uncertain (persists) |
+| accounting_irregularity | -25 | Uncertain (persists) |
+| regulatory_risk | -15 | Uncertain (persists) |
+| lawsuit | -10 | Uncertain (persists) |
+| revenue_risk | -15 | One-time (decays over 5 days) |
+| management_departure | -10 | One-time (decays over 5 days) |
+| product_recall | -10 | One-time (decays over 5 days) |
+
+**Risk Flag Ledger** (tracked over time in DynamoDB):
+- Each flag stored with: `flag`, `first_seen` (article publication date), `last_seen`, `days_active`
+- `first_seen` uses the article's publication date (not pipeline run date) so time-decay starts when the market reacted
+- Uncertain flags: full penalty persists until flag expires (no decay)
+- One-time flags: penalty decays linearly to 0 over 5 days from `first_seen`
+- Flags expire from ledger after 14 days of not being re-confirmed in new articles
+- `risk_flags` in DynamoDB LATEST is now a list of objects (not strings)
+
+### Interest Coverage Ratio (D/E Override)
+
+```
+ICR = Operating Income / Interest Expense (from EDGAR)
+```
+- If D/E > 1.0 (would normally fail), stock can still pass if ICR > 3.0
+- Meaning: company earns 3x+ its interest payments — debt is serviceable
+- Shown in table: D/E value in amber with "ICR✓" badge (not red)
+- Filter slider shows "or ICR > 3.0x" note
+
+### Industry Averages (Static Reference Map)
+
+Architecture:
+- `ticker_industry_map.json` in S3 (600KB, 9,075 tickers → 401 SEC SIC industries)
+- Built once from SEC submissions API (one-time script, re-run monthly if needed)
+- Step 2 (pre-screen) loads map, joins to all 5,097 stocks, computes medians per industry
+- Persisted to DynamoDB as `INDUSTRY_AVG#{industry}` items (189 industries, min 5 stocks each)
+- API endpoint: `GET /industries` returns all industry medians
+- Frontend MetricsGuide matches via `sic_industry` field on each stock
+- Metrics computed: debt_to_equity, quick_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy
+- P/E median not available (requires prices which aren't in Step 1)
+
+### Price History & Trend Detection
+
+- Score calculator fetches 30-day OHLCV bars from Polygon `/v2/aggs/ticker/{ticker}/range/1/day/`
+- Stored as `PRICE_HISTORY#{ticker}` in DynamoDB (one item per stock, ~19 trading bars)
+- Skips backfill if already done today (idempotent)
+- API endpoint: `GET /stocks/{ticker}/prices`
+- Frontend calculates trends from bars:
+  - `changePercent`: overall period change
+  - `consecutiveDownDays`: sustained directional decline (not volatility)
+  - `consecutiveUpDays`: sustained recovery
+  - **FALLING**: 5+ consecutive down days OR -15% in 10 trading days
+  - **STABILIZING**: Was falling (>10% decline in days 5-14 ago), last 1-2 days flat/up
+  - **RECOVERING**: Was falling, now 3+ consecutive up days
+- Table shows 30d trend column (arrow + %, color-coded)
+- Detail panel shows SVG sparkline chart with trend state and day count
 
 ### Key Decisions Log
 
@@ -238,12 +323,21 @@ Final: clamped 0-100
 | Polygon Grouped Daily for prices | 1 call = 12,000+ stock prices. Replaced Twelve Data (8/min too slow) |
 | Finnhub for analyst data | Forward P/E, LT Growth, Analyst Recommendation. 60/min free tier |
 | Polygon for company descriptions | Finnhub profile2 free tier doesn't include descriptions. Polygon does |
+| Polygon for 30-day price history | Per-stock OHLCV bars for trend detection. 5/min, only for ~6 final stocks |
 | Deferred institutional_transactions | No reliable free source. Finnhub `/stock/institutional-ownership` returns access denied |
 | Deferred target_price_upside | Finnhub `/stock/price-target` returns empty on free tier |
 | Local growth/FCF computation | EPS growth from EDGAR (CY2025-CY2024). Gives ~100% coverage vs 36-47% from Finnhub |
 | Missing data = FAIL in full screen | Conservative: if data unavailable, stock doesn't qualify |
-| PythonFunction for score-calculator | Needed requests library for Polygon API calls |
-| Score calculator fetches descriptions | Only ~6 final stocks need Polygon descriptions (5/min is fine for 6 stocks) |
+| D/E override by ICR | Company with D/E > 1.0 passes if Interest Coverage > 3.0 (can service debt) |
+| Static industry map in S3 | SEC SIC codes for 9,075 tickers. One-time build, never changes. No API calls per run |
+| Industry medians from full universe | Computed in Step 2 from all 5,097 stocks (not just filtered survivors) |
+| Risk flags constrained to 8 values | Prevents Claude from inventing flags and double-counting |
+| Time-decay on one-time risk flags | Market prices in contract losses within days. Penalty fades over 5 days |
+| first_seen from article date | Time-decay starts when market reacted (article published), not when we detected it |
+| Sentiment normalized to 0-100 | Old formula maxed at 77.5. New: 50 = neutral, properly fills 0-100 range |
+| Fundamental score 0-1 per filter | Removed old `× 0.5 + 0.5` compression. 0 = at threshold, 1 = best. Simple |
+| percent_as_decimal conversion in scoring | Data stores 0.15, config uses 15. Must × 100 before comparing |
+| Strip markdown from Claude responses | Claude wraps JSON in ```json fences. Parser strips before json.loads() |
 | yfinance blocked from Lambda | Yahoo blocks AWS data center IPs. Can't use from Lambda |
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 
@@ -261,6 +355,13 @@ Final: clamped 0-100
 | React dashboard (table + detail + news) | COMPLETE |
 | Company profiles (Finnhub + Polygon) | COMPLETE |
 | Amplify deployment (public URL) | COMPLETE |
+| Industry averages (SEC SIC static map) | COMPLETE |
+| Interest Coverage Ratio + D/E override | COMPLETE |
+| Risk flag ledger (time-decay lifecycle) | COMPLETE |
+| 30-day price history + trend detection | COMPLETE |
+| Scoring formula normalization (0-100) | COMPLETE |
+| Metrics Guide (definitions + methodology) | COMPLETE |
+| Custom domain for Amplify | NEXT (user to purchase domain) |
 | Retroactive analysis (Athena) | FUTURE |
 
 ### Conventions
