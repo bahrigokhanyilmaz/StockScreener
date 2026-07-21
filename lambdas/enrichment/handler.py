@@ -70,12 +70,23 @@ def get_finnhub_key() -> str:
 
 
 def get_last_trading_day() -> str:
-    today = datetime.now(timezone.utc).date()
-    if datetime.now(timezone.utc).hour < 21:
-        today = today - timedelta(days=1)
-    while today.weekday() >= 5:
-        today = today - timedelta(days=1)
-    return today.strftime("%Y-%m-%d")
+    """
+    Get the most recent COMPLETED trading day for Polygon data.
+    
+    Polygon free tier has a 1 full trading day delay. Data for Monday
+    isn't available until Tuesday. So we need the PREVIOUS completed
+    trading day — not yesterday (which might be today's market).
+    
+    Safe approach: go back 2 days from UTC, then skip weekends.
+    This guarantees we hit a completed trading day even if running
+    early Monday UTC (which is still Sunday/Monday evening US time).
+    """
+    # Go back 2 days to ensure we're past any Polygon delay
+    target = datetime.now(timezone.utc).date() - timedelta(days=2)
+    # Skip weekends
+    while target.weekday() >= 5:
+        target = target - timedelta(days=1)
+    return target.strftime("%Y-%m-%d")
 
 
 # ==========================================
