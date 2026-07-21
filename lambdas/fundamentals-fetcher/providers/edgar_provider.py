@@ -70,7 +70,7 @@ class EdgarProvider(DataProvider):
         Initialize the EDGAR provider.
 
         Args:
-            fiscal_year: Which fiscal year to fetch data for
+            fiscal_year: Base year for balance sheet data (instant items use CY{year}Q4I)
             min_market_cap: Minimum market cap filter (applied after price enrichment)
         """
         self._fiscal_year = fiscal_year
@@ -108,7 +108,7 @@ class EdgarProvider(DataProvider):
 
         print(f"  Loaded {len(self._ticker_to_cik)} ticker mappings")
 
-    def _fetch_frame(self, xbrl_tag: str, unit: str, is_instant: bool, year: int = None) -> dict[int, float]:
+    def _fetch_frame(self, xbrl_tag: str, unit: str, is_instant: bool, year: int = None, quarter: str = None) -> dict[int, float]:
         """
         Fetch a single metric for all companies via the Frames API.
 
@@ -117,16 +117,21 @@ class EdgarProvider(DataProvider):
             unit: The unit (e.g., "USD" or "shares")
             is_instant: True for balance sheet items (point-in-time),
                        False for income statement items (period/duration)
-            year: Fiscal year to fetch (defaults to self._fiscal_year)
+            year: Fiscal year (used when quarter is None)
+            quarter: Specific frame string override (e.g., "CY2026Q1", "CY2025Q4I")
+                    If provided, year and is_instant are ignored.
 
         Returns:
             Dict mapping CIK → value for all companies that reported this metric
         """
-        fiscal_year = year or self._fiscal_year
-        if is_instant:
-            frame = f"CY{fiscal_year}Q4I"
+        if quarter:
+            frame = quarter
         else:
-            frame = f"CY{fiscal_year}"
+            fiscal_year = year or self._fiscal_year
+            if is_instant:
+                frame = f"CY{fiscal_year}Q4I"
+            else:
+                frame = f"CY{fiscal_year}"
 
         url = f"{self.EDGAR_BASE_URL}/us-gaap/{xbrl_tag}/{unit}/{frame}.json"
 
@@ -149,49 +154,87 @@ class EdgarProvider(DataProvider):
             return result
 
         except Exception as e:
-            print(f"    Warning: Failed to fetch frame {xbrl_tag}: {e}")
+            print(f"    Warning: Failed to fetch frame {xbrl_tag}/{frame}: {e}")
             return {}
 
     def _fetch_all_frames(self) -> dict[str, dict[int, float]]:
         """
-        Fetch all metrics from the Frames API for CURRENT and PRIOR year.
+        Fetch all metrics from the Frames API using the right period for each.
 
-        Current year (CY2025): used for ratios and current financials.
-        Prior year (CY2024): used to calculate YoY growth.
+        Strategy:
+        - Balance sheet items (instant): latest available quarter instant (CY2026Q1I)
+        - Income statement items (duration): latest quarter with full coverage (CY2026Q1)
+        - Growth comparison: same quarter prior year (CY2025Q1)
+        - Shares: latest instant available
 
-        Returns:
-            Dict mapping metric_name → {CIK: value} for each metric.
-            Also includes prior year keyed as "prev_net_income", "prev_revenue".
+        This gives us current quarterly data for growth calculations that match
+        what Finviz and other screeners show (TTM/quarterly YoY).
         """
-        prior_year = self._fiscal_year - 1
-        print(f"  Fetching EDGAR frames for CY{self._fiscal_year} (current) + CY{prior_year} (prior)...")
+        # Determine the latest quarter with good coverage
+        # As of July 2026: CY2026Q1 has ~4,942 companies (most have filed)
+        # CY2025Q1 for prior year comparison
+        current_q = "CY2026Q1"
+        prior_q = "CY2025Q1"
+
+        print(f"  Fetching EDGAR frames: {current_q} (current) + {prior_q} (prior) + balance sheet (Q1I+Q4I fallback)...")
         all_data = {}
 
-        # Current year metrics
-        for metric_name, (xbrl_tag, unit, is_instant) in self.FRAME_METRICS.items():
-            frame_data = self._fetch_frame(xbrl_tag, unit, is_instant, year=self._fiscal_year)
+        # Income statement items — current quarter
+        income_metrics = {
+            "net_income": ("NetIncomeLoss", "USD"),
+            "revenue": ("RevenueFromContractWithCustomerExcludingAssessedTax", "USD"),
+            "operating_income": ("OperatingIncomeLoss", "USD"),
+            "operating_cash_flow": ("NetCashProvidedByUsedInOperatingActivities", "USD"),
+            "capex": ("PaymentsToAcquirePropertyPlantAndEquipment", "USD"),
+            "interest_expense": ("InterestExpense", "USD"),
+        }
+
+        for metric_name, (xbrl_tag, unit) in income_metrics.items():
+            frame_data = self._fetch_frame(xbrl_tag, unit, False, quarter=current_q)
             all_data[metric_name] = frame_data
-            count = len(frame_data)
-            print(f"    {metric_name}: {count} companies")
+            print(f"    {metric_name} ({current_q}): {len(frame_data)} companies")
             time.sleep(0.1)
 
-        # Prior year: only need net_income and revenue for growth calculation
-        prev_net_income = self._fetch_frame("NetIncomeLoss", "USD", False, year=prior_year)
+        # Balance sheet items — CY2026Q1I (freshest) with CY2025Q4I fallback (most coverage)
+        balance_metrics = {
+            "stockholders_equity": ("StockholdersEquity", "USD"),
+            "long_term_debt": ("LongTermDebt", "USD"),
+            "assets_current": ("AssetsCurrent", "USD"),
+            "liabilities_current": ("LiabilitiesCurrent", "USD"),
+            "shares_outstanding": ("CommonStockSharesOutstanding", "shares"),
+            "inventory": ("InventoryNet", "USD"),
+            "cash": ("CashAndCashEquivalentsAtCarryingValue", "USD"),
+        }
+
+        for metric_name, (xbrl_tag, unit) in balance_metrics.items():
+            # Primary: latest quarter
+            frame_data = self._fetch_frame(xbrl_tag, unit, False, quarter="CY2026Q1I")
+            # Fallback: fill gaps from prior quarter
+            fallback_data = self._fetch_frame(xbrl_tag, unit, False, quarter="CY2025Q4I")
+            for cik, val in fallback_data.items():
+                if cik not in frame_data:
+                    frame_data[cik] = val
+            all_data[metric_name] = frame_data
+            print(f"    {metric_name} (Q1I+Q4I fallback): {len(frame_data)} companies")
+            time.sleep(0.1)
+
+        # Prior quarter — for YoY growth calculation (same quarter last year)
+        prev_net_income = self._fetch_frame("NetIncomeLoss", "USD", False, quarter=prior_q)
         all_data["prev_net_income"] = prev_net_income
-        print(f"    prev_net_income (CY{prior_year}): {len(prev_net_income)} companies")
+        print(f"    prev_net_income ({prior_q}): {len(prev_net_income)} companies")
         time.sleep(0.1)
 
         prev_revenue = self._fetch_frame(
-            "RevenueFromContractWithCustomerExcludingAssessedTax", "USD", False, year=prior_year
+            "RevenueFromContractWithCustomerExcludingAssessedTax", "USD", False, quarter=prior_q
         )
         all_data["prev_revenue"] = prev_revenue
-        print(f"    prev_revenue (CY{prior_year}): {len(prev_revenue)} companies")
+        print(f"    prev_revenue ({prior_q}): {len(prev_revenue)} companies")
         time.sleep(0.1)
 
-        # Try alternative revenue tags for current year
+        # Try alternative revenue tags for current quarter
         if len(all_data.get("revenue", {})) < 2000:
             for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                alt_data = self._fetch_frame(alt_tag, "USD", False, year=self._fiscal_year)
+                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=current_q)
                 if alt_data:
                     existing = all_data.get("revenue", {})
                     added = 0
@@ -203,10 +246,10 @@ class EdgarProvider(DataProvider):
                     print(f"    revenue (alt: {alt_tag}): +{added} (total: {len(existing)})")
                 time.sleep(0.1)
 
-        # Try alternative revenue for prior year too
+        # Try alternative revenue for prior quarter too
         if len(all_data.get("prev_revenue", {})) < 2000:
             for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                alt_data = self._fetch_frame(alt_tag, "USD", False, year=prior_year)
+                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=prior_q)
                 if alt_data:
                     existing = all_data.get("prev_revenue", {})
                     added = 0
@@ -224,12 +267,12 @@ class EdgarProvider(DataProvider):
         Return all tickers that have financial data in EDGAR.
 
         We get the universe from the companies that reported Net Income
-        (largest coverage: ~6,000 companies).
+        in the latest quarter (largest coverage: ~5,000 companies).
         """
         self._load_ticker_mapping()
 
-        # Fetch net income frame to identify which companies have recent filings
-        net_income_data = self._fetch_frame("NetIncomeLoss", "USD", False)
+        # Fetch net income frame for current quarter to identify which companies have recent filings
+        net_income_data = self._fetch_frame("NetIncomeLoss", "USD", False, quarter="CY2026Q1")
 
         # Map CIKs back to tickers
         symbols = []
@@ -238,7 +281,7 @@ class EdgarProvider(DataProvider):
             if ticker:
                 symbols.append(ticker)
 
-        print(f"  Universe: {len(symbols)} stocks with fiscal year {self._fiscal_year} data")
+        print(f"  Universe: {len(symbols)} stocks with CY2026Q1 data")
         return sorted(symbols)
 
     def get_fundamentals(self, symbol: str) -> Optional[StockFundamentals]:
