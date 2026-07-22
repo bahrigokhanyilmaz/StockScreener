@@ -12,14 +12,15 @@
   },
   "filters": {
     "pe_ratio": {
-      "label": "P/E Ratio",
+      "label": "P/E Ratio (Industry-Relative)",
       "type": "max",
       "default": 50,
       "min": 5,
       "max": 100,
       "step": 1,
       "data_format": "ratio",
-      "description": "Price-to-Earnings ratio. Lower = cheaper relative to earnings."
+      "industry_relative": true,
+      "description": "P/E must be below the lower quartile (25th percentile) of the stock's SEC SIC industry group. The hardcoded threshold is a fallback only when industry data is unavailable."
     },
     "forward_pe": {
       "label": "Forward P/E",

@@ -15,8 +15,6 @@ import { useState } from 'react';
 // Slider ranges capped at pipeline defaults — you can only tighten, not loosen
 // (loosening would show no additional stocks since the pipeline already filtered them)
 const FILTER_CONFIG = [
-  { key: 'pe_ratio', label: 'P/E Ratio', type: 'max', default: 50, min: 5, max: 50, step: 1, format: 'ratio' },
-  { key: 'forward_pe', label: 'Forward P/E', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
   { key: 'peg_ratio', label: 'PEG Ratio', type: 'max', default: 1.0, min: 0.1, max: 1.0, step: 0.1, format: 'ratio' },
   { key: 'price_to_fcf', label: 'Price / FCF', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
   { key: 'debt_to_equity', label: 'Debt / Equity', type: 'max', default: 1.0, min: 0.0, max: 1.0, step: 0.1, format: 'ratio' },

@@ -40,7 +40,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     shortName: 'P/E',
     definition: 'How much investors pay per dollar of earnings. Measures whether a stock is overvalued or undervalued relative to its profits.',
     formula: 'Stock Price / Earnings Per Share (trailing 12 months)',
-    threshold: '< 50 (our filter)',
+    threshold: '< industry lower quartile',
     increasing: 'Stock becoming more expensive relative to earnings. Could signal overvaluation, or that investors expect accelerating future growth.',
     decreasing: 'Stock becoming cheaper relative to earnings. Could signal a buying opportunity (undervalued), or that the market expects declining earnings ahead.',
     category: 'valuation',
@@ -51,7 +51,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     shortName: 'Fwd P/E',
     definition: 'P/E calculated using analyst-estimated future earnings rather than trailing. Shows what the market expects the company to earn next year.',
     formula: 'Stock Price / Estimated Next-Year EPS',
-    threshold: '< 20 (our filter)',
+    threshold: '< 20 (soft — applied if data available)',
     increasing: 'Analysts are revising earnings estimates down, or the stock price is rising faster than expected earnings growth. Suggests overvaluation risk.',
     decreasing: 'Analysts expect stronger future earnings, or the stock price hasn\'t caught up to improving estimates. Signals potential undervaluation.',
     category: 'valuation',
@@ -139,7 +139,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     shortName: 'LT Growth',
     definition: 'Analyst consensus estimate of the company\'s earnings growth rate over the next 3-5 years. Forward-looking, based on industry analysis and company guidance.',
     formula: 'Analyst consensus 3-5 year EPS growth estimate',
-    threshold: '> 0% (our filter)',
+    threshold: '> 0% (soft — applied if data available)',
     increasing: 'Analysts becoming more optimistic about future growth. Positive revisions often precede stock price gains.',
     decreasing: 'Analysts cutting growth forecasts. Negative revisions signal deteriorating business outlook and often lead to stock price declines.',
     category: 'growth',
@@ -150,7 +150,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     shortName: 'Analyst Rec',
     definition: 'Average analyst consensus rating. Scale: 1 = Strong Buy, 2 = Buy, 3 = Hold, 4 = Sell, 5 = Strong Sell. We require Hold or better (score <= 3.0).',
     formula: 'Weighted average of analyst ratings (Strong Buy × 1 + Buy × 2 + Hold × 3 + Sell × 4 + Strong Sell × 5) / Total Analysts',
-    threshold: '<= 3.0 (Hold or better)',
+    threshold: '<= 3.0 (soft — applied if data available)',
     increasing: 'Analysts downgrading. Moving from Buy toward Hold/Sell. Suggests consensus is becoming less bullish on the stock.',
     decreasing: 'Analysts upgrading. Moving from Hold toward Buy/Strong Buy. Signals growing institutional conviction in the stock.',
     category: 'sentiment',
@@ -333,7 +333,7 @@ export default function MetricsGuide({ stock }: Props) {
             <p>• At the threshold = 0 (you just barely passed)</p>
             <p>• At the best end of the range = 1.0 (you crushed it)</p>
             <p><strong>Final score:</strong> average of all per-filter scores × 100</p>
-            <p><strong>Example:</strong> P/E threshold is 50 (best possible is 5). Stock with P/E 12: score = (50 - 12) / (50 - 5) = 0.84. Stock at P/E 48: score = (50 - 48) / (50 - 5) = 0.04 (barely passed). If all 12 filters average 0.60, the Fundamental Score = <strong>60</strong>.</p>
+            <p><strong>Example:</strong> PEG threshold is 1.0 (best possible is 0.1). Stock with PEG 0.3: score = (1.0 - 0.3) / (1.0 - 0.1) = 0.78. Stock at PEG 0.95: score = (1.0 - 0.95) / (1.0 - 0.1) = 0.06 (barely passed). If all filters average 0.60, the Fundamental Score = <strong>60</strong>.</p>
           </div>
         </div>
 

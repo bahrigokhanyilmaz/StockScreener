@@ -47,12 +47,18 @@ Total: ~15-20 minutes per run.
 
 ### Pipeline Step Details
 
-**Step 1 — EDGAR Bulk Fetch** (~4 seconds)
+**Step 1 — EDGAR Bulk Fetch** (~15-20 seconds)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
-- ~11 API calls → bulk financials for ALL ~5,097 US public companies
-- Data: Net Income, Revenue, Operating Income, Equity, Debt, Assets, Liabilities, Shares, Cash, CapEx, Operating CF, Interest Expense
-- Calculates locally: EPS, D/E, Quick Ratio, Operating Margin, EPS Growth YoY, Revenue Growth YoY, FCF per share, Interest Coverage Ratio
-- CY2025 primary, CY2024 prior year for growth calculations
+- Dynamically discovers latest quarter with >= 4000 companies
+- TTM (Trailing Twelve Months) for income items: sum of 4 quarters with annual+Q1 fallback
+- Uses BROAD universal tags for maximum coverage:
+  - `Liabilities` (4,862 cos) + `LiabilitiesCurrent` (4,199) → D/E without tag guessing
+  - `NetIncomeLoss` (4,944) → EPS
+  - `OperatingIncomeLoss` (4,004) → Operating Margin
+  - Both `RevenueFromContractWithCustomer...` (2,306) + `Revenues` (1,683) merged per quarter
+  - `CommonStockSharesOutstanding` + `WeightedAverageNumberOfDilutedSharesOutstanding` fallback
+- Calculates locally: TTM EPS, D/E (broad), Quick Ratio, Op Margin, EPS Growth YoY, Revenue Growth YoY, FCF/share, ICR
+- All dates computed dynamically from today — no hardcoded quarters
 - Output: S3 `step1_fundamentals_*.json`
 
 **Step 2 — Pre-Screen** (instant)
@@ -214,22 +220,31 @@ Components:
 
 Source of truth: `shared/config/screener-filters.json`
 
-| Filter | Type | Default | Data Format | Source |
+**Hard Filters (8 total, ~100% EDGAR+Polygon coverage):**
+| Filter | Type | Threshold | Data Format | Source |
 |--------|------|---------|-------------|--------|
-| pe_ratio | max | 50 | ratio | Local (Polygon ÷ EDGAR) |
-| forward_pe | max | 20 | ratio | Finnhub |
-| peg_ratio | max | 1.0 | ratio | Local (P/E ÷ EDGAR growth) |
-| price_to_fcf | max | 20 | ratio | Local (Polygon ÷ EDGAR) |
-| debt_to_equity | max | 1.0 | ratio | EDGAR |
+| pe_ratio | max | Industry lower quartile (25th pctile) | ratio | Local (Polygon ÷ EDGAR TTM EPS) |
+| peg_ratio | max | 1.0 | ratio | Local (P/E ÷ EDGAR TTM EPS growth) |
+| price_to_fcf | max | 20 | ratio | Local (Polygon ÷ EDGAR TTM FCF) |
+| debt_to_equity | max | 1.0 (or ICR > 3.0) | ratio | EDGAR: (Liabilities - LiabilitiesCurrent) / Equity |
 | quick_ratio | min | 1.0 | ratio | EDGAR |
-| operating_margin | min | 0% | percent_as_decimal | EDGAR |
-| eps_growth_yoy | min | 0% | percent_as_decimal | EDGAR |
-| revenue_growth_yoy | min | 0% | percent_as_decimal | EDGAR |
-| est_lt_growth | min | 0% | percent_as_decimal | Finnhub |
-| analyst_recommendation | max | 3.0 | ratio | Finnhub |
-| sentiment_score | min | -0.3 | ratio | Bedrock Claude |
-| target_price_upside | min | 20% | percent_as_decimal | DEFERRED |
-| institutional_transactions | min | 0% | percent_as_decimal | DEFERRED |
+| operating_margin | min | 0% | percent_as_decimal | EDGAR: OperatingIncomeLoss / Revenue |
+| eps_growth_yoy | min | 0% | percent_as_decimal | EDGAR TTM vs prior TTM |
+| revenue_growth_yoy | min | 0% | percent_as_decimal | EDGAR TTM vs prior TTM |
+
+**Soft Filters (applied if data exists, skipped if Finnhub has no coverage):**
+| Filter | Type | Threshold | Source |
+|--------|------|---------|--------|
+| forward_pe | max | 20 | Finnhub |
+| est_lt_growth | min | 0% | Finnhub |
+| analyst_recommendation | max | 3.0 | Finnhub |
+
+**Deferred (no free data source):**
+| Filter | Reason |
+|--------|--------|
+| target_price_upside | Finnhub returns empty on free tier |
+| institutional_transactions | No reliable free source |
+| sentiment_score | Applied post-scoring in Step 6/7, not in screen |
 
 ### Investability Score Formula
 
@@ -338,6 +353,16 @@ Architecture:
 | Fundamental score 0-1 per filter | Removed old `× 0.5 + 0.5` compression. 0 = at threshold, 1 = best. Simple |
 | percent_as_decimal conversion in scoring | Data stores 0.15, config uses 15. Must × 100 before comparing |
 | Strip markdown from Claude responses | Claude wraps JSON in ```json fences. Parser strips before json.loads() |
+| Broad XBRL tags over specific | `Liabilities` (4,862) vs `LongTermDebt` (1,601). Universal coverage, no tag guessing |
+| D/E = (Liabilities - LiabilitiesCurrent) / Equity | Captures ALL non-current obligations. Companies can't hide behind variant tag names |
+| Multi-tag revenue for TTM | Both `RevenueFromContract...` + `Revenues` merged across ALL TTM quarters |
+| Diluted shares fallback | `WeightedAverageNumberOfDilutedSharesOutstanding` fills 500+ companies missing from instant frame |
+| Dynamic quarter discovery | No hardcoded dates. Tests from newest to oldest, picks first with >=4000 companies |
+| TTM = 4 actual quarters (not annualized) | Sum of Q1+Q4+Q3+Q2 with annual derivation fallback. No shortcuts |
+| Prior TTM = same derivation shifted 1 year | Gives proper rolling YoY growth |
+| P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). No hardcoded threshold |
+| Soft filters for Finnhub-dependent metrics | forward_pe, est_lt_growth, analyst_recommendation: skip if absent, apply if present |
+| Polygon T-2 for price date | Free tier requires completed trading day; always go back 2 days |
 | yfinance blocked from Lambda | Yahoo blocks AWS data center IPs. Can't use from Lambda |
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 
@@ -361,6 +386,11 @@ Architecture:
 | 30-day price history + trend detection | COMPLETE |
 | Scoring formula normalization (0-100) | COMPLETE |
 | Metrics Guide (definitions + methodology) | COMPLETE |
+| TTM EPS (proper 4-quarter sum) | COMPLETE |
+| Broad XBRL tags (universal coverage) | COMPLETE |
+| Industry-relative P/E (lower quartile) | COMPLETE |
+| Soft Finnhub filters | COMPLETE |
+| Dynamic EDGAR dates (no hardcoded quarters) | COMPLETE |
 | Custom domain for Amplify | NEXT (user to purchase domain) |
 | Retroactive analysis (Athena) | FUTURE |
 
