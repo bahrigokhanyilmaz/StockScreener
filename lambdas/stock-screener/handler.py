@@ -202,12 +202,18 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
             # Missing data handling depends on screening mode:
             # - Pre-screen (Step 2): skip filters that need enrichment data (price-based)
             # - Full screen (Step 4): FAIL on any missing data (stock must prove it qualifies)
+            #   EXCEPT for "soft" filters — applied if data exists, skipped if not
             # Sentiment is always skippable (calculated later in pipeline)
             is_prescreen = is_prescreen  # Use the explicit flag, not data inference
             # Filters that require enrichment data (not available during pre-screen)
             enrichment_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
                                             "est_lt_growth", "target_price_upside",
                                             "institutional_transactions", "analyst_recommendation"}
+
+            # Soft filters: skip without penalty if data is unavailable.
+            # These depend on analyst coverage (Finnhub) which varies by stock.
+            # When present, they must pass. When absent, they don't block.
+            soft_filters = {"forward_pe", "est_lt_growth", "analyst_recommendation"}
 
             if filter_name == "sentiment_score":
                 # Always skip sentiment — calculated in Step 6
@@ -218,10 +224,16 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                 continue
             elif filter_config.get("deferred"):
                 # Deferred filters: data source not yet available (e.g., paid API needed)
-                # Skip without penalty. Easy to re-enable: remove "deferred" from config.
                 filter_results[filter_name] = {
                     "value": None, "threshold": threshold, "type": filter_type,
                     "passes": None, "skipped": True, "reason": "deferred",
+                }
+                continue
+            elif filter_name in soft_filters:
+                # Soft filter: skip without penalty (data not available for this stock)
+                filter_results[filter_name] = {
+                    "value": None, "threshold": threshold, "type": filter_type,
+                    "passes": None, "skipped": True, "reason": "soft_no_data",
                 }
                 continue
             elif is_prescreen and filter_name in enrichment_dependent_filters:

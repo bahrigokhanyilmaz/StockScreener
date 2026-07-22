@@ -125,7 +125,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     all_enriched = []
     candidates = []
 
-    # Step 1: Assign prices and compute P/E for ALL stocks
+    # Step 1: Assign prices and compute P/E, PEG, Price/FCF for ALL stocks
     for stock in stocks:
         symbol = stock.get("symbol", "")
         price = prices.get(symbol)
@@ -137,6 +137,17 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             eps = stock.get("eps")
             if eps and eps > 0:
                 stock["pe_ratio"] = round(price / eps, 2)
+
+            # Calculate PEG locally: P/E ÷ EPS Growth (from EDGAR TTM)
+            pe = stock.get("pe_ratio")
+            eps_growth = stock.get("eps_growth_yoy")
+            if pe and eps_growth and eps_growth > 0:
+                stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)
+
+            # Calculate Price/FCF locally: Price ÷ FCF per share (from EDGAR)
+            fcf_ps = stock.get("fcf_per_share")
+            if fcf_ps and fcf_ps > 0:
+                stock["price_to_fcf"] = round(price / fcf_ps, 2)
 
         all_enriched.append(stock)
 
@@ -200,6 +211,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     for stock in all_enriched:
         price = stock.get("price")
         pe = stock.get("pe_ratio")
+        peg = stock.get("peg_ratio")
+        pfcf = stock.get("price_to_fcf")
         de = stock.get("debt_to_equity")
         qr = stock.get("quick_ratio")
         om = stock.get("operating_margin")
@@ -214,6 +227,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         passes_prefilter = (
             price is not None
             and pe_passes
+            and peg is not None and peg < 1.0
+            and pfcf is not None and pfcf < 20
             and de is not None and de < 1
             and qr is not None and qr > 1
             and om is not None and om > 0
