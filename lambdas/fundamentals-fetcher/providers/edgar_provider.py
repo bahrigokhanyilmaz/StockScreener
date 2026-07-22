@@ -70,7 +70,7 @@ class EdgarProvider(DataProvider):
         Initialize the EDGAR provider.
 
         Args:
-            fiscal_year: Base year for balance sheet data (instant items use CY{year}Q4I)
+            fiscal_year: Legacy fallback year (no longer used — quarters are computed dynamically)
             min_market_cap: Minimum market cap filter (applied after price enrichment)
         """
         self._fiscal_year = fiscal_year
@@ -161,13 +161,14 @@ class EdgarProvider(DataProvider):
         """
         Fetch all metrics from the Frames API using proper TTM for income statement items.
 
-        TTM (Trailing Twelve Months) for income metrics:
-          Primary: CY2026Q1 + CY2025Q4 + CY2025Q3 + CY2025Q2 (direct sum of 4 quarters)
-          Fallback: CY2025 (annual) + CY2026Q1 - CY2025Q1 (for companies without explicit Q4)
-          Both produce the same result: net income for the most recent 4 quarters.
+        All periods are computed dynamically from today's date:
+        - Discovers the latest quarter with >= 4000 companies reporting
+        - TTM = sum of 4 most recent quarters (with annual+Q1 fallback for sparse Q4)
+        - Prior TTM = same derivation, one year earlier (for YoY growth)
+        - Balance sheet = latest quarter instant + prior quarter fallback
+        - Shares = CommonStockSharesOutstanding instant + WeightedAverageDiluted fallback
 
-        Balance sheet (instant items): CY2026Q1I with CY2025Q4I fallback.
-        Growth: TTM current vs TTM prior (rolling 4Q vs prior rolling 4Q).
+        No hardcoded dates — adapts automatically as new quarters become available.
         """
         print(f"  Fetching EDGAR frames for TTM calculation...")
         all_data = {}
@@ -175,8 +176,10 @@ class EdgarProvider(DataProvider):
         # =============================================
         # INCOME STATEMENT: Build TTM per company
         # =============================================
-        # We need: CY2026Q1, CY2025Q3, CY2025Q2 (quarterly)
-        #          CY2025Q4 (sparse) + CY2025 annual + CY2025Q1 (for derivation)
+        # Dynamically determine the 4 most recent quarters based on current date.
+        # Then validate which ones have adequate EDGAR coverage.
+        # TTM = sum of most recent 4 quarters with data.
+
         income_tags = {
             "net_income": "NetIncomeLoss",
             "revenue": "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -186,11 +189,67 @@ class EdgarProvider(DataProvider):
             "interest_expense": "InterestExpense",
         }
 
-        # Quarterly frames needed
-        quarterly_periods = ["CY2026Q1", "CY2025Q4", "CY2025Q3", "CY2025Q2"]
-        # For fallback derivation
-        annual_period = "CY2025"
-        q1_prior = "CY2025Q1"
+        # Determine latest available quarter with adequate coverage
+        # by testing NetIncomeLoss frames from newest to oldest
+        from datetime import date
+        today = date.today()
+        current_year = today.year
+        current_month = today.month
+
+        # Generate candidate quarters (most recent 6, newest first)
+        candidate_quarters = []
+        y, q = current_year, ((current_month - 1) // 3)  # q=0 means Q1 just ended
+        if q == 0:
+            y -= 1
+            q = 4
+        for _ in range(6):
+            candidate_quarters.append(f"CY{y}Q{q}")
+            q -= 1
+            if q == 0:
+                q = 4
+                y -= 1
+
+        # Find the latest quarter with >= 4000 companies (adequate coverage)
+        print(f"  Finding latest quarter with coverage (candidates: {candidate_quarters[:4]})...")
+        latest_quarter = None
+        for cq in candidate_quarters:
+            test_data = self._fetch_frame("NetIncomeLoss", "USD", False, quarter=cq)
+            count = len(test_data)
+            print(f"    {cq}: {count} companies")
+            time.sleep(0.1)
+            if count >= 4000:
+                latest_quarter = cq
+                break
+
+        if not latest_quarter:
+            # Fallback: use the first candidate with any data
+            latest_quarter = candidate_quarters[0]
+            print(f"    Warning: no quarter with 4000+ companies, using {latest_quarter}")
+
+        # Build the 4 TTM quarters from the latest
+        # Parse latest_quarter (e.g., "CY2026Q1") → year=2026, quarter=1
+        lq_year = int(latest_quarter[2:6])
+        lq_q = int(latest_quarter[7])
+
+        quarterly_periods = []
+        y, q = lq_year, lq_q
+        for _ in range(4):
+            quarterly_periods.append(f"CY{y}Q{q}")
+            q -= 1
+            if q == 0:
+                q = 4
+                y -= 1
+
+        # Prior TTM: same 4 quarters, one year earlier
+        prior_periods = [f"CY{int(p[2:6])-1}Q{p[7]}" for p in quarterly_periods]
+        # Annual frames for fallback derivation
+        annual_period = f"CY{lq_year - 1}" if lq_q < 4 else f"CY{lq_year}"
+        prior_annual_period = f"CY{lq_year - 2}" if lq_q < 4 else f"CY{lq_year - 1}"
+        q1_current_year = f"CY{lq_year}Q1"
+        q1_prior_year = f"CY{lq_year - 1}Q1"
+
+        print(f"  TTM periods: {quarterly_periods}")
+        print(f"  Prior TTM derivation: {annual_period} + {q1_current_year} - {q1_prior_year}")
 
         for metric_name, xbrl_tag in income_tags.items():
             # Fetch all quarterly frames
@@ -203,7 +262,9 @@ class EdgarProvider(DataProvider):
             # Fetch annual + Q1 for fallback derivation
             annual_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=annual_period)
             time.sleep(0.1)
-            q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_prior)
+            q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_current_year)
+            time.sleep(0.1)
+            q1_prior_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_prior_year)
             time.sleep(0.1)
 
             # Compute TTM for each company
@@ -214,43 +275,34 @@ class EdgarProvider(DataProvider):
             all_ciks.update(annual_data.keys())
 
             for cik in all_ciks:
-                q1_26 = quarterly_data["CY2026Q1"].get(cik)
-                q4_25 = quarterly_data["CY2025Q4"].get(cik)
-                q3_25 = quarterly_data["CY2025Q3"].get(cik)
-                q2_25 = quarterly_data["CY2025Q2"].get(cik)
-
-                if q1_26 is not None and q4_25 is not None and q3_25 is not None and q2_25 is not None:
-                    # Direct: sum of 4 explicit quarters
-                    ttm_values[cik] = q1_26 + q4_25 + q3_25 + q2_25
-                elif q1_26 is not None and annual_data.get(cik) is not None and q1_data.get(cik) is not None:
-                    # Fallback: annual_2025 + Q1_2026 - Q1_2025 = TTM ending Q1 2026
-                    ttm_values[cik] = annual_data[cik] + q1_26 - q1_data[cik]
-                # If neither works, company is excluded (missing data)
+                # Try direct sum of 4 quarters
+                q_vals = [quarterly_data[q].get(cik) for q in quarterly_periods]
+                if all(v is not None for v in q_vals):
+                    ttm_values[cik] = sum(q_vals)
+                elif annual_data.get(cik) is not None and q1_data.get(cik) is not None and q1_prior_data.get(cik) is not None:
+                    # Fallback: annual + latest_Q1 - prior_Q1
+                    ttm_values[cik] = annual_data[cik] + q1_data[cik] - q1_prior_data[cik]
 
             all_data[metric_name] = ttm_values
             print(f"    {metric_name} (TTM): {len(ttm_values)} companies")
 
         # Also store Q1 values separately for YoY growth calculation
         # Growth = (TTM current - TTM prior) / TTM prior
-        # TTM prior = CY2025Q1 + CY2024Q4 + CY2024Q3 + CY2024Q2
-        #           = CY2024 (annual) + CY2025Q1 - CY2024Q1
-        prior_annual = "CY2024"
-        prior_q1 = "CY2024Q1"
-
+        # Prior TTM for YoY growth: same derivation, shifted one year back
+        # prior_annual_period and q1_prior_year already computed above dynamically
         for metric_name, xbrl_tag in [("net_income", "NetIncomeLoss"),
                                        ("revenue", "RevenueFromContractWithCustomerExcludingAssessedTax")]:
-            # Fetch prior TTM components
-            prior_annual_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_annual)
+            prior_ann_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_annual_period)
             time.sleep(0.1)
-            cy2025q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter="CY2025Q1")
-            time.sleep(0.1)
-            cy2024q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_q1)
+            # q1_prior_data already fetched above during TTM computation
+            q1_2yb = f"CY{lq_year - 2}Q1"
+            q1_2yb_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_2yb)
             time.sleep(0.1)
 
-            # Compute prior TTM
+            # Prior TTM = prior_annual + q1_prior_year - q1_two_years_back
             prev_ttm = {}
-            for cik in set(prior_annual_data.keys()) & set(cy2025q1_data.keys()) & set(cy2024q1_data.keys()):
-                prev_ttm[cik] = prior_annual_data[cik] + cy2025q1_data[cik] - cy2024q1_data[cik]
+            for cik in set(prior_ann_data.keys()) & set(q1_prior_data.keys()) & set(q1_2yb_data.keys()):
+                prev_ttm[cik] = prior_ann_data[cik] + q1_prior_data[cik] - q1_2yb_data[cik]
 
             all_data[f"prev_{metric_name}"] = prev_ttm
             print(f"    prev_{metric_name} (prior TTM): {len(prev_ttm)} companies")
@@ -258,8 +310,7 @@ class EdgarProvider(DataProvider):
         # Try alternative revenue tags if primary coverage is low
         if len(all_data.get("revenue", {})) < 2000:
             for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                # Quick check on just one quarter to see if this tag helps
-                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter="CY2026Q1")
+                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=latest_quarter)
                 if alt_data:
                     existing = all_data.get("revenue", {})
                     added = 0
@@ -273,8 +324,17 @@ class EdgarProvider(DataProvider):
                 time.sleep(0.1)
 
         # =============================================
-        # BALANCE SHEET: CY2026Q1I with CY2025Q4I fallback
+        # BALANCE SHEET: latest quarter instant + prior quarter fallback
         # =============================================
+        # Instant frames use "I" suffix (e.g., CY2026Q1I)
+        balance_primary = f"{latest_quarter}I"
+        # Previous quarter for fallback
+        prev_q_year, prev_q_num = lq_year, lq_q - 1
+        if prev_q_num == 0:
+            prev_q_num = 4
+            prev_q_year -= 1
+        balance_fallback = f"CY{prev_q_year}Q{prev_q_num}I"
+
         balance_metrics = {
             "stockholders_equity": ("StockholdersEquity", "USD"),
             "long_term_debt": ("LongTermDebt", "USD"),
@@ -286,16 +346,31 @@ class EdgarProvider(DataProvider):
         }
 
         for metric_name, (xbrl_tag, unit) in balance_metrics.items():
-            # Primary: latest quarter
-            frame_data = self._fetch_frame(xbrl_tag, unit, False, quarter="CY2026Q1I")
-            # Fallback: fill gaps from prior quarter
-            fallback_data = self._fetch_frame(xbrl_tag, unit, False, quarter="CY2025Q4I")
+            # Primary: latest quarter instant
+            frame_data = self._fetch_frame(xbrl_tag, unit, False, quarter=balance_primary)
+            # Fallback: fill gaps from prior quarter instant
+            fallback_data = self._fetch_frame(xbrl_tag, unit, False, quarter=balance_fallback)
             for cik, val in fallback_data.items():
                 if cik not in frame_data:
                     frame_data[cik] = val
             all_data[metric_name] = frame_data
-            print(f"    {metric_name} (Q1I+Q4I fallback): {len(frame_data)} companies")
+            print(f"    {metric_name} ({balance_primary}+{balance_fallback}): {len(frame_data)} companies")
             time.sleep(0.1)
+
+        # Shares fallback: many companies report diluted weighted average shares
+        # (a duration metric) instead of CommonStockSharesOutstanding (instant).
+        shares_data = all_data.get("shares_outstanding", {})
+        diluted_shares = self._fetch_frame(
+            "WeightedAverageNumberOfDilutedSharesOutstanding", "shares", False, quarter=latest_quarter
+        )
+        time.sleep(0.1)
+        added_shares = 0
+        for cik, val in diluted_shares.items():
+            if cik not in shares_data:
+                shares_data[cik] = val
+                added_shares += 1
+        all_data["shares_outstanding"] = shares_data
+        print(f"    shares_outstanding (+ diluted fallback): +{added_shares} = {len(shares_data)} total")
 
         return all_data
 
@@ -303,13 +378,38 @@ class EdgarProvider(DataProvider):
         """
         Return all tickers that have financial data in EDGAR.
 
-        We get the universe from the companies that reported Net Income
-        in the latest quarter (largest coverage: ~5,000 companies).
+        Discovers the latest quarter with adequate coverage dynamically,
+        then returns all companies that reported Net Income in that quarter.
         """
         self._load_ticker_mapping()
 
-        # Fetch net income frame for current quarter to identify which companies have recent filings
-        net_income_data = self._fetch_frame("NetIncomeLoss", "USD", False, quarter="CY2026Q1")
+        # Determine latest quarter with coverage (same logic as _fetch_all_frames)
+        from datetime import date
+        today = date.today()
+        y, q = today.year, ((today.month - 1) // 3)
+        if q == 0:
+            y -= 1
+            q = 4
+        # Try up to 4 candidates
+        latest_q = None
+        for _ in range(4):
+            candidate = f"CY{y}Q{q}"
+            test_data = self._fetch_frame("NetIncomeLoss", "USD", False, quarter=candidate)
+            if len(test_data) >= 4000:
+                latest_q = candidate
+                break
+            q -= 1
+            if q == 0:
+                q = 4
+                y -= 1
+            import time as _time
+            _time.sleep(0.1)
+
+        if not latest_q:
+            latest_q = f"CY{today.year}Q{max(1, (today.month - 1) // 3)}"
+
+        # Fetch net income frame to identify universe
+        net_income_data = self._fetch_frame("NetIncomeLoss", "USD", False, quarter=latest_q)
 
         # Map CIKs back to tickers
         symbols = []
@@ -318,7 +418,7 @@ class EdgarProvider(DataProvider):
             if ticker:
                 symbols.append(ticker)
 
-        print(f"  Universe: {len(symbols)} stocks with CY2026Q1 data")
+        print(f"  Universe: {len(symbols)} stocks with {latest_q} data")
         return sorted(symbols)
 
     def get_fundamentals(self, symbol: str) -> Optional[StockFundamentals]:
