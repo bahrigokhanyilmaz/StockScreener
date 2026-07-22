@@ -141,23 +141,40 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         all_enriched.append(stock)
 
     # Step 2: Load industry map and compute P/E lower quartile per industry
+    # Uses ALL stocks from Step 1 (full universe ~4,500) for meaningful industry samples,
+    # not just the 70 pre-screen passers.
     industry_pe_quartiles = {}
     try:
         bucket = os.environ.get("RAW_DATA_BUCKET", "")
         if bucket:
             s3 = boto3.client("s3")
+
+            # Load industry map
             resp = s3.get_object(Bucket=bucket, Key="reference/ticker_industry_map.json")
             industry_map = json.loads(resp["Body"].read().decode("utf-8"))
 
-            # Group P/E by industry (only stocks with valid P/E > 0)
+            # Load full Step 1 output (all ~4,500 stocks with TTM EPS)
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=f"pipeline/{today_str}/step1_fundamentals_")
+            step1_keys = [obj["Key"] for obj in resp.get("Contents", [])]
+            all_universe_stocks = []
+            if step1_keys:
+                step1_resp = s3.get_object(Bucket=bucket, Key=step1_keys[-1])
+                step1_data = json.loads(step1_resp["Body"].read().decode("utf-8"))
+                all_universe_stocks = step1_data.get("stocks", [])
+
+            # Compute P/E for the full universe using Polygon prices
             industry_pe_values: dict[str, list] = defaultdict(list)
-            for stock in all_enriched:
-                pe = stock.get("pe_ratio")
-                if pe is not None and pe > 0:
-                    symbol = stock.get("symbol", "")
-                    entry = industry_map.get(symbol)
-                    if entry:
-                        industry_pe_values[entry["industry"]].append(pe)
+            for stock in all_universe_stocks:
+                symbol = stock.get("symbol", "")
+                eps = stock.get("eps")
+                price = prices.get(symbol)
+                if price and eps and eps > 0:
+                    pe = price / eps
+                    if pe > 0 and pe < 500:  # Exclude nonsensical values
+                        entry = industry_map.get(symbol)
+                        if entry:
+                            industry_pe_values[entry["industry"]].append(pe)
 
             # Compute 25th percentile (lower quartile) for each industry with enough data
             for industry, values in industry_pe_values.items():
@@ -166,9 +183,10 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
                     q1_idx = len(sorted_vals) // 4
                     industry_pe_quartiles[industry] = round(sorted_vals[q1_idx], 2)
 
-            print(f"  Computed P/E lower quartile for {len(industry_pe_quartiles)} industries")
+            print(f"  Computed P/E lower quartile for {len(industry_pe_quartiles)} industries "
+                  f"(from {len(all_universe_stocks)} stocks)")
 
-            # Tag each stock with its industry P/E threshold
+            # Tag each pre-screen passer with its industry P/E threshold
             for stock in all_enriched:
                 symbol = stock.get("symbol", "")
                 entry = industry_map.get(symbol)
