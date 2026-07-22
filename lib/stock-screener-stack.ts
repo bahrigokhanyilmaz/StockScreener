@@ -131,8 +131,9 @@ export class StockScreenerStack extends cdk.Stack {
         POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
         FINNHUB_API_KEY_PARAM: '/stock-screener/finnhub-api-key',
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
+        DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Step 3: Polygon bulk prices + Finnhub analyst data for candidates',
+      description: 'Step 3: Polygon bulk prices + Finnhub analyst data + industry P/E quartiles',
     });
 
     // Step 5: News Fetcher (TickerTick)
@@ -277,8 +278,9 @@ export class StockScreenerStack extends cdk.Stack {
     rawDataBucket.grantReadWrite(stockScreener);
     dataTable.grantWriteData(stockScreener);
 
-    // Step 3: SSM read (Twelve Data key) + S3 read/write (pipeline I/O)
+    // Step 3: SSM read (Twelve Data key) + S3 read/write (pipeline I/O) + DynamoDB write (P/E quartiles)
     rawDataBucket.grantReadWrite(priceEnrichment);
+    dataTable.grantReadWriteData(priceEnrichment);
     priceEnrichment.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ssm:GetParameter'],

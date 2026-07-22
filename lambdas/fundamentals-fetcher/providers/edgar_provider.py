@@ -159,43 +159,122 @@ class EdgarProvider(DataProvider):
 
     def _fetch_all_frames(self) -> dict[str, dict[int, float]]:
         """
-        Fetch all metrics from the Frames API using the right period for each.
+        Fetch all metrics from the Frames API using proper TTM for income statement items.
 
-        Strategy:
-        - Balance sheet items (instant): latest available quarter instant (CY2026Q1I)
-        - Income statement items (duration): latest quarter with full coverage (CY2026Q1)
-        - Growth comparison: same quarter prior year (CY2025Q1)
-        - Shares: latest instant available
+        TTM (Trailing Twelve Months) for income metrics:
+          Primary: CY2026Q1 + CY2025Q4 + CY2025Q3 + CY2025Q2 (direct sum of 4 quarters)
+          Fallback: CY2025 (annual) + CY2026Q1 - CY2025Q1 (for companies without explicit Q4)
+          Both produce the same result: net income for the most recent 4 quarters.
 
-        This gives us current quarterly data for growth calculations that match
-        what Finviz and other screeners show (TTM/quarterly YoY).
+        Balance sheet (instant items): CY2026Q1I with CY2025Q4I fallback.
+        Growth: TTM current vs TTM prior (rolling 4Q vs prior rolling 4Q).
         """
-        # Determine the latest quarter with good coverage
-        # As of July 2026: CY2026Q1 has ~4,942 companies (most have filed)
-        # CY2025Q1 for prior year comparison
-        current_q = "CY2026Q1"
-        prior_q = "CY2025Q1"
-
-        print(f"  Fetching EDGAR frames: {current_q} (current) + {prior_q} (prior) + balance sheet (Q1I+Q4I fallback)...")
+        print(f"  Fetching EDGAR frames for TTM calculation...")
         all_data = {}
 
-        # Income statement items — current quarter
-        income_metrics = {
-            "net_income": ("NetIncomeLoss", "USD"),
-            "revenue": ("RevenueFromContractWithCustomerExcludingAssessedTax", "USD"),
-            "operating_income": ("OperatingIncomeLoss", "USD"),
-            "operating_cash_flow": ("NetCashProvidedByUsedInOperatingActivities", "USD"),
-            "capex": ("PaymentsToAcquirePropertyPlantAndEquipment", "USD"),
-            "interest_expense": ("InterestExpense", "USD"),
+        # =============================================
+        # INCOME STATEMENT: Build TTM per company
+        # =============================================
+        # We need: CY2026Q1, CY2025Q3, CY2025Q2 (quarterly)
+        #          CY2025Q4 (sparse) + CY2025 annual + CY2025Q1 (for derivation)
+        income_tags = {
+            "net_income": "NetIncomeLoss",
+            "revenue": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "operating_income": "OperatingIncomeLoss",
+            "operating_cash_flow": "NetCashProvidedByUsedInOperatingActivities",
+            "capex": "PaymentsToAcquirePropertyPlantAndEquipment",
+            "interest_expense": "InterestExpense",
         }
 
-        for metric_name, (xbrl_tag, unit) in income_metrics.items():
-            frame_data = self._fetch_frame(xbrl_tag, unit, False, quarter=current_q)
-            all_data[metric_name] = frame_data
-            print(f"    {metric_name} ({current_q}): {len(frame_data)} companies")
+        # Quarterly frames needed
+        quarterly_periods = ["CY2026Q1", "CY2025Q4", "CY2025Q3", "CY2025Q2"]
+        # For fallback derivation
+        annual_period = "CY2025"
+        q1_prior = "CY2025Q1"
+
+        for metric_name, xbrl_tag in income_tags.items():
+            # Fetch all quarterly frames
+            quarterly_data = {}
+            for q in quarterly_periods:
+                frame = self._fetch_frame(xbrl_tag, "USD", False, quarter=q)
+                quarterly_data[q] = frame
+                time.sleep(0.1)
+
+            # Fetch annual + Q1 for fallback derivation
+            annual_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=annual_period)
+            time.sleep(0.1)
+            q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_prior)
             time.sleep(0.1)
 
-        # Balance sheet items — CY2026Q1I (freshest) with CY2025Q4I fallback (most coverage)
+            # Compute TTM for each company
+            ttm_values = {}
+            all_ciks = set()
+            for q_data in quarterly_data.values():
+                all_ciks.update(q_data.keys())
+            all_ciks.update(annual_data.keys())
+
+            for cik in all_ciks:
+                q1_26 = quarterly_data["CY2026Q1"].get(cik)
+                q4_25 = quarterly_data["CY2025Q4"].get(cik)
+                q3_25 = quarterly_data["CY2025Q3"].get(cik)
+                q2_25 = quarterly_data["CY2025Q2"].get(cik)
+
+                if q1_26 is not None and q4_25 is not None and q3_25 is not None and q2_25 is not None:
+                    # Direct: sum of 4 explicit quarters
+                    ttm_values[cik] = q1_26 + q4_25 + q3_25 + q2_25
+                elif q1_26 is not None and annual_data.get(cik) is not None and q1_data.get(cik) is not None:
+                    # Fallback: annual_2025 + Q1_2026 - Q1_2025 = TTM ending Q1 2026
+                    ttm_values[cik] = annual_data[cik] + q1_26 - q1_data[cik]
+                # If neither works, company is excluded (missing data)
+
+            all_data[metric_name] = ttm_values
+            print(f"    {metric_name} (TTM): {len(ttm_values)} companies")
+
+        # Also store Q1 values separately for YoY growth calculation
+        # Growth = (TTM current - TTM prior) / TTM prior
+        # TTM prior = CY2025Q1 + CY2024Q4 + CY2024Q3 + CY2024Q2
+        #           = CY2024 (annual) + CY2025Q1 - CY2024Q1
+        prior_annual = "CY2024"
+        prior_q1 = "CY2024Q1"
+
+        for metric_name, xbrl_tag in [("net_income", "NetIncomeLoss"),
+                                       ("revenue", "RevenueFromContractWithCustomerExcludingAssessedTax")]:
+            # Fetch prior TTM components
+            prior_annual_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_annual)
+            time.sleep(0.1)
+            cy2025q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter="CY2025Q1")
+            time.sleep(0.1)
+            cy2024q1_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_q1)
+            time.sleep(0.1)
+
+            # Compute prior TTM
+            prev_ttm = {}
+            for cik in set(prior_annual_data.keys()) & set(cy2025q1_data.keys()) & set(cy2024q1_data.keys()):
+                prev_ttm[cik] = prior_annual_data[cik] + cy2025q1_data[cik] - cy2024q1_data[cik]
+
+            all_data[f"prev_{metric_name}"] = prev_ttm
+            print(f"    prev_{metric_name} (prior TTM): {len(prev_ttm)} companies")
+
+        # Try alternative revenue tags if primary coverage is low
+        if len(all_data.get("revenue", {})) < 2000:
+            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
+                # Quick check on just one quarter to see if this tag helps
+                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter="CY2026Q1")
+                if alt_data:
+                    existing = all_data.get("revenue", {})
+                    added = 0
+                    for cik, val in alt_data.items():
+                        if cik not in existing:
+                            existing[cik] = val
+                            added += 1
+                    if added > 0:
+                        all_data["revenue"] = existing
+                        print(f"    revenue (alt: {alt_tag}): +{added} (total: {len(existing)})")
+                time.sleep(0.1)
+
+        # =============================================
+        # BALANCE SHEET: CY2026Q1I with CY2025Q4I fallback
+        # =============================================
         balance_metrics = {
             "stockholders_equity": ("StockholdersEquity", "USD"),
             "long_term_debt": ("LongTermDebt", "USD"),
@@ -217,48 +296,6 @@ class EdgarProvider(DataProvider):
             all_data[metric_name] = frame_data
             print(f"    {metric_name} (Q1I+Q4I fallback): {len(frame_data)} companies")
             time.sleep(0.1)
-
-        # Prior quarter — for YoY growth calculation (same quarter last year)
-        prev_net_income = self._fetch_frame("NetIncomeLoss", "USD", False, quarter=prior_q)
-        all_data["prev_net_income"] = prev_net_income
-        print(f"    prev_net_income ({prior_q}): {len(prev_net_income)} companies")
-        time.sleep(0.1)
-
-        prev_revenue = self._fetch_frame(
-            "RevenueFromContractWithCustomerExcludingAssessedTax", "USD", False, quarter=prior_q
-        )
-        all_data["prev_revenue"] = prev_revenue
-        print(f"    prev_revenue ({prior_q}): {len(prev_revenue)} companies")
-        time.sleep(0.1)
-
-        # Try alternative revenue tags for current quarter
-        if len(all_data.get("revenue", {})) < 2000:
-            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=current_q)
-                if alt_data:
-                    existing = all_data.get("revenue", {})
-                    added = 0
-                    for cik, val in alt_data.items():
-                        if cik not in existing:
-                            existing[cik] = val
-                            added += 1
-                    all_data["revenue"] = existing
-                    print(f"    revenue (alt: {alt_tag}): +{added} (total: {len(existing)})")
-                time.sleep(0.1)
-
-        # Try alternative revenue for prior quarter too
-        if len(all_data.get("prev_revenue", {})) < 2000:
-            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=prior_q)
-                if alt_data:
-                    existing = all_data.get("prev_revenue", {})
-                    added = 0
-                    for cik, val in alt_data.items():
-                        if cik not in existing:
-                            existing[cik] = val
-                            added += 1
-                    all_data["prev_revenue"] = existing
-                time.sleep(0.1)
 
         return all_data
 

@@ -242,6 +242,14 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
 
         passes = apply_filter(value, filter_type, threshold, data_format)
 
+        # INDUSTRY-RELATIVE P/E: Use industry lower quartile instead of hardcoded threshold.
+        # A stock passes P/E if it's cheaper than 75% of companies in its industry.
+        if filter_name == "pe_ratio":
+            industry_q1 = stock.get("_pe_industry_q1")
+            if industry_q1 is not None and value is not None:
+                passes = value > 0 and value < industry_q1
+                threshold = industry_q1  # Show actual industry threshold used
+
         # CONDITIONAL OVERRIDE: Debt/Equity can be overridden by Interest Coverage Ratio.
         # A company with high D/E but strong ability to service its debt (ICR > 3.0)
         # is fundamentally different from one that's overleveraged and struggling.

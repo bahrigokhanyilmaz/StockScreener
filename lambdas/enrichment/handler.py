@@ -108,14 +108,24 @@ def fetch_all_prices(polygon_key: str, date: str) -> dict[str, float]:
 # STAGE 2: Local compute & pre-filter
 # ==========================================
 
-def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
+def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     """
-    Calculate P/E locally and apply hard filters.
-    Returns (candidates_for_finnhub, all_stocks_with_price).
+    Calculate P/E locally, compute industry P/E quartiles, and apply filters.
+    
+    P/E filter is industry-relative: a stock passes if its P/E is below the
+    lower quartile (25th percentile) of its SEC SIC industry group.
+    This means "cheaper than 75% of peers in the same industry."
+    
+    Returns (candidates_for_finnhub, all_stocks_with_price, industry_pe_quartiles).
     """
+    import json
+    import boto3
+    from collections import defaultdict
+
     all_enriched = []
     candidates = []
 
+    # Step 1: Assign prices and compute P/E for ALL stocks
     for stock in stocks:
         symbol = stock.get("symbol", "")
         price = prices.get(symbol)
@@ -123,14 +133,54 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
         if price:
             stock["price"] = price
 
-            # Calculate P/E locally: Price ÷ EPS (from EDGAR)
+            # Calculate P/E locally: Price ÷ TTM EPS (from EDGAR)
             eps = stock.get("eps")
             if eps and eps > 0:
                 stock["pe_ratio"] = round(price / eps, 2)
 
         all_enriched.append(stock)
 
-        # Pre-filter: only call Finnhub for stocks that could pass
+    # Step 2: Load industry map and compute P/E lower quartile per industry
+    industry_pe_quartiles = {}
+    try:
+        bucket = os.environ.get("RAW_DATA_BUCKET", "")
+        if bucket:
+            s3 = boto3.client("s3")
+            resp = s3.get_object(Bucket=bucket, Key="reference/ticker_industry_map.json")
+            industry_map = json.loads(resp["Body"].read().decode("utf-8"))
+
+            # Group P/E by industry (only stocks with valid P/E > 0)
+            industry_pe_values: dict[str, list] = defaultdict(list)
+            for stock in all_enriched:
+                pe = stock.get("pe_ratio")
+                if pe is not None and pe > 0:
+                    symbol = stock.get("symbol", "")
+                    entry = industry_map.get(symbol)
+                    if entry:
+                        industry_pe_values[entry["industry"]].append(pe)
+
+            # Compute 25th percentile (lower quartile) for each industry with enough data
+            for industry, values in industry_pe_values.items():
+                if len(values) >= 5:
+                    sorted_vals = sorted(values)
+                    q1_idx = len(sorted_vals) // 4
+                    industry_pe_quartiles[industry] = round(sorted_vals[q1_idx], 2)
+
+            print(f"  Computed P/E lower quartile for {len(industry_pe_quartiles)} industries")
+
+            # Tag each stock with its industry P/E threshold
+            for stock in all_enriched:
+                symbol = stock.get("symbol", "")
+                entry = industry_map.get(symbol)
+                if entry:
+                    stock["_sic_industry"] = entry["industry"]
+                    stock["_pe_industry_q1"] = industry_pe_quartiles.get(entry["industry"])
+    except Exception as e:
+        print(f"  Warning: Could not compute industry P/E quartiles: {e}")
+
+    # Step 3: Pre-filter using industry-relative P/E
+    for stock in all_enriched:
+        price = stock.get("price")
         pe = stock.get("pe_ratio")
         de = stock.get("debt_to_equity")
         qr = stock.get("quick_ratio")
@@ -138,9 +188,14 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
         eps_g = stock.get("eps_growth_yoy")
         rev_g = stock.get("revenue_growth_yoy")
 
+        # P/E must be below industry lower quartile (cheaper than 75% of peers)
+        # Fallback to P/E < 50 if no industry data available
+        pe_threshold = stock.get("_pe_industry_q1") or 50
+        pe_passes = pe is not None and pe > 0 and pe < pe_threshold
+
         passes_prefilter = (
             price is not None
-            and pe is not None and pe < 50
+            and pe_passes
             and de is not None and de < 1
             and qr is not None and qr > 1
             and om is not None and om > 0
@@ -151,7 +206,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list]:
         if passes_prefilter:
             candidates.append(stock)
 
-    return candidates, all_enriched
+    return candidates, all_enriched, industry_pe_quartiles
 
 
 # ==========================================
@@ -329,8 +384,8 @@ def handler(event, context):
     print(f"  Got {len(all_prices)} prices")
 
     # STAGE 2: Local P/E calculation + pre-filter (zero API calls)
-    print(f"  Stage 2: Local P/E + pre-filter...")
-    candidates, all_enriched = local_prefilter(passing, all_prices)
+    print(f"  Stage 2: Local P/E + industry-relative pre-filter...")
+    candidates, all_enriched, industry_pe_quartiles = local_prefilter(passing, all_prices)
     print(f"  Pre-filter: {len(candidates)} candidates for Finnhub (from {len(passing)})")
 
     # STAGE 3: Finnhub for candidates only (2 calls per stock, 3s pacing)
@@ -384,6 +439,31 @@ def handler(event, context):
     pe_count = sum(1 for s in all_enriched if s.get("pe_ratio") is not None)
     peg_count = sum(1 for s in all_enriched if s.get("peg_ratio") is not None)
 
+    # Persist industry P/E quartiles to DynamoDB (for full screen + dashboard)
+    if industry_pe_quartiles:
+        try:
+            import boto3 as _boto3
+            from decimal import Decimal
+            _dynamodb = _boto3.resource("dynamodb")
+            _table_name = os.environ.get("DATA_TABLE_NAME", "")
+            if _table_name:
+                _table = _dynamodb.Table(_table_name)
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                with _table.batch_writer() as batch:
+                    for industry, q1_pe in industry_pe_quartiles.items():
+                        # Update existing INDUSTRY_AVG item with pe_q1
+                        _table.update_item(
+                            Key={"PK": f"INDUSTRY_AVG#{industry}", "SK": "METRICS"},
+                            UpdateExpression="SET pe_lower_quartile = :q1, pe_updated = :d",
+                            ExpressionAttributeValues={
+                                ":q1": Decimal(str(q1_pe)),
+                                ":d": today,
+                            },
+                        )
+                print(f"  Persisted P/E lower quartiles for {len(industry_pe_quartiles)} industries")
+        except Exception as e:
+            print(f"  Warning: Could not persist P/E quartiles: {e}")
+
     result = {
         "enriched_stocks": all_enriched,
         "metadata": {
@@ -395,6 +475,7 @@ def handler(event, context):
             "peg_available": peg_count,
             "trading_date": trading_date,
             "finnhub_calls": finnhub_enriched * 3,
+            "industries_with_pe_quartile": len(industry_pe_quartiles),
             "duration_seconds": duration,
             "timestamp": end_time.isoformat(),
         },
