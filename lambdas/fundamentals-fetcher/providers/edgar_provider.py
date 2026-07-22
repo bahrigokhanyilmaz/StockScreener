@@ -182,12 +182,17 @@ class EdgarProvider(DataProvider):
 
         income_tags = {
             "net_income": "NetIncomeLoss",
-            "revenue": "RevenueFromContractWithCustomerExcludingAssessedTax",
             "operating_income": "OperatingIncomeLoss",
             "operating_cash_flow": "NetCashProvidedByUsedInOperatingActivities",
             "capex": "PaymentsToAcquirePropertyPlantAndEquipment",
             "interest_expense": "InterestExpense",
         }
+
+        # Revenue needs multiple tags merged — handled separately below
+        REVENUE_TAGS_FOR_TTM = [
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "Revenues",
+        ]
 
         # Determine latest available quarter with adequate coverage
         # by testing NetIncomeLoss frames from newest to oldest
@@ -286,42 +291,89 @@ class EdgarProvider(DataProvider):
             all_data[metric_name] = ttm_values
             print(f"    {metric_name} (TTM): {len(ttm_values)} companies")
 
-        # Also store Q1 values separately for YoY growth calculation
-        # Growth = (TTM current - TTM prior) / TTM prior
+        # REVENUE TTM: merge multiple tags for maximum coverage
+        # Companies use different tags — we fetch both and merge per-quarter
+        # before computing TTM, ensuring we don't miss companies.
+        revenue_ttm = {}
+        for q in quarterly_periods:
+            merged_quarter = {}
+            for rev_tag in REVENUE_TAGS_FOR_TTM:
+                frame = self._fetch_frame(rev_tag, "USD", False, quarter=q)
+                for cik, val in frame.items():
+                    if cik not in merged_quarter:
+                        merged_quarter[cik] = val
+                time.sleep(0.1)
+            # Accumulate into TTM
+            for cik, val in merged_quarter.items():
+                if cik not in revenue_ttm:
+                    revenue_ttm[cik] = 0
+                revenue_ttm[cik] += val
+
+        # Fallback: annual + Q1 derivation for companies missing quarterly data
+        rev_annual = {}
+        rev_q1_current = {}
+        rev_q1_prior = {}
+        for rev_tag in REVENUE_TAGS_FOR_TTM:
+            frame = self._fetch_frame(rev_tag, "USD", False, quarter=annual_period)
+            for cik, val in frame.items():
+                if cik not in rev_annual:
+                    rev_annual[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(rev_tag, "USD", False, quarter=q1_current_year)
+            for cik, val in frame.items():
+                if cik not in rev_q1_current:
+                    rev_q1_current[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(rev_tag, "USD", False, quarter=q1_prior_year)
+            for cik, val in frame.items():
+                if cik not in rev_q1_prior:
+                    rev_q1_prior[cik] = val
+            time.sleep(0.1)
+
+        for cik in set(rev_annual.keys()) & set(rev_q1_current.keys()) & set(rev_q1_prior.keys()):
+            if cik not in revenue_ttm:
+                revenue_ttm[cik] = rev_annual[cik] + rev_q1_current[cik] - rev_q1_prior[cik]
+
+        all_data["revenue"] = revenue_ttm
+        print(f"    revenue (TTM, multi-tag): {len(revenue_ttm)} companies")
+
+        # Prior TTM for YoY growth
         # Prior TTM for YoY growth: same derivation, shifted one year back
         # prior_annual_period and q1_prior_year already computed above dynamically
-        for metric_name, xbrl_tag in [("net_income", "NetIncomeLoss"),
-                                       ("revenue", "RevenueFromContractWithCustomerExcludingAssessedTax")]:
-            prior_ann_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=prior_annual_period)
-            time.sleep(0.1)
-            # q1_prior_data already fetched above during TTM computation
+        for metric_name, xbrl_tags in [("net_income", ["NetIncomeLoss"]),
+                                        ("revenue", REVENUE_TAGS_FOR_TTM)]:
+            # Merge all tags for this metric
+            prior_ann_data = {}
+            q1_prior_merged = {}
+            q1_2yb_data = {}
             q1_2yb = f"CY{lq_year - 2}Q1"
-            q1_2yb_data = self._fetch_frame(xbrl_tag, "USD", False, quarter=q1_2yb)
-            time.sleep(0.1)
+
+            for tag in xbrl_tags:
+                frame = self._fetch_frame(tag, "USD", False, quarter=prior_annual_period)
+                for cik, val in frame.items():
+                    if cik not in prior_ann_data:
+                        prior_ann_data[cik] = val
+                time.sleep(0.1)
+
+                frame = self._fetch_frame(tag, "USD", False, quarter=q1_prior_year)
+                for cik, val in frame.items():
+                    if cik not in q1_prior_merged:
+                        q1_prior_merged[cik] = val
+                time.sleep(0.1)
+
+                frame = self._fetch_frame(tag, "USD", False, quarter=q1_2yb)
+                for cik, val in frame.items():
+                    if cik not in q1_2yb_data:
+                        q1_2yb_data[cik] = val
+                time.sleep(0.1)
 
             # Prior TTM = prior_annual + q1_prior_year - q1_two_years_back
             prev_ttm = {}
-            for cik in set(prior_ann_data.keys()) & set(q1_prior_data.keys()) & set(q1_2yb_data.keys()):
-                prev_ttm[cik] = prior_ann_data[cik] + q1_prior_data[cik] - q1_2yb_data[cik]
+            for cik in set(prior_ann_data.keys()) & set(q1_prior_merged.keys()) & set(q1_2yb_data.keys()):
+                prev_ttm[cik] = prior_ann_data[cik] + q1_prior_merged[cik] - q1_2yb_data[cik]
 
             all_data[f"prev_{metric_name}"] = prev_ttm
             print(f"    prev_{metric_name} (prior TTM): {len(prev_ttm)} companies")
-
-        # Try alternative revenue tags if primary coverage is low
-        if len(all_data.get("revenue", {})) < 2000:
-            for alt_tag in self.REVENUE_ALTERNATIVES[1:]:
-                alt_data = self._fetch_frame(alt_tag, "USD", False, quarter=latest_quarter)
-                if alt_data:
-                    existing = all_data.get("revenue", {})
-                    added = 0
-                    for cik, val in alt_data.items():
-                        if cik not in existing:
-                            existing[cik] = val
-                            added += 1
-                    if added > 0:
-                        all_data["revenue"] = existing
-                        print(f"    revenue (alt: {alt_tag}): +{added} (total: {len(existing)})")
-                time.sleep(0.1)
 
         # =============================================
         # BALANCE SHEET: latest quarter instant + prior quarter fallback
@@ -337,7 +389,7 @@ class EdgarProvider(DataProvider):
 
         balance_metrics = {
             "stockholders_equity": ("StockholdersEquity", "USD"),
-            "long_term_debt": ("LongTermDebt", "USD"),
+            "liabilities": ("Liabilities", "USD"),
             "assets_current": ("AssetsCurrent", "USD"),
             "liabilities_current": ("LiabilitiesCurrent", "USD"),
             "shares_outstanding": ("CommonStockSharesOutstanding", "shares"),
@@ -552,7 +604,7 @@ class EdgarProvider(DataProvider):
             operating_cf = all_frames.get("operating_cash_flow", {}).get(cik)
             capex = all_frames.get("capex", {}).get(cik)
             equity = all_frames.get("stockholders_equity", {}).get(cik)
-            debt = all_frames.get("long_term_debt", {}).get(cik)
+            liabilities = all_frames.get("liabilities", {}).get(cik)
             assets_current = all_frames.get("assets_current", {}).get(cik)
             liabilities_current = all_frames.get("liabilities_current", {}).get(cik)
             shares = all_frames.get("shares_outstanding", {}).get(cik)
@@ -569,7 +621,12 @@ class EdgarProvider(DataProvider):
 
             # Calculate ratios
             eps = net_income / shares if net_income and shares and shares > 0 else None
-            debt_to_equity = debt / equity if debt and equity and equity > 0 else None
+            # D/E: (Total Liabilities - Current Liabilities) / Equity
+            # Uses broadest tags (4,800+ coverage) instead of specific LongTermDebt (1,600)
+            noncurrent_liabilities = None
+            if liabilities is not None and liabilities_current is not None:
+                noncurrent_liabilities = liabilities - liabilities_current
+            debt_to_equity = noncurrent_liabilities / equity if noncurrent_liabilities is not None and equity and equity > 0 else None
             current_ratio = assets_current / liabilities_current if assets_current and liabilities_current and liabilities_current > 0 else None
             quick_ratio = ((assets_current or 0) - (inventory or 0)) / liabilities_current if assets_current and liabilities_current and liabilities_current > 0 else None
             operating_margin = operating_income / revenue if operating_income and revenue and revenue > 0 else None
