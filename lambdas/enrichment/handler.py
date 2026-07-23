@@ -363,10 +363,19 @@ def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
     """Apply Finnhub data — override EDGAR EPS with Finnhub's reported TTM EPS."""
     price = stock.get("price", 0)
 
-    # EPS TTM from Finnhub — the official reported diluted EPS (not our computed one)
-    # This correctly excludes/normalizes one-time items that inflate raw NetIncomeLoss
+    # EPS and P/E from Finnhub — use normalized P/E (strips one-time items)
+    # peNormalizedAnnual is Finnhub's clean P/E excluding extraordinary items.
+    # This prevents one-time gains (VISN, RIGL-type situations) from producing
+    # artificially low P/E ratios.
+    pe_normalized = metrics.get("peNormalizedAnnual")
+    if pe_normalized and pe_normalized > 0 and price:
+        stock["pe_ratio"] = round(pe_normalized, 2)
+        # Back-derive clean EPS from normalized P/E
+        stock["eps"] = round(price / pe_normalized, 4)
+
+    # Also get epsTTM for reference (but don't use it for P/E if normalized is available)
     eps_ttm = metrics.get("epsTTM")
-    if eps_ttm and eps_ttm > 0 and price:
+    if not pe_normalized and eps_ttm and eps_ttm > 0 and price:
         stock["eps"] = eps_ttm
         stock["pe_ratio"] = round(price / eps_ttm, 2)
 
