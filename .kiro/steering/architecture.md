@@ -47,17 +47,21 @@ Total: ~15-20 minutes per run.
 
 ### Pipeline Step Details
 
-**Step 1 — EDGAR Bulk Fetch** (~15-20 seconds)
+**Step 1 — EDGAR Bulk Fetch** (~2-3 minutes)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
 - Dynamically discovers latest quarter with >= 4000 companies
-- TTM (Trailing Twelve Months) for income items: sum of 4 quarters with annual+Q1 fallback
+- **TTM (Trailing Twelve Months)** for income items:
+  - Primary: direct sum of 4 quarterly frames (if all 4 present for a company)
+  - Fallback: `Annual + Latest_Q1 - Prior_Q1` (algebraically identical, for companies with non-calendar fiscal years that don't have all 4 quarters in EDGAR)
+  - A company only gets a TTM value via one method — never a partial sum
+- **Prior TTM**: same derivation shifted 1 year back (for YoY growth)
 - Uses BROAD universal tags for maximum coverage:
-  - `Liabilities` (4,862 cos) + `LiabilitiesCurrent` (4,199) → D/E without tag guessing
-  - `NetIncomeLoss` (4,944) → EPS
+  - `Liabilities` (4,862 cos) + `LiabilitiesCurrent` (4,199) → D/E = (Liabilities - LiabilitiesCurrent) / Equity
+  - `NetIncomeLoss` (4,944) → TTM EPS (for industry quartile computation only)
   - `OperatingIncomeLoss` (4,004) → Operating Margin
-  - Both `RevenueFromContractWithCustomer...` (2,306) + `Revenues` (1,683) merged per quarter
+  - Both `RevenueFromContractWithCustomer...` (2,306) + `Revenues` (1,683) merged per quarter for TTM
   - `CommonStockSharesOutstanding` + `WeightedAverageNumberOfDilutedSharesOutstanding` fallback
-- Calculates locally: TTM EPS, D/E (broad), Quick Ratio, Op Margin, EPS Growth YoY, Revenue Growth YoY, FCF/share, ICR
+- **P/E for candidates** is recalculated in Step 3 using Finnhub's `peNormalizedAnnual` (strips one-time items)
 - All dates computed dynamically from today — no hardcoded quarters
 - Output: S3 `step1_fundamentals_*.json`
 
@@ -73,14 +77,18 @@ Total: ~15-20 minutes per run.
 - Output: S3 `step2_prescreen_*.json` (passing_stocks + all_screened)
 
 **Step 3 — Price + Metrics Enrichment** (~5-8 minutes)
-- Stage 1: Polygon.io Grouped Daily — ONE API call → prices for ALL 12,000+ US stocks
-- Stage 2: Local P/E calculation (Price ÷ EDGAR EPS) + pre-filter (P/E<50 + other hard filters)
-- Stage 3: Finnhub for survivors (~50-80 stocks, 3 calls each):
-  - `/stock/metric?metric=all` → Forward P/E, Est. LT Growth
+- Stage 1: Polygon.io Grouped Daily — ONE API call → prices for ALL 12,000+ US stocks (date = T-2 for free tier)
+- Stage 2: Local P/E calculation + industry-relative pre-filter:
+  - P/E = Polygon Price ÷ EDGAR TTM EPS (for all pre-screen passers)
+  - Loads Step 1 full universe from S3 to compute P/E for all 4,500+ stocks
+  - Computes 25th percentile P/E per SEC SIC industry (98 industries)
+  - Sanity filter: excludes P/E < 1, EPS > revenue/share, P/E > 500 from quartile computation
+  - Stock passes if its P/E < its industry's lower quartile
+  - Also requires PEG < 1.0 and P/FCF < 20 (locally computed)
+- Stage 3: Finnhub for survivors (~5-45 stocks, 3 calls each):
+  - `/stock/metric?metric=all` → `peNormalizedAnnual` overrides EDGAR P/E (strips one-time items), Forward P/E, Est. LT Growth
   - `/stock/recommendation` → Analyst consensus (1-5 scale)
   - `/stock/profile2` → Logo, weburl, industry
-- Local PEG: P/E ÷ (EDGAR EPS Growth × 100)
-- Local Price/FCF: Polygon Price ÷ EDGAR FCF per share
 - Pacing: 3s between stocks (safe under 60 calls/min)
 - Output: S3 `step3_enriched_*.json`
 
@@ -363,6 +371,10 @@ Architecture:
 | P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). No hardcoded threshold |
 | Soft filters for Finnhub-dependent metrics | forward_pe, est_lt_growth, analyst_recommendation: skip if absent, apply if present |
 | Polygon T-2 for price date | Free tier requires completed trading day; always go back 2 days |
+| Finnhub peNormalizedAnnual for P/E | epsTTM still includes one-time items; peNormalized strips them. Prevents VISN/RIGL-type artifacts |
+| Revenue TTM: require all 4 quarters or use derivation | Partial sums (3 of 4 quarters) produce wrong growth; must be all-or-nothing |
+| P/E quartile sanity: exclude P/E<1, EPS>revenue/share | One-time gains create impossible P/E values that pollute industry distributions |
+| Step 1 timeout 10 minutes | Multi-tag revenue TTM needs ~50 EDGAR API calls; 5min was too short |
 | yfinance blocked from Lambda | Yahoo blocks AWS data center IPs. Can't use from Lambda |
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 
