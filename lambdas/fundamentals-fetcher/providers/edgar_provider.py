@@ -294,7 +294,8 @@ class EdgarProvider(DataProvider):
         # REVENUE TTM: merge multiple tags for maximum coverage
         # Companies use different tags — we fetch both and merge per-quarter
         # before computing TTM, ensuring we don't miss companies.
-        revenue_ttm = {}
+        # CRITICAL: only use direct sum if ALL 4 quarters present. Otherwise use annual derivation.
+        revenue_quarterly = {}  # cik → {quarter: value}
         for q in quarterly_periods:
             merged_quarter = {}
             for rev_tag in REVENUE_TAGS_FOR_TTM:
@@ -303,13 +304,13 @@ class EdgarProvider(DataProvider):
                     if cik not in merged_quarter:
                         merged_quarter[cik] = val
                 time.sleep(0.1)
-            # Accumulate into TTM
+            # Store per-quarter data
             for cik, val in merged_quarter.items():
-                if cik not in revenue_ttm:
-                    revenue_ttm[cik] = 0
-                revenue_ttm[cik] += val
+                if cik not in revenue_quarterly:
+                    revenue_quarterly[cik] = {}
+                revenue_quarterly[cik][q] = val
 
-        # Fallback: annual + Q1 derivation for companies missing quarterly data
+        # Fallback: annual + Q1 derivation for companies missing any quarterly data
         rev_annual = {}
         rev_q1_current = {}
         rev_q1_prior = {}
@@ -330,8 +331,20 @@ class EdgarProvider(DataProvider):
                     rev_q1_prior[cik] = val
             time.sleep(0.1)
 
+        # Compute revenue TTM: direct sum if all 4 quarters, annual derivation otherwise
+        revenue_ttm = {}
+        for cik, quarters_data in revenue_quarterly.items():
+            if len(quarters_data) == 4:
+                # All 4 quarters present — direct sum
+                revenue_ttm[cik] = sum(quarters_data.values())
+            elif cik in rev_annual and cik in rev_q1_current and cik in rev_q1_prior:
+                # Missing some quarters — use annual derivation
+                revenue_ttm[cik] = rev_annual[cik] + rev_q1_current[cik] - rev_q1_prior[cik]
+
+        # Also add companies only in annual data (not in any quarterly frame)
         for cik in set(rev_annual.keys()) & set(rev_q1_current.keys()) & set(rev_q1_prior.keys()):
             if cik not in revenue_ttm:
+                revenue_ttm[cik] = rev_annual[cik] + rev_q1_current[cik] - rev_q1_prior[cik]
                 revenue_ttm[cik] = rev_annual[cik] + rev_q1_current[cik] - rev_q1_prior[cik]
 
         all_data["revenue"] = revenue_ttm

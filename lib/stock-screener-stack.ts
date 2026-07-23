@@ -92,7 +92,7 @@ export class StockScreenerStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(5),
+      timeout: cdk.Duration.minutes(10),
       memorySize: 512,
       environment: {
         PROVIDER: 'edgar',
