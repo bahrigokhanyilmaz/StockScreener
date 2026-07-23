@@ -179,13 +179,22 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             for stock in all_universe_stocks:
                 symbol = stock.get("symbol", "")
                 eps = stock.get("eps")
+                revenue_ps = stock.get("revenue_per_share")
                 price = prices.get(symbol)
                 if price and eps and eps > 0:
                     pe = price / eps
-                    if pe > 0 and pe < 500:  # Exclude nonsensical values
-                        entry = industry_map.get(symbol)
-                        if entry:
-                            industry_pe_values[entry["industry"]].append(pe)
+                    # Sanity checks: exclude data artifacts from quartile computation
+                    # P/E < 1 means EPS > price (impossible without one-time gains)
+                    # EPS > revenue/share means net income > revenue (impossible for normal ops)
+                    if pe < 1:
+                        continue
+                    if revenue_ps and revenue_ps > 0 and eps > revenue_ps:
+                        continue
+                    if pe > 500:  # Nonsensically high
+                        continue
+                    entry = industry_map.get(symbol)
+                    if entry:
+                        industry_pe_values[entry["industry"]].append(pe)
 
             # Compute 25th percentile (lower quartile) for each industry with enough data
             for industry, values in industry_pe_values.items():
@@ -351,16 +360,28 @@ def fetch_finnhub_recommendation(symbol: str, key: str) -> float:
 
 
 def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
-    """Apply Finnhub data — ONLY fields that can't be computed from EDGAR/Polygon."""
+    """Apply Finnhub data — override EDGAR EPS with Finnhub's reported TTM EPS."""
     price = stock.get("price", 0)
 
-    # PEG: P/E ÷ EPS growth (EPS growth now comes from EDGAR, not Finnhub)
-    pe = stock.get("pe_ratio")
-    eps_growth = stock.get("eps_growth_yoy")  # Already computed from EDGAR
-    if pe and eps_growth and eps_growth > 0:
-        stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)  # growth is decimal, PEG uses %
+    # EPS TTM from Finnhub — the official reported diluted EPS (not our computed one)
+    # This correctly excludes/normalizes one-time items that inflate raw NetIncomeLoss
+    eps_ttm = metrics.get("epsTTM")
+    if eps_ttm and eps_ttm > 0 and price:
+        stock["eps"] = eps_ttm
+        stock["pe_ratio"] = round(price / eps_ttm, 2)
 
-    # Price/FCF: Price ÷ FCF per share (FCF now comes from EDGAR)
+    # PEG: P/E ÷ EPS growth
+    # Use Finnhub EPS growth if available, else fall back to EDGAR
+    eps_growth = stock.get("eps_growth_yoy")  # EDGAR TTM growth
+    finnhub_eps_growth = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
+    if finnhub_eps_growth:
+        eps_growth = finnhub_eps_growth / 100.0  # Finnhub returns as percentage
+
+    pe = stock.get("pe_ratio")
+    if pe and pe > 0 and eps_growth and eps_growth > 0:
+        stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)
+
+    # Price/FCF: Price ÷ FCF per share (FCF from EDGAR)
     fcf_ps = stock.get("fcf_per_share")
     if price and fcf_ps and fcf_ps > 0:
         stock["price_to_fcf"] = round(price / fcf_ps, 2)
