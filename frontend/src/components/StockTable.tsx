@@ -147,15 +147,20 @@ function getSellSignal(price: number | null, targetPrice: number | null): string
 function renderTrendCell(trend: TrendData | undefined) {
   if (!trend) return <span style={{ color: '#64748b' }}>—</span>;
 
-  const pct = trend.changePercent;
-  const arrow = pct >= 0 ? '↑' : '↓';
-  const color = trend.isFalling ? '#ef4444'
-    : trend.isRecovering ? '#4ade80'
-    : trend.isStabilizing ? '#fbbf24'
-    : pct >= 0.05 ? '#4ade80'
-    : pct <= -0.05 ? '#fb923c'
-    : '#94a3b8';
-  const label = `${arrow} ${(Math.abs(pct) * 100).toFixed(1)}%`;
+  // Show daily change (last bar vs previous bar)
+  const closes = trend.closes;
+  if (closes.length < 2) return <span style={{ color: '#64748b' }}>—</span>;
+
+  const today = closes[closes.length - 1];
+  const yesterday = closes[closes.length - 2];
+  const dailyChange = (today - yesterday) / yesterday;
+
+  const arrow = dailyChange >= 0 ? '↑' : '↓';
+  const color = dailyChange >= 0.02 ? '#4ade80'
+    : dailyChange <= -0.02 ? '#f87171'
+    : dailyChange >= 0 ? '#86efac'
+    : '#fb923c';
+  const label = `${arrow} ${(Math.abs(dailyChange) * 100).toFixed(2)}%`;
 
   return (
     <span className="trend-cell" style={{ color }}>
@@ -187,7 +192,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
             <th>Days</th>
             <th>Price</th>
             <th>Mkt Cap</th>
-            <th>30d</th>
+            <th>Daily</th>
             <th>P/E</th>
             <th>Fwd P/E</th>
             <th>PEG</th>

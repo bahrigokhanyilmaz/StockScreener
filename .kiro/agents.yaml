@@ -1,0 +1,12 @@
+providers:
+  - name: google
+    type: openai-compatible
+    api_key: "${GEMINI_API_KEY}"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    models:
+      - name: gemini-2.5-pro
+        display_name: "Gemini 2.5 Pro (Architectural Review)"
+        max_tokens: 8192
+      - name: gemini-2.5-flash
+        display_name: "Gemini 2.5 Flash (Fast Edits)"
+        max_tokens: 8192

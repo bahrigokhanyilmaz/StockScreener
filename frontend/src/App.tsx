@@ -40,17 +40,21 @@ function App() {
         setPipelineStatus(statusData);
         setError(null);
 
-        // Fetch price trends for all stocks (parallel)
+        // Fetch price trends for all stocks (batched to avoid API throttling)
         const symbols = stocksData.stocks.map((s: Stock) => s.symbol);
         const trendResults: Record<string, TrendData> = {};
-        const pricePromises = symbols.map(async (sym: string) => {
-          try {
-            const priceData = await getStockPrices(sym);
-            const trend = calculateTrend(priceData.bars);
-            if (trend) trendResults[sym] = trend;
-          } catch { /* skip if no price data */ }
-        });
-        await Promise.all(pricePromises);
+        // Fetch in batches of 4 to avoid overwhelming API Gateway
+        for (let i = 0; i < symbols.length; i += 4) {
+          const batch = symbols.slice(i, i + 4);
+          const batchPromises = batch.map(async (sym: string) => {
+            try {
+              const priceData = await getStockPrices(sym);
+              const trend = calculateTrend(priceData.bars);
+              if (trend) trendResults[sym] = trend;
+            } catch { /* skip if no price data */ }
+          });
+          await Promise.all(batchPromises);
+        }
         setTrends(trendResults);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load data');
