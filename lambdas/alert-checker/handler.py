@@ -40,7 +40,7 @@ sns_client = boto3.client("sns")
 dynamodb = boto3.resource("dynamodb")
 
 DEFAULT_SENTIMENT_THRESHOLD = -0.3
-DEFAULT_GRACE_PERIOD_DAYS = 90
+DEFAULT_GRACE_PERIOD_DAYS = 30
 
 
 def get_previous_tracking_status(table, symbols: list[str]) -> dict[str, dict]:
@@ -179,8 +179,11 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
             status = update["status"]
 
             if status == "EXPIRED":
-                # Delete tracking item (stock is no longer tracked)
-                table.delete_item(Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"})
+                # Remove ALL items for this stock (it's no longer tracked)
+                for sk in ["TRACKING", "LATEST", "ARTICLES"]:
+                    table.delete_item(Key={"PK": f"STOCK#{symbol}", "SK": sk})
+                table.delete_item(Key={"PK": f"PRICE_HISTORY#{symbol}", "SK": "DAILY"})
+                print(f"    EXPIRED: {symbol} removed from tracking (grace period exceeded)")
                 continue
 
             item = {

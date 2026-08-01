@@ -495,6 +495,20 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
     table = dynamodb.Table(table_name)
     written = 0
 
+    # Load existing first_tracked dates from TRACKING items
+    first_tracked_dates = {}
+    for stock in scored_stocks:
+        symbol = stock.get("symbol", "")
+        if symbol:
+            try:
+                resp = table.get_item(Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
+                                      ProjectionExpression="first_tracked")
+                ft = resp.get("Item", {}).get("first_tracked")
+                if ft:
+                    first_tracked_dates[symbol] = ft
+            except Exception:
+                pass
+
     with table.batch_writer() as batch:
         for stock in scored_stocks:
             symbol = stock.get("symbol", "")
@@ -502,6 +516,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 continue
 
             now_iso = datetime.now(timezone.utc).isoformat()
+            first_tracked = first_tracked_dates.get(symbol, today)
 
             # Item 1: LATEST (current state — overwritten each run)
             # Persist ALL screener metrics so the dashboard can display them
@@ -539,6 +554,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "institutional_transactions": stock.get("institutional_transactions"),
                 "interest_coverage_ratio": stock.get("interest_coverage_ratio"),
                 "sic_industry": stock.get("sic_industry", ""),
+                "first_tracked": first_tracked,
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status
                 "tracking_status": "ACTIVE" if stock.get("passes_screen") else "GRACE",
@@ -579,6 +595,34 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
             batch.put_item(Item=_to_decimal(
                 {k: v for k, v in tracking_item.items() if v is not None}
             ))
+
+            # Item 4: Analyzed articles (with per-article sentiment + risk flags)
+            articles = stock.get("articles", [])
+            if articles:
+                # Store compact version: title, url, source, published_at, sentiment, risk_flags
+                analyzed_articles = []
+                for article in articles[:10]:  # Cap at 10
+                    analysis = article.get("analysis", {})
+                    analyzed_articles.append({
+                        "title": article.get("title", ""),
+                        "url": article.get("url", ""),
+                        "source": article.get("source", ""),
+                        "published_at": article.get("published_at", 0),
+                        "sentiment": analysis.get("sentiment", 0),
+                        "confidence": analysis.get("confidence", 0),
+                        "relevant": analysis.get("relevant", True),
+                        "risk_flags": analysis.get("risk_flags", []),
+                        "summary": analysis.get("summary", ""),
+                    })
+                articles_item = {
+                    "PK": f"STOCK#{symbol}",
+                    "SK": "ARTICLES",
+                    "symbol": symbol,
+                    "articles": analyzed_articles,
+                    "article_count": len(analyzed_articles),
+                    "last_updated": now_iso,
+                }
+                batch.put_item(Item=_to_decimal(articles_item))
 
             written += 1
 

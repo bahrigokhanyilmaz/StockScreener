@@ -130,7 +130,35 @@ def handler(event, context):
 
     # Get passing stocks (Step Functions only passes stocks that cleared the full screen)
     passing_stocks = data.get("passing_stocks", [])
-    symbols = [s.get("symbol") for s in passing_stocks if s.get("symbol")]
+
+    # Also include GRACE stocks from DynamoDB (they need fresh news/sentiment too)
+    grace_stocks = []
+    try:
+        import boto3
+        table_name = os.environ.get("DATA_TABLE_NAME", "")
+        if table_name:
+            dynamodb = boto3.resource("dynamodb")
+            table = dynamodb.Table(table_name)
+            resp = table.query(
+                IndexName="tracking-status-index",
+                KeyConditionExpression=boto3.dynamodb.conditions.Key("tracking_status").eq("GRACE"),
+            )
+            passing_symbols = {s.get("symbol") for s in passing_stocks}
+            for item in resp.get("Items", []):
+                if item.get("SK") == "LATEST" and item.get("symbol") not in passing_symbols:
+                    # Convert DynamoDB item to stock dict format
+                    grace_stocks.append({
+                        "symbol": item.get("symbol"),
+                        "company_name": item.get("company_name", ""),
+                        "price": float(item["price"]) if item.get("price") else None,
+                    })
+            if grace_stocks:
+                print(f"  Including {len(grace_stocks)} GRACE stocks for news refresh")
+    except Exception as e:
+        print(f"  Warning: Could not load GRACE stocks: {e}")
+
+    all_stocks = passing_stocks + grace_stocks
+    symbols = [s.get("symbol") for s in all_stocks if s.get("symbol")]
 
     if not symbols:
         print("No stocks to fetch news for")
@@ -157,7 +185,7 @@ def handler(event, context):
         articles = fetch_news_for_ticker(symbol, lookback_hours=lookback_hours)
         total_articles += len(articles)
 
-        stock_data = next((s for s in passing_stocks if s.get("symbol") == symbol), {})
+        stock_data = next((s for s in all_stocks if s.get("symbol") == symbol), {})
         stocks_with_news.append({
             **stock_data,
             "articles": articles,

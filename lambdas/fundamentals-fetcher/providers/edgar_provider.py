@@ -55,7 +55,6 @@ class EdgarProvider(DataProvider):
         "shares_outstanding": ("CommonStockSharesOutstanding", "shares", True),
         "inventory": ("InventoryNet", "USD", True),
         "cash": ("CashAndCashEquivalentsAtCarryingValue", "USD", True),
-        "interest_expense": ("InterestExpense", "USD", False),
     }
 
     # Alternative revenue tags (companies use different XBRL tags)
@@ -185,8 +184,14 @@ class EdgarProvider(DataProvider):
             "operating_income": "OperatingIncomeLoss",
             "operating_cash_flow": "NetCashProvidedByUsedInOperatingActivities",
             "capex": "PaymentsToAcquirePropertyPlantAndEquipment",
-            "interest_expense": "InterestExpense",
         }
+
+        # Interest expense needs multi-tag merge (like revenue)
+        INTEREST_EXPENSE_TAGS = [
+            "InterestExpense",          # Total interest (most comprehensive)
+            "InterestAndDebtExpense",   # Same concept, alternative name
+            "InterestPaidNet",          # Cash-basis equivalent (acceptable proxy)
+        ]
 
         # Revenue needs multiple tags merged — handled separately below
         REVENUE_TAGS_FOR_TTM = [
@@ -349,6 +354,56 @@ class EdgarProvider(DataProvider):
 
         all_data["revenue"] = revenue_ttm
         print(f"    revenue (TTM, multi-tag): {len(revenue_ttm)} companies")
+
+        # INTEREST EXPENSE TTM: merge 3 reliable tags (same pattern as revenue)
+        interest_quarterly = {}
+        for q in quarterly_periods:
+            merged_quarter = {}
+            for ie_tag in INTEREST_EXPENSE_TAGS:
+                frame = self._fetch_frame(ie_tag, "USD", False, quarter=q)
+                for cik, val in frame.items():
+                    if cik not in merged_quarter:
+                        merged_quarter[cik] = val
+                time.sleep(0.1)
+            for cik, val in merged_quarter.items():
+                if cik not in interest_quarterly:
+                    interest_quarterly[cik] = {}
+                interest_quarterly[cik][q] = val
+
+        # Annual fallback for interest expense
+        ie_annual = {}
+        ie_q1_current = {}
+        ie_q1_prior = {}
+        for ie_tag in INTEREST_EXPENSE_TAGS:
+            frame = self._fetch_frame(ie_tag, "USD", False, quarter=annual_period)
+            for cik, val in frame.items():
+                if cik not in ie_annual:
+                    ie_annual[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(ie_tag, "USD", False, quarter=q1_current_year)
+            for cik, val in frame.items():
+                if cik not in ie_q1_current:
+                    ie_q1_current[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(ie_tag, "USD", False, quarter=q1_prior_year)
+            for cik, val in frame.items():
+                if cik not in ie_q1_prior:
+                    ie_q1_prior[cik] = val
+            time.sleep(0.1)
+
+        # Compute interest expense TTM
+        interest_ttm = {}
+        for cik, quarters_data in interest_quarterly.items():
+            if len(quarters_data) == 4:
+                interest_ttm[cik] = sum(quarters_data.values())
+            elif cik in ie_annual and cik in ie_q1_current and cik in ie_q1_prior:
+                interest_ttm[cik] = ie_annual[cik] + ie_q1_current[cik] - ie_q1_prior[cik]
+        for cik in set(ie_annual.keys()) & set(ie_q1_current.keys()) & set(ie_q1_prior.keys()):
+            if cik not in interest_ttm:
+                interest_ttm[cik] = ie_annual[cik] + ie_q1_current[cik] - ie_q1_prior[cik]
+
+        all_data["interest_expense"] = interest_ttm
+        print(f"    interest_expense (TTM, multi-tag): {len(interest_ttm)} companies")
 
         # Prior TTM for YoY growth
         # Prior TTM for YoY growth: same derivation, shifted one year back

@@ -149,8 +149,9 @@ export class StockScreenerStack extends cdk.Stack {
       environment: {
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
         NEWS_LOOKBACK_HOURS: '168',
+        DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Step 5: News articles for final passing stocks (TickerTick)',
+      description: 'Step 5: News for passing + GRACE stocks',
     });
 
     // Step 6: Sentiment Analyzer (Bedrock/Claude)
@@ -293,8 +294,9 @@ export class StockScreenerStack extends cdk.Stack {
       conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
     }));
 
-    // Step 5: S3 read/write (news storage + pipeline I/O)
+    // Step 5: S3 read/write (news storage + pipeline I/O) + DynamoDB read (GRACE stocks)
     rawDataBucket.grantReadWrite(newsFetcher);
+    dataTable.grantReadData(newsFetcher);
 
     // Step 6: Bedrock + S3 read/write (sentiment storage + pipeline I/O)
     sentimentAnalyzer.addToRolePolicy(new iam.PolicyStatement({

@@ -186,6 +186,7 @@ Total: ~15-20 minutes per run.
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
 | STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day, never overwritten) |
 | STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL) |
+| STOCK#{ticker} | ARTICLES | Analyzed articles with per-article risk flags (overwritten daily) |
 | PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV price bars (overwritten daily) |
 | INDUSTRY_AVG#{industry} | METRICS | Industry median benchmarks (overwritten each pipeline run) |
 
@@ -303,11 +304,15 @@ Range verification:
 ### Interest Coverage Ratio (D/E Override)
 
 ```
-ICR = Operating Income / Interest Expense (from EDGAR)
+ICR = Operating Income / Interest Expense (TTM, from EDGAR multi-tag merge)
+Interest Expense tags: InterestExpense, InterestAndDebtExpense, InterestPaidNet
+(3 reliable tags merged for ~3,400 company coverage vs 829 with single tag)
 ```
-- If D/E > 1.0 (would normally fail), stock can still pass if ICR > 3.0
-- Meaning: company earns 3x+ its interest payments — debt is serviceable
-- Shown in table: D/E value in amber with "ICR✓" badge (not red)
+- Rule applied consistently at ALL 3 stages: Step 2 pre-screen, Step 3 enrichment pre-filter, Step 4 full screen
+- If D/E > 1.0 (would normally fail), stock passes if ICR > 3.0
+- Companies like CRM, META, MSFT now get the override (was broken before due to single-tag coverage)
+- AAPL still fails (doesn't report interest expense in any EDGAR frame tag)
+- Shown in table: D/E value in amber with "ICR✓" badge
 - Filter slider shows "or ICR > 3.0x" note
 
 ### Industry Averages (Static Reference Map)
@@ -335,8 +340,28 @@ Architecture:
   - **FALLING**: 5+ consecutive down days OR -15% in 10 trading days
   - **STABILIZING**: Was falling (>10% decline in days 5-14 ago), last 1-2 days flat/up
   - **RECOVERING**: Was falling, now 3+ consecutive up days
-- Table shows 30d trend column (arrow + %, color-coded)
-- Detail panel shows SVG sparkline chart with trend state and day count
+- Table shows **daily change** column (last day %, color-coded), NOT 30d total
+- Detail panel shows SVG sparkline chart with 30-day trend + state badge + day count
+- Price fetching is batched (4 at a time) to avoid API throttling
+
+### GRACE Stock Lifecycle
+
+- **ACTIVE**: passes today's filters. Refreshed daily (news, sentiment, prices, scores).
+- **GRACE**: failed today but was previously ACTIVE. Still refreshed daily.
+  - Step 5 (news-fetcher) reads GRACE stocks from DynamoDB and includes them alongside passers
+  - They flow through Steps 5→6→7→8 getting fresh news, sentiment, scores, price history
+  - No stock on the dashboard ever shows stale data
+- **After 30 days in GRACE**: stock is completely removed (LATEST, TRACKING, ARTICLES, PRICE_HISTORY all deleted)
+- Grace period: 30 days (configurable via GRACE_PERIOD_DAYS or screener-filters.json)
+
+### Analyzed Articles in DynamoDB
+
+- Score calculator persists analyzed articles as `PK: STOCK#{ticker}, SK: ARTICLES`
+- Each article stored with: title, url, source, published_at, sentiment, confidence, risk_flags, summary
+- API serves these (with per-article flags) instead of live TickerTick when available
+- Frontend shows risk flag badges (REV RISK, FRAUD, etc.) next to the specific article that triggered them
+- Also shows per-article sentiment score (+42, -65) next to source/time
+- Falls back to live TickerTick (no flags) if ARTICLES item doesn't exist yet
 
 ### Key Decisions Log
 
@@ -368,13 +393,23 @@ Architecture:
 | Dynamic quarter discovery | No hardcoded dates. Tests from newest to oldest, picks first with >=4000 companies |
 | TTM = 4 actual quarters (not annualized) | Sum of Q1+Q4+Q3+Q2 with annual derivation fallback. No shortcuts |
 | Prior TTM = same derivation shifted 1 year | Gives proper rolling YoY growth |
-| P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). No hardcoded threshold |
+| P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). Tech SIC (35xx, 36xx, 737x) uses 50th percentile; non-tech uses 25th |
 | Soft filters for Finnhub-dependent metrics | forward_pe, est_lt_growth, analyst_recommendation: skip if absent, apply if present |
 | Polygon T-2 for price date | Free tier requires completed trading day; always go back 2 days |
 | Finnhub peNormalizedAnnual for P/E | epsTTM still includes one-time items; peNormalized strips them. Prevents VISN/RIGL-type artifacts |
 | Revenue TTM: require all 4 quarters or use derivation | Partial sums (3 of 4 quarters) produce wrong growth; must be all-or-nothing |
 | P/E quartile sanity: exclude P/E<1, EPS>revenue/share | One-time gains create impossible P/E values that pollute industry distributions |
-| Step 1 timeout 10 minutes | Multi-tag revenue TTM needs ~50 EDGAR API calls; 5min was too short |
+| Finnhub peNormalizedAnnual for P/E | epsTTM still includes one-time items; peNormalized strips them |
+| Forward EPS growth override | Trailing negative + Finnhub forward positive = pass (matches Finviz) |
+| Interest expense multi-tag (3 tags) | InterestExpense + InterestAndDebtExpense + InterestPaidNet → ~3,400 coverage |
+| D/E override consistent at all 3 stages | Pre-screen, enrichment pre-filter, and full screen all use same rule |
+| GRACE stocks refreshed daily | News-fetcher reads GRACE from DynamoDB, includes in pipeline. No stale data. |
+| Grace period 30 days (was 90) | Full cleanup on expiry (LATEST + TRACKING + ARTICLES + PRICE_HISTORY deleted) |
+| Articles stored in DynamoDB | Per-article risk flags visible in UI. Replaced live TickerTick (which has no flags) |
+| Score calculator timeout 600s | 19 stocks × 12s/stock for prices + descriptions = needs 5+ minutes |
+| Step 1 timeout 10 minutes | Multi-tag revenue/interest TTM needs ~60 EDGAR API calls |
+| P/E slider removed from UI | Now industry-relative; no fixed threshold to adjust |
+| Daily change in table (not 30d) | 30d already in detail panel sparkline; daily is more actionable |
 | yfinance blocked from Lambda | Yahoo blocks AWS data center IPs. Can't use from Lambda |
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 

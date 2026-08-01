@@ -20,10 +20,10 @@ const FILTER_CONFIG = [
   { key: 'debt_to_equity', label: 'Debt / Equity', type: 'max', default: 1.0, min: 0.0, max: 1.0, step: 0.1, format: 'ratio' },
   { key: 'quick_ratio', label: 'Quick Ratio', type: 'min', default: 1.0, min: 1.0, max: 5.0, step: 0.1, format: 'ratio' },
   { key: 'operating_margin', label: 'Operating Margin %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
-  { key: 'eps_growth_yoy', label: 'EPS Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
+  { key: 'eps_growth_yoy', label: 'EPS Growth % (trailing or forward)', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
   { key: 'revenue_growth_yoy', label: 'Revenue Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
-  { key: 'est_lt_growth', label: 'LT Growth %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
-  { key: 'target_price_upside', label: 'Target Upside %', type: 'min', default: 20, min: 20, max: 100, step: 5, format: 'percent' },
+  { key: 'est_lt_growth', label: 'LT Growth % (soft — partial coverage)', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
+  { key: 'target_price_upside', label: 'Target Upside % (deferred — no data)', type: 'min', default: 20, min: 20, max: 100, step: 5, format: 'percent' },
 ];
 
 export interface FilterValues {

@@ -174,14 +174,29 @@ def get_stock_history(ticker: str):
 
 def get_stock_news(ticker: str):
     """
-    GET /stocks/{ticker}/news — Recent news articles for a stock.
+    GET /stocks/{ticker}/news — Analyzed news articles for a stock.
 
-    Fetches live from TickerTick API (free, no key needed).
-    Falls back to S3 pipeline cache if TickerTick is unavailable.
+    Primary: serves pipeline-analyzed articles from DynamoDB (with risk flags per article).
+    Fallback: fetches live from TickerTick if no analyzed articles exist.
     """
-    import requests as http_requests
+    table = get_table()
 
-    # Fetch live from TickerTick
+    # Try DynamoDB first (has risk flags and sentiment per article)
+    result = table.get_item(
+        Key={"PK": f"STOCK#{ticker.upper()}", "SK": "ARTICLES"}
+    )
+    item = result.get("Item")
+    if item and item.get("articles"):
+        articles = decimal_to_float(item.get("articles", []))
+        return response(200, {
+            "ticker": ticker.upper(),
+            "articles": articles,
+            "count": len(articles),
+            "source": "pipeline_analyzed",
+        })
+
+    # Fallback: live from TickerTick (no risk flags)
+    import requests as http_requests
     try:
         url = "https://api.tickertick.com/feed"
         params = {"q": f"tt:{ticker.lower()}", "lang": "en", "n": 15}
@@ -196,6 +211,7 @@ def get_stock_news(ticker: str):
                 "url": s.get("url", ""),
                 "source": s.get("site", ""),
                 "published_at": s.get("time", 0),
+                "risk_flags": [],
             } for s in stories]
 
             return response(200, {
@@ -207,7 +223,6 @@ def get_stock_news(ticker: str):
     except Exception:
         pass
 
-    # Fallback: no news available
     return response(200, {
         "ticker": ticker.upper(),
         "articles": [],

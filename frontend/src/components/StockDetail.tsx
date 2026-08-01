@@ -219,12 +219,29 @@ export default function StockDetail({ ticker, onClose }: Props) {
                 ) : (
                   news.map((article, i) => (
                     <a key={i} href={article.url} target="_blank" rel="noopener noreferrer" className="news-item">
-                      <span className="news-title">{article.title}</span>
+                      <span className="news-title">
+                        {article.title}
+                        {article.risk_flags && article.risk_flags.length > 0 && (
+                          article.risk_flags.map((flag: string, fi: number) => (
+                            <span key={fi} className="article-risk-badge">
+                              {formatArticleFlag(flag)}
+                            </span>
+                          ))
+                        )}
+                      </span>
                       <span className="news-meta">
                         {article.source}
                         {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
+                        {article.sentiment !== undefined && article.sentiment !== 0 && (
+                          <span className={`article-sentiment ${article.sentiment > 0 ? 'positive' : 'negative'}`}>
+                            {article.sentiment > 0 ? '+' : ''}{(article.sentiment * 100).toFixed(0)}
+                          </span>
+                        )}
                       </span>
-                      {article.description && (
+                      {article.summary && (
+                        <span className="news-desc">{article.summary}</span>
+                      )}
+                      {!article.summary && article.description && (
                         <span className="news-desc">{article.description.slice(0, 120)}...</span>
                       )}
                     </a>
@@ -319,4 +336,18 @@ function formatTimeAgo(timestamp: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function formatArticleFlag(flag: string): string {
+  const map: Record<string, string> = {
+    'fraud_allegation': 'FRAUD',
+    'SEC_investigation': 'SEC',
+    'accounting_irregularity': 'ACCT',
+    'lawsuit': 'LAWSUIT',
+    'regulatory_risk': 'REG RISK',
+    'management_departure': 'MGMT',
+    'product_recall': 'RECALL',
+    'revenue_risk': 'REV RISK',
+  };
+  return map[flag] || flag.replace(/_/g, ' ').toUpperCase().slice(0, 10);
 }

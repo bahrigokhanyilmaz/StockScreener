@@ -40,7 +40,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     shortName: 'P/E',
     definition: 'How much investors pay per dollar of earnings. Measures whether a stock is overvalued or undervalued relative to its profits.',
     formula: 'Stock Price / Earnings Per Share (trailing 12 months)',
-    threshold: '< industry lower quartile',
+    threshold: '< industry quartile (25th pctile; 50th for tech SIC)',
     increasing: 'Stock becoming more expensive relative to earnings. Could signal overvaluation, or that investors expect accelerating future growth.',
     decreasing: 'Stock becoming cheaper relative to earnings. Could signal a buying opportunity (undervalued), or that the market expects declining earnings ahead.',
     category: 'valuation',

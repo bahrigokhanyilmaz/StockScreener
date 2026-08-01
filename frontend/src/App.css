@@ -1096,3 +1096,32 @@ th.sticky-col {
   padding: 0.3rem 0.5rem;
   border-radius: 4px;
 }
+
+
+/* Article-level risk badges and sentiment */
+.article-risk-badge {
+  display: inline-block;
+  background: #7f1d1d;
+  color: #fca5a5;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+  text-decoration: none;
+}
+
+.article-sentiment {
+  margin-left: 0.4rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.article-sentiment.positive {
+  color: #4ade80;
+}
+
+.article-sentiment.negative {
+  color: #f87171;
+}

@@ -37,6 +37,7 @@ export interface Stock {
   analyst_target_price: number | null;
   interest_coverage_ratio: number | null;
   risk_flags: (string | Record<string, unknown>)[];
+  first_tracked: string;
   last_updated: string;
 }
 
@@ -82,6 +83,10 @@ export interface NewsArticle {
   url: string;
   source: string;
   published_at: number;
+  sentiment?: number;
+  confidence?: number;
+  risk_flags?: string[];
+  summary?: string;
 }
 
 export async function getStockNews(ticker: string): Promise<{ articles: NewsArticle[]; count: number }> {

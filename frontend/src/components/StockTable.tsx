@@ -18,8 +18,6 @@ interface Props {
 
 // Filter thresholds (same as pipeline) for color-coding
 const THRESHOLDS: Record<string, { type: 'max' | 'min'; value: number; percent?: boolean }> = {
-  pe_ratio: { type: 'max', value: 50 },
-  forward_pe: { type: 'max', value: 20 },
   peg_ratio: { type: 'max', value: 1.0 },
   price_to_fcf: { type: 'max', value: 20 },
   debt_to_equity: { type: 'max', value: 1.0 },
@@ -87,9 +85,9 @@ function getScoreColor(score: number | null): string {
   return '#ef4444';
 }
 
-function getDaysTracked(lastUpdated: string | null | undefined): string {
-  if (!lastUpdated) return '—';
-  const start = new Date(lastUpdated);
+function getDaysTracked(firstTracked: string | null | undefined): string {
+  if (!firstTracked) return '—';
+  const start = new Date(firstTracked);
   const now = new Date();
   const days = Math.floor((now.getTime() - start.getTime()) / 86400000);
   return days <= 0 ? '<1' : String(days);
@@ -248,7 +246,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
                     {stock.tracking_status}
                   </span>
                 </td>
-                <td className="days-cell">{getDaysTracked(stock.last_updated)}</td>
+                <td className="days-cell">{getDaysTracked(stock.first_tracked)}</td>
                 <td>${formatNum(stock.price)}</td>
                 <td>{formatMarketCap(stock.market_cap)}</td>
                 <td>{renderTrendCell(trends[stock.symbol])}</td>

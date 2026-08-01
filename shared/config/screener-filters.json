@@ -8,7 +8,7 @@
     "exclude_types": ["ETF", "warrant", "right", "unit", "preferred"],
     "universe_refresh_frequency": "weekly",
     "fundamentals_scan_frequency": "daily",
-    "grace_period_days": 90
+    "grace_period_days": 30
   },
   "filters": {
     "pe_ratio": {

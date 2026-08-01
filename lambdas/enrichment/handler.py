@@ -196,12 +196,37 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
                     if entry:
                         industry_pe_values[entry["industry"]].append(pe)
 
-            # Compute 25th percentile (lower quartile) for each industry with enough data
+            # Compute P/E percentile threshold per industry
+            # Tech industries (SEC SIC 35xx, 36xx, 737x) use 50th percentile (median)
+            # because they structurally trade at higher valuations.
+            # Non-tech uses 25th percentile (lower quartile).
+            # SIC code ranges are the SEC's own standardized classification:
+            #   35xx = Industrial Machinery & Equipment (includes computers)
+            #   36xx = Electronic & Electrical Equipment
+            #   737x = Computer & Data Processing Services (includes software)
+            TECH_SIC_PREFIXES = ("35", "36", "737")
+
             for industry, values in industry_pe_values.items():
                 if len(values) >= 5:
                     sorted_vals = sorted(values)
-                    q1_idx = len(sorted_vals) // 4
-                    industry_pe_quartiles[industry] = round(sorted_vals[q1_idx], 2)
+                    # Determine if this is a tech industry by looking up its SIC code
+                    # from any company in this industry group
+                    is_tech = False
+                    for stock in all_universe_stocks:
+                        entry = industry_map.get(stock.get("symbol", ""))
+                        if entry and entry.get("industry") == industry:
+                            sic_code = entry.get("sic", "")
+                            if sic_code.startswith(TECH_SIC_PREFIXES):
+                                is_tech = True
+                            break
+
+                    if is_tech:
+                        # 50th percentile (median) for tech
+                        idx = len(sorted_vals) // 2
+                    else:
+                        # 25th percentile (lower quartile) for non-tech
+                        idx = len(sorted_vals) // 4
+                    industry_pe_quartiles[industry] = round(sorted_vals[idx], 2)
 
             print(f"  Computed P/E lower quartile for {len(industry_pe_quartiles)} industries "
                   f"(from {len(all_universe_stocks)} stocks)")
@@ -223,6 +248,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         peg = stock.get("peg_ratio")
         pfcf = stock.get("price_to_fcf")
         de = stock.get("debt_to_equity")
+        icr = stock.get("interest_coverage_ratio")
         qr = stock.get("quick_ratio")
         om = stock.get("operating_margin")
         eps_g = stock.get("eps_growth_yoy")
@@ -233,12 +259,18 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         pe_threshold = stock.get("_pe_industry_q1") or 50
         pe_passes = pe is not None and pe > 0 and pe < pe_threshold
 
+        # D/E: same rule as full screen — D/E ≤ 1.0 OR ICR > 3.0
+        de_passes = (
+            (de is not None and de <= 1.0)
+            or (de is not None and icr is not None and icr > 3.0)
+        )
+
         passes_prefilter = (
             price is not None
             and pe_passes
             and peg is not None and peg < 1.0
             and pfcf is not None and pfcf < 20
-            and de is not None and de < 1
+            and de_passes
             and qr is not None and qr > 1
             and om is not None and om > 0
             # eps_growth: allow negative trailing through — will be evaluated in full screen
