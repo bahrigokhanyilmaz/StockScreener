@@ -283,6 +283,28 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                 passed_count += 1
                 continue
 
+        # CONDITIONAL OVERRIDE: EPS Growth can be overridden by forward growth estimates.
+        # A company with negative trailing TTM growth but positive analyst forward estimates
+        # is experiencing a temporary dip — not a structural decline.
+        # Finviz's "EPS Growth YoY Positive" uses forward estimates, not trailing.
+        if filter_name == "eps_growth_yoy" and not passes:
+            forward_growth = stock.get("est_lt_growth")
+            if forward_growth is not None and forward_growth > 0:
+                passes = True
+                filter_results[filter_name] = {
+                    "value": value,
+                    "threshold": threshold,
+                    "type": filter_type,
+                    "passes": True,
+                    "skipped": False,
+                    "override": "forward_eps_growth",
+                    "override_value": round(forward_growth * 100, 1),
+                    "override_reason": f"Trailing EPS growth {value*100:.1f}% is negative, but forward estimate is +{forward_growth*100:.1f}%",
+                }
+                evaluated_count += 1
+                passed_count += 1
+                continue
+
         filter_results[filter_name] = {
             "value": value,
             "threshold": threshold,

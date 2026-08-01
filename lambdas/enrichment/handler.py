@@ -241,7 +241,9 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             and de is not None and de < 1
             and qr is not None and qr > 1
             and om is not None and om > 0
-            and eps_g is not None and eps_g > 0
+            # eps_growth: allow negative trailing through — will be evaluated in full screen
+            # with Finnhub forward growth as override (Finviz uses forward estimates)
+            and eps_g is not None
             and rev_g is not None and rev_g > 0
         )
 
