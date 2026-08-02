@@ -82,15 +82,15 @@
       "data_format": "percent_as_decimal",
       "description": "Percentage of revenue kept after operating costs. Positive = profitable operations."
     },
-    "eps_growth_yoy": {
-      "label": "EPS Growth YoY (%)",
+    "operating_income_growth_yoy": {
+      "label": "Op Income Growth YoY (%)",
       "type": "min",
       "default": 0,
       "min": -50,
       "max": 100,
       "step": 1,
       "data_format": "percent_as_decimal",
-      "description": "Earnings per share growth year-over-year. Positive = growing earnings."
+      "description": "Operating income growth year-over-year. Measures core business profit growth without tax/debt/one-time noise."
     },
     "revenue_growth_yoy": {
       "label": "Revenue Growth YoY (%)",

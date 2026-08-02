@@ -258,6 +258,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         qr = stock.get("quick_ratio")
         om = stock.get("operating_margin")
         eps_g = stock.get("eps_growth_yoy")
+        op_income_g = stock.get("operating_income_growth_yoy")
         rev_g = stock.get("revenue_growth_yoy")
 
         # P/E must be below industry lower quartile (cheaper than 75% of peers)
@@ -279,9 +280,9 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             and de_passes
             and qr is not None and qr > 1
             and om is not None and om > 0
-            # eps_growth: allow negative trailing through — will be evaluated in full screen
-            # with FMP forward growth as override (Finviz uses forward estimates)
-            and eps_g is not None
+            # op_income_growth: allow negative trailing through — will be evaluated in full screen
+            # with FMP forward growth as override
+            and op_income_g is not None
             and rev_g is not None and rev_g > 0
         )
 

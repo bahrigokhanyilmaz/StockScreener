@@ -283,11 +283,10 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                 passed_count += 1
                 continue
 
-        # CONDITIONAL OVERRIDE: EPS Growth can be overridden by forward growth estimates.
-        # A company with negative trailing TTM growth but positive analyst forward estimates
-        # is experiencing a temporary dip — not a structural decline.
-        # Finviz's "EPS Growth YoY Positive" uses forward estimates, not trailing.
-        if filter_name == "eps_growth_yoy" and not passes:
+        # CONDITIONAL OVERRIDE: Operating Income Growth can be overridden by forward growth estimates.
+        # A company with negative trailing operating income growth but positive analyst forward
+        # estimates is experiencing a temporary dip (e.g., heavy investment phase) — not structural decline.
+        if filter_name == "operating_income_growth_yoy" and not passes:
             forward_growth = stock.get("est_lt_growth")
             if forward_growth is not None and forward_growth > 0:
                 passes = True
@@ -297,9 +296,9 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                     "type": filter_type,
                     "passes": True,
                     "skipped": False,
-                    "override": "forward_eps_growth",
+                    "override": "forward_growth_estimate",
                     "override_value": round(forward_growth * 100, 1),
-                    "override_reason": f"Trailing EPS growth {value*100:.1f}% is negative, but forward estimate is +{forward_growth*100:.1f}%",
+                    "override_reason": f"Trailing op income growth {value*100:.1f}% is negative, but forward estimate is +{forward_growth*100:.1f}%",
                 }
                 evaluated_count += 1
                 passed_count += 1
@@ -375,7 +374,7 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
     # Step 2: Join industry to all stocks in memory
     metrics_to_compute = [
         "pe_ratio", "debt_to_equity", "quick_ratio", "operating_margin",
-        "eps_growth_yoy", "revenue_growth_yoy",
+        "operating_income_growth_yoy", "revenue_growth_yoy",
     ]
 
     # Group metric values by industry

@@ -554,6 +554,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "quick_ratio": stock.get("quick_ratio"),
                 "operating_margin": stock.get("operating_margin"),
                 "eps_growth_yoy": stock.get("eps_growth_yoy"),
+                "operating_income_growth_yoy": stock.get("operating_income_growth_yoy"),
                 "revenue_growth_yoy": stock.get("revenue_growth_yoy"),
                 "est_lt_growth": stock.get("est_lt_growth"),
                 "analyst_recommendation": stock.get("analyst_recommendation"),

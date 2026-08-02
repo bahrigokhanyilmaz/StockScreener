@@ -25,6 +25,7 @@ const THRESHOLDS: Record<string, { type: 'max' | 'min'; value: number; percent?:
   quick_ratio: { type: 'min', value: 1.0 },
   operating_margin: { type: 'min', value: 0, percent: true },
   eps_growth_yoy: { type: 'min', value: 0, percent: true },
+  operating_income_growth_yoy: { type: 'min', value: 0, percent: true },
   revenue_growth_yoy: { type: 'min', value: 0, percent: true },
   est_lt_growth: { type: 'min', value: 0, percent: true },
   target_price_upside: { type: 'min', value: 0.20, percent: true },
@@ -200,7 +201,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
             <th>ICR</th>
             <th>QR</th>
             <th>Op Margin</th>
-            <th>EPS Gr</th>
+            <th>Op Inc Gr</th>
             <th>Rev Gr</th>
             <th>LT Gr</th>
             <th>Target ↑</th>
@@ -265,7 +266,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
                 <td style={{ color: icrColor(stock.interest_coverage_ratio) }}>{formatNum(stock.interest_coverage_ratio, 1)}</td>
                 <td style={{ color: metricColor('quick_ratio', stock.quick_ratio) }}>{formatNum(stock.quick_ratio)}</td>
                 <td style={{ color: metricColor('operating_margin', stock.operating_margin) }}>{formatPct(stock.operating_margin)}</td>
-                <td style={{ color: metricColor('eps_growth_yoy', stock.eps_growth_yoy as number | null) }}>{formatPct(stock.eps_growth_yoy as number | null)}</td>
+                <td style={{ color: metricColor('operating_income_growth_yoy', stock.operating_income_growth_yoy as number | null) }}>{formatPct(stock.operating_income_growth_yoy as number | null)}</td>
                 <td style={{ color: metricColor('revenue_growth_yoy', stock.revenue_growth_yoy as number | null) }}>{formatPct(stock.revenue_growth_yoy as number | null)}</td>
                 <td style={{ color: metricColor('est_lt_growth', stock.est_lt_growth as number | null) }}>{formatPct(stock.est_lt_growth as number | null)}</td>
                 <td style={{ color: metricColor('target_price_upside', stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>

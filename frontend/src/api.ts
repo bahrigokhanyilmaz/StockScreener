@@ -31,6 +31,7 @@ export interface Stock {
   quick_ratio: number | null;
   operating_margin: number | null;
   eps_growth_yoy: number | null;
+  operating_income_growth_yoy: number | null;
   revenue_growth_yoy: number | null;
   est_lt_growth: number | null;
   target_price_upside: number | null;
@@ -162,6 +163,7 @@ export interface IndustryAverages {
     quick_ratio?: number;
     operating_margin?: number;
     eps_growth_yoy?: number;
+    operating_income_growth_yoy?: number;
     revenue_growth_yoy?: number;
     sample_size?: number;
   };

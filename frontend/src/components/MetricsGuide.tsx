@@ -112,9 +112,9 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     category: 'financial_health',
   },
   {
-    key: 'eps_growth_yoy',
-    name: 'EPS Growth (Year-over-Year)',
-    shortName: 'EPS Growth',
+    key: 'operating_income_growth_yoy',
+    name: 'Operating Income Growth (Year-over-Year)',
+    shortName: 'Op Income Growth',
     definition: 'How much earnings per share grew compared to the same period last year. The fundamental driver of stock price appreciation over time.',
     formula: '(Current EPS - Prior Year EPS) / Prior Year EPS',
     threshold: '> 0% (our filter)',
@@ -177,7 +177,7 @@ interface IndustryMetrics {
   debt_to_equity?: number;
   quick_ratio?: number;
   operating_margin?: number;
-  eps_growth_yoy?: number;
+  operating_income_growth_yoy?: number;
   revenue_growth_yoy?: number;
   sample_size?: number;
 }
@@ -289,7 +289,7 @@ export default function MetricsGuide({ stock }: Props) {
           {industryData.debt_to_equity != null && renderComparisonRow('D/E', stock.debt_to_equity, industryData.debt_to_equity, 'max')}
           {industryData.quick_ratio != null && renderComparisonRow('Quick Ratio', stock.quick_ratio, industryData.quick_ratio, 'min')}
           {industryData.operating_margin != null && renderComparisonRow('Op Margin', stock.operating_margin, industryData.operating_margin, 'min', true)}
-          {industryData.eps_growth_yoy != null && renderComparisonRow('EPS Growth', stock.eps_growth_yoy, industryData.eps_growth_yoy, 'min', true)}
+          {industryData.operating_income_growth_yoy != null && renderComparisonRow('Op Income Growth', stock.operating_income_growth_yoy, industryData.operating_income_growth_yoy, 'min', true)}
           {industryData.revenue_growth_yoy != null && renderComparisonRow('Rev Growth', stock.revenue_growth_yoy, industryData.revenue_growth_yoy, 'min', true)}
         </div>
       )}
