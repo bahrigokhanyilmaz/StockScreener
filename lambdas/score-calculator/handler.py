@@ -629,6 +629,118 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
     print(f"  Persisted {written} stocks to DynamoDB ({written * 3} items)")
 
 
+def compute_portfolio_signals(scored_stocks: list, today: str):
+    """
+    Compute hold/sell signals for stocks the user owns (has PORTFOLIO# items).
+
+    Signal logic:
+    - GREEN (hold): no negative signals, stock is ACTIVE, all clear
+    - YELLOW (watch): stock in GRACE, or sentiment trending negative, or minor risk flag
+    - RED (consider sell): serious risk flag, sentiment < -0.3, trailing stop hit,
+                           or in GRACE with deteriorating fundamentals
+
+    Updates the PORTFOLIO#{ticker} SUMMARY item with signal + reasons.
+    """
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if not table_name:
+        return
+
+    table = dynamodb.Table(table_name)
+
+    # Find which scored stocks have portfolio positions
+    scored_by_symbol = {s.get("symbol", ""): s for s in scored_stocks}
+
+    # Scan for all PORTFOLIO SUMMARY items
+    from boto3.dynamodb.conditions import Attr
+    result = table.scan(
+        FilterExpression=Attr("PK").begins_with("PORTFOLIO#") & Attr("SK").eq("SUMMARY"),
+    )
+
+    portfolio_items = result.get("Items", [])
+    if not portfolio_items:
+        return
+
+    print(f"  Computing signals for {len(portfolio_items)} portfolio positions...")
+
+    from decimal import Decimal
+
+    SERIOUS_FLAGS = {"fraud_allegation", "SEC_investigation", "accounting_irregularity"}
+    MINOR_FLAGS = {"revenue_risk", "product_recall", "management_departure", "regulatory_risk", "lawsuit"}
+
+    for position in portfolio_items:
+        symbol = position.get("symbol", "")
+        stock = scored_by_symbol.get(symbol)
+        if not stock:
+            continue
+
+        avg_cost = float(position.get("avg_cost_basis", 0))
+        current_price = stock.get("price")
+        tracking_status = stock.get("tracking_status", "ACTIVE")
+        sentiment = stock.get("sentiment", {})
+        sentiment_score = sentiment.get("sentiment_score", 0) if isinstance(sentiment, dict) else 0
+        risk_ledger = stock.get("risk_ledger", [])
+        risk_flag_names = {f.get("flag", f) if isinstance(f, dict) else f for f in risk_ledger}
+
+        # Track peak price since purchase for trailing stop
+        peak_price = float(position.get("peak_price", 0))
+        if current_price and current_price > peak_price:
+            peak_price = current_price
+
+        # Determine signal
+        signal = "green"
+        reasons = []
+
+        # RED conditions
+        if risk_flag_names & SERIOUS_FLAGS:
+            signal = "red"
+            reasons.append(f"Serious risk: {risk_flag_names & SERIOUS_FLAGS}")
+
+        if sentiment_score < -0.3:
+            signal = "red"
+            reasons.append(f"Sentiment crashed: {sentiment_score:.2f}")
+
+        if current_price and peak_price > 0 and avg_cost > 0:
+            drop_from_peak = (peak_price - current_price) / peak_price
+            if drop_from_peak >= 0.15:
+                signal = "red"
+                reasons.append(f"Trailing stop: -{drop_from_peak*100:.0f}% from peak ${peak_price:.2f}")
+
+        if tracking_status == "GRACE" and sentiment_score < 0:
+            signal = "red"
+            reasons.append("In GRACE with negative sentiment")
+
+        # YELLOW conditions (only if not already red)
+        if signal == "green":
+            if tracking_status == "GRACE":
+                signal = "yellow"
+                reasons.append("Stock in GRACE (no longer passing filters)")
+
+            if sentiment_score < 0 and sentiment_score >= -0.3:
+                signal = "yellow"
+                reasons.append(f"Sentiment negative: {sentiment_score:.2f}")
+
+            if risk_flag_names & MINOR_FLAGS:
+                signal = "yellow"
+                reasons.append(f"Minor risk flag: {risk_flag_names & MINOR_FLAGS}")
+
+        if not reasons:
+            reasons.append("All clear")
+
+        # Update the SUMMARY item with signal + peak price
+        table.update_item(
+            Key={"PK": f"PORTFOLIO#{symbol}", "SK": "SUMMARY"},
+            UpdateExpression="SET signal = :sig, signal_reasons = :reasons, peak_price = :peak, last_signal_update = :d",
+            ExpressionAttributeValues={
+                ":sig": signal,
+                ":reasons": reasons,
+                ":peak": Decimal(str(round(peak_price, 2))),
+                ":d": today,
+            },
+        )
+
+    print(f"  Portfolio signals updated")
+
+
 def handler(event, context):
     """
     Lambda entry point. Called by Step Functions after sentiment-analyzer.
@@ -696,6 +808,9 @@ def handler(event, context):
 
     # Persist to DynamoDB
     persist_to_dynamodb(scored, today)
+
+    # Compute portfolio signals for owned stocks
+    compute_portfolio_signals(scored, today)
 
     # Log top results
     for s in scored[:5]:

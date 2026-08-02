@@ -3,6 +3,8 @@ import { getStocks, getPipelineStatus, getStockPrices, untrackStock } from './ap
 import type { Stock, PipelineStatus } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
+import Portfolio from './components/Portfolio.tsx';
+import BuyModal from './components/BuyModal.tsx';
 import FilterSliders, { getDefaultFilters, applyFilters } from './components/FilterSliders.tsx';
 import type { FilterValues } from './components/FilterSliders.tsx';
 import { calculateTrend } from './utils/trends.ts';
@@ -26,6 +28,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterValues>(getDefaultFilters());
+  const [buyingTicker, setBuyingTicker] = useState<string | null>(null);
+  const [portfolioKey, setPortfolioKey] = useState(0); // increment to refresh portfolio
 
   // Fetch data on mount
   useEffect(() => {
@@ -113,6 +117,8 @@ function App() {
               />
             </div>
 
+            <Portfolio key={portfolioKey} />
+
             <div className="content-layout">
               <div className="table-section">
                 <StockTable
@@ -120,6 +126,7 @@ function App() {
                   trends={trends}
                   selectedTicker={selectedTicker}
                   onSelectStock={setSelectedTicker}
+                  onBuy={(ticker) => setBuyingTicker(ticker)}
                   onRelease={async (ticker) => {
                     await untrackStock(ticker);
                     setAllStocks(allStocks.filter(s => s.symbol !== ticker));
@@ -137,6 +144,15 @@ function App() {
               )}
             </div>
           </>
+        )}
+
+        {buyingTicker && (
+          <BuyModal
+            ticker={buyingTicker}
+            currentPrice={allStocks.find(s => s.symbol === buyingTicker)?.price ?? null}
+            onClose={() => setBuyingTicker(null)}
+            onSuccess={() => setPortfolioKey(k => k + 1)}
+          />
         )}
       </main>
     </div>

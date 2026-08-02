@@ -118,6 +118,43 @@ export async function getPipelineStatus(): Promise<PipelineStatus> {
   return fetchJson('/pipeline/status');
 }
 
+export interface PortfolioPosition {
+  symbol: string;
+  total_shares: number;
+  avg_cost_basis: number;
+  total_invested: number;
+  current_price: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  signal: string | null;
+  signal_reasons: string[];
+  peak_price: number | null;
+}
+
+export async function getPortfolio(): Promise<{ positions: PortfolioPosition[]; count: number }> {
+  return fetchJson('/portfolio');
+}
+
+export async function getPortfolioDetail(ticker: string): Promise<{ ticker: string; summary: Record<string, unknown>; lots: Record<string, unknown>[]; current_price: number | null }> {
+  return fetchJson(`/portfolio/${ticker}`);
+}
+
+export async function buyStock(ticker: string, price: number, shares: number, date: string): Promise<{ message: string }> {
+  return fetchJson(`/portfolio/${ticker}/buy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ price, shares, date }),
+  });
+}
+
+export async function sellStock(ticker: string, price: number, lotId?: string): Promise<{ message: string }> {
+  return fetchJson(`/portfolio/${ticker}/sell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ price, lot_id: lotId }),
+  });
+}
+
 export interface IndustryAverages {
   [industry: string]: {
     pe_ratio?: number;

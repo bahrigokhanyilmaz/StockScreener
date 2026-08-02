@@ -1125,3 +1125,237 @@ th.sticky-col {
 .article-sentiment.negative {
   color: #f87171;
 }
+
+/* ===== Portfolio Section ===== */
+.portfolio-section {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: #1e293b;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+
+.portfolio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.portfolio-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #e2e8f0;
+}
+
+.portfolio-total-pnl {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.portfolio-total-pnl.positive { color: #4ade80; }
+.portfolio-total-pnl.negative { color: #f87171; }
+
+.portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.portfolio-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.portfolio-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.portfolio-symbol {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #f1f5f9;
+  flex: 1;
+}
+
+.portfolio-pnl {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.portfolio-pnl.positive { color: #4ade80; }
+.portfolio-pnl.negative { color: #f87171; }
+
+.portfolio-card-details {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.portfolio-detail {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.portfolio-signal-reasons {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.portfolio-signal-reasons.red {
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+.portfolio-signal-reasons.yellow {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.portfolio-loading {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  padding: 1rem;
+}
+
+/* Signal dots */
+.signal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.signal-dot.signal-green { background: #4ade80; box-shadow: 0 0 4px rgba(74, 222, 128, 0.5); }
+.signal-dot.signal-yellow { background: #fbbf24; box-shadow: 0 0 4px rgba(251, 191, 36, 0.5); }
+.signal-dot.signal-red { background: #f87171; box-shadow: 0 0 4px rgba(248, 113, 113, 0.5); }
+
+/* ===== Buy Button (small, in table) ===== */
+.btn-buy-small {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.btn-buy-small:hover {
+  background: #1d4ed8;
+}
+
+/* ===== Buy Modal ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 10px;
+  padding: 1.5rem;
+  width: 340px;
+  max-width: 90vw;
+}
+
+.modal-content h3 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  color: #f1f5f9;
+}
+
+.modal-field {
+  margin-bottom: 0.75rem;
+}
+
+.modal-field label {
+  display: block;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin-bottom: 0.25rem;
+}
+
+.modal-field input {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  background: #0f172a;
+  color: #f1f5f9;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.modal-field input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.modal-error {
+  color: #f87171;
+  font-size: 0.8rem;
+  margin: 0.5rem 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.btn-cancel {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-cancel:hover {
+  background: #334155;
+}
+
+.btn-buy {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.btn-buy:hover {
+  background: #1d4ed8;
+}
+
+.btn-buy:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

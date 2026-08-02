@@ -310,6 +310,203 @@ def get_pipeline_status():
     })
 
 
+# ==========================================
+# PORTFOLIO ENDPOINTS
+# ==========================================
+
+def buy_stock(ticker: str, body: dict):
+    """
+    POST /portfolio/{ticker}/buy — Record a stock purchase.
+
+    Body: { "price": 45.50, "shares": 100, "date": "2026-08-01" }
+    Creates a new lot item in DynamoDB and updates the summary.
+    """
+    table = get_table()
+    now = datetime.now(timezone.utc)
+
+    price = body.get("price")
+    shares = body.get("shares")
+    purchase_date = body.get("date", now.strftime("%Y-%m-%d"))
+
+    if not price or not shares:
+        return response(400, {"error": "price and shares are required"})
+
+    symbol = ticker.upper()
+    lot_id = now.isoformat()  # Unique per lot
+
+    # Write the lot
+    from decimal import Decimal
+    lot_item = {
+        "PK": f"PORTFOLIO#{symbol}",
+        "SK": f"LOT#{lot_id}",
+        "symbol": symbol,
+        "purchase_price": Decimal(str(price)),
+        "purchase_date": purchase_date,
+        "shares": Decimal(str(shares)),
+        "status": "OPEN",
+        "created_at": lot_id,
+    }
+    table.put_item(Item=lot_item)
+
+    # Update summary (recalculate from all open lots)
+    _update_portfolio_summary(table, symbol)
+
+    return response(200, {
+        "message": f"Recorded purchase: {shares} shares of {symbol} at ${price}",
+        "lot_id": lot_id,
+    })
+
+
+def get_portfolio():
+    """
+    GET /portfolio — All open positions with current P&L and signals.
+    """
+    table = get_table()
+
+    # Scan for all PORTFOLIO# SUMMARY items
+    result = table.scan(
+        FilterExpression=Attr("PK").begins_with("PORTFOLIO#") & Attr("SK").eq("SUMMARY"),
+    )
+
+    positions = []
+    for item in result.get("Items", []):
+        symbol = item.get("symbol", "")
+        # Get current price from LATEST
+        latest = table.get_item(Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"}).get("Item", {})
+        current_price = float(latest.get("price", 0)) if latest.get("price") else None
+
+        position = decimal_to_float(item)
+        position["current_price"] = current_price
+        if current_price and item.get("avg_cost_basis"):
+            cost = float(item["avg_cost_basis"])
+            position["unrealized_pnl_pct"] = round((current_price - cost) / cost * 100, 2)
+            position["unrealized_pnl"] = round((current_price - cost) * float(item.get("total_shares", 0)), 2)
+        positions.append(position)
+
+    positions.sort(key=lambda p: p.get("unrealized_pnl_pct", 0), reverse=True)
+
+    return response(200, {
+        "positions": positions,
+        "count": len(positions),
+    })
+
+
+def get_portfolio_detail(ticker: str):
+    """
+    GET /portfolio/{ticker} — Lot history and details for a single position.
+    """
+    table = get_table()
+    symbol = ticker.upper()
+
+    # Get all lots
+    result = table.query(
+        KeyConditionExpression=Key("PK").eq(f"PORTFOLIO#{symbol}") & Key("SK").begins_with("LOT#"),
+        ScanIndexForward=True,
+    )
+    lots = [decimal_to_float(item) for item in result.get("Items", [])]
+
+    # Get summary
+    summary = table.get_item(Key={"PK": f"PORTFOLIO#{symbol}", "SK": "SUMMARY"}).get("Item", {})
+
+    # Get current price
+    latest = table.get_item(Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"}).get("Item", {})
+    current_price = float(latest.get("price", 0)) if latest.get("price") else None
+
+    return response(200, {
+        "ticker": symbol,
+        "summary": decimal_to_float(summary),
+        "lots": lots,
+        "current_price": current_price,
+    })
+
+
+def sell_stock(ticker: str, body: dict):
+    """
+    POST /portfolio/{ticker}/sell — Close a position (all lots or specific lot).
+
+    Body: { "lot_id": "2026-08-01T..." } (optional — if omitted, closes all open lots)
+          { "price": 55.00 } (required — the sell price)
+    """
+    table = get_table()
+    symbol = ticker.upper()
+    sell_price = body.get("price")
+    lot_id = body.get("lot_id")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if not sell_price:
+        return response(400, {"error": "price is required"})
+
+    from decimal import Decimal
+
+    if lot_id:
+        # Close specific lot
+        table.update_item(
+            Key={"PK": f"PORTFOLIO#{symbol}", "SK": f"LOT#{lot_id}"},
+            UpdateExpression="SET #s = :s, closed_price = :p, closed_date = :d",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":s": "CLOSED",
+                ":p": Decimal(str(sell_price)),
+                ":d": today,
+            },
+        )
+    else:
+        # Close all open lots
+        result = table.query(
+            KeyConditionExpression=Key("PK").eq(f"PORTFOLIO#{symbol}") & Key("SK").begins_with("LOT#"),
+        )
+        for item in result.get("Items", []):
+            if item.get("status") == "OPEN":
+                table.update_item(
+                    Key={"PK": item["PK"], "SK": item["SK"]},
+                    UpdateExpression="SET #s = :s, closed_price = :p, closed_date = :d",
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":s": "CLOSED",
+                        ":p": Decimal(str(sell_price)),
+                        ":d": today,
+                    },
+                )
+
+    _update_portfolio_summary(table, symbol)
+
+    return response(200, {"message": f"Sold {symbol} at ${sell_price}"})
+
+
+def _update_portfolio_summary(table, symbol: str):
+    """Recalculate portfolio summary from all open lots."""
+    from decimal import Decimal
+
+    result = table.query(
+        KeyConditionExpression=Key("PK").eq(f"PORTFOLIO#{symbol}") & Key("SK").begins_with("LOT#"),
+    )
+
+    total_shares = Decimal("0")
+    total_cost = Decimal("0")
+
+    for item in result.get("Items", []):
+        if item.get("status") == "OPEN":
+            shares = item.get("shares", Decimal("0"))
+            price = item.get("purchase_price", Decimal("0"))
+            total_shares += shares
+            total_cost += shares * price
+
+    if total_shares > 0:
+        avg_cost = total_cost / total_shares
+        table.put_item(Item={
+            "PK": f"PORTFOLIO#{symbol}",
+            "SK": "SUMMARY",
+            "symbol": symbol,
+            "total_shares": total_shares,
+            "avg_cost_basis": avg_cost.quantize(Decimal("0.01")),
+            "total_invested": total_cost.quantize(Decimal("0.01")),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        })
+    else:
+        # No open lots — delete summary
+        table.delete_item(Key={"PK": f"PORTFOLIO#{symbol}", "SK": "SUMMARY"})
+
+
 def get_price_history(ticker: str):
     """
     GET /stocks/{ticker}/prices — 30-day daily price history.
@@ -404,6 +601,27 @@ def handler(event, context):
         # Route: GET /industries
         elif path == "/industries" and method == "GET":
             return get_industry_averages()
+
+        # Route: GET /portfolio
+        elif path == "/portfolio" and method == "GET":
+            return get_portfolio()
+
+        # Route: GET /portfolio/{ticker}
+        elif path.startswith("/portfolio/") and "/buy" not in path and "/sell" not in path and method == "GET":
+            ticker = path.split("/")[2]
+            return get_portfolio_detail(ticker)
+
+        # Route: POST /portfolio/{ticker}/buy
+        elif "/portfolio/" in path and "/buy" in path and method == "POST":
+            ticker = path.split("/")[2]
+            body = json.loads(event.get("body", "{}") or "{}")
+            return buy_stock(ticker, body)
+
+        # Route: POST /portfolio/{ticker}/sell
+        elif "/portfolio/" in path and "/sell" in path and method == "POST":
+            ticker = path.split("/")[2]
+            body = json.loads(event.get("body", "{}") or "{}")
+            return sell_stock(ticker, body)
 
         # Route: GET /stocks/{ticker}/history
         elif "/history" in path and method == "GET":

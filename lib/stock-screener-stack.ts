@@ -268,6 +268,18 @@ export class StockScreenerStack extends cdk.Stack {
     const industriesResource = api.root.addResource('industries');
     industriesResource.addMethod('GET', lambdaIntegration);
 
+    const portfolioResource = api.root.addResource('portfolio');
+    portfolioResource.addMethod('GET', lambdaIntegration);
+
+    const singlePortfolioResource = portfolioResource.addResource('{ticker}');
+    singlePortfolioResource.addMethod('GET', lambdaIntegration);
+
+    const portfolioBuyResource = singlePortfolioResource.addResource('buy');
+    portfolioBuyResource.addMethod('POST', lambdaIntegration);
+
+    const portfolioSellResource = singlePortfolioResource.addResource('sell');
+    portfolioSellResource.addMethod('POST', lambdaIntegration);
+
     // ==========================================
     // PERMISSIONS
     // ==========================================

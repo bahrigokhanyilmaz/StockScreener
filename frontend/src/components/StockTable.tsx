@@ -13,6 +13,7 @@ interface Props {
   trends: Record<string, TrendData>;
   selectedTicker: string | null;
   onSelectStock: (ticker: string) => void;
+  onBuy: (ticker: string) => void;
   onRelease: (ticker: string) => void;
 }
 
@@ -170,7 +171,7 @@ function renderTrendCell(trend: TrendData | undefined) {
   );
 }
 
-export default function StockTable({ stocks, trends, selectedTicker, onSelectStock, onRelease }: Props) {
+export default function StockTable({ stocks, trends, selectedTicker, onSelectStock, onBuy, onRelease }: Props) {
   if (stocks.length === 0) {
     return (
       <div className="empty-state">
@@ -204,6 +205,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
             <th>LT Gr</th>
             <th>Target ↑</th>
             <th>Signal</th>
+            <th></th>
             <th></th>
           </tr>
         </thead>
@@ -269,6 +271,13 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
                 <td style={{ color: metricColor('target_price_upside', stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
                 <td>
                   {signal && <span className={`sell-indicator ${signal === 'SELL' ? 'sell-now' : ''}`}>{signal}</span>}
+                </td>
+                <td>
+                  <button
+                    className="btn-buy-small"
+                    onClick={(e) => { e.stopPropagation(); onBuy(stock.symbol); }}
+                    title="Record purchase"
+                  >Buy</button>
                 </td>
                 <td>
                   <button
