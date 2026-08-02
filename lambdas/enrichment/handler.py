@@ -11,29 +11,35 @@ Stage 1 — Bulk data (0 per-symbol calls):
 
 Stage 2 — Local compute & pre-filter (in-memory, milliseconds):
   - Calculate P/E locally: Price ÷ EPS (no API needed)
-  - Apply hard filters: P/E < 50, D/E < 1, QR > 1, OpMargin > 0
-  - ~232 → ~50-80 survivors
+  - Apply hard filters: P/E < industry quartile, D/E < 1 (or ICR>3), QR > 1, OpMargin > 0
+  - ~69 → ~30-50 survivors
 
-Stage 3 — External enrichment (only for survivors):
-  - Finnhub /stock/metric → PEG, Forward P/E, LT Growth, EPS Growth, Revenue Growth
-  - Finnhub /stock/price-target → Analyst target price
-  - 2 calls per survivor × ~50-80 stocks = ~100-160 total Finnhub calls
-  - At 3s pacing = ~5-8 minutes (safe under 60/min limit)
+Stage 3 — FMP enrichment (only for survivors):
+  - /stable/ratios-ttm → Normalized P/E, PEG, P/FCF, ICR (validated override)
+  - /stable/financial-growth → EPS growth, revenue growth
+  - /stable/analyst-estimates → Forward EPS → Forward P/E
+  - /stable/price-target-summary → Analyst target price consensus
+  - /stable/grades → Analyst recommendation (buy/hold/sell derived)
+  - /stable/profile → Description, logo, website, sector, industry
+  - 6 calls per survivor × ~30-50 stocks = ~180-300 FMP calls
+  - At 300 req/min = ~1-2 minutes
 
 Total API calls per run:
-  - Polygon: 1
-  - Finnhub: ~100-160 (only for pre-filtered candidates)
+  - Polygon: 1 (grouped daily prices)
+  - FMP: ~180-300 (only for pre-filtered candidates)
 
 Environment Variables:
     POLYGON_API_KEY_PARAM  - SSM path for Polygon.io key
-    FINNHUB_API_KEY_PARAM  - SSM path for Finnhub key
+    FMP_API_KEY_PARAM      - SSM path for FMP key
     RAW_DATA_BUCKET        - S3 bucket for pipeline I/O
+    DATA_TABLE_NAME        - DynamoDB table for industry averages
 """
 
 import json
 import os
 import time
-from datetime import datetime, timezone, timedelta
+import urllib.request
+from datetime import datetime, timezone, timedelta, date
 
 import boto3
 import requests as http_requests
@@ -43,11 +49,11 @@ ssm_client = boto3.client("ssm")
 
 # API URLs
 POLYGON_GROUPED_URL = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks"
-FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
 # Cache
 _polygon_key = None
-_finnhub_key = None
+_fmp_key = None
 
 
 def get_ssm_param(param_name: str) -> str:
@@ -58,15 +64,15 @@ def get_ssm_param(param_name: str) -> str:
 def get_polygon_key() -> str:
     global _polygon_key
     if not _polygon_key:
-        _polygon_key = get_ssm_param(os.environ["POLYGON_API_KEY_PARAM"])
+        _polygon_key = get_ssm_param(os.environ.get("POLYGON_API_KEY_PARAM", "/stock-screener/polygon-api-key"))
     return _polygon_key
 
 
-def get_finnhub_key() -> str:
-    global _finnhub_key
-    if not _finnhub_key:
-        _finnhub_key = get_ssm_param(os.environ["FINNHUB_API_KEY_PARAM"])
-    return _finnhub_key
+def get_fmp_key() -> str:
+    global _fmp_key
+    if not _fmp_key:
+        _fmp_key = get_ssm_param(os.environ.get("FMP_API_KEY_PARAM", "/stock-screener/fmp-api-key"))
+    return _fmp_key
 
 
 def get_last_trading_day() -> str:
@@ -116,7 +122,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     lower quartile (25th percentile) of its SEC SIC industry group.
     This means "cheaper than 75% of peers in the same industry."
     
-    Returns (candidates_for_finnhub, all_stocks_with_price, industry_pe_quartiles).
+    Returns (candidates_for_fmp, all_stocks_with_price, industry_pe_quartiles).
     """
     import json
     import boto3
@@ -274,7 +280,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             and qr is not None and qr > 1
             and om is not None and om > 0
             # eps_growth: allow negative trailing through — will be evaluated in full screen
-            # with Finnhub forward growth as override (Finviz uses forward estimates)
+            # with FMP forward growth as override (Finviz uses forward estimates)
             and eps_g is not None
             and rev_g is not None and rev_g > 0
         )
@@ -286,167 +292,238 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
 
 
 # ==========================================
-# STAGE 3: Finnhub enrichment (only candidates)
+# STAGE 3: FMP enrichment (only candidates)
 # ==========================================
 
-def fetch_finnhub_metrics(symbol: str, key: str) -> dict:
-    """Fetch 133 fundamental metrics from Finnhub. 1 API call."""
-    url = f"{FINNHUB_BASE_URL}/stock/metric"
+def fmp_get(path: str, api_key: str, params: dict = None):
+    """Make a GET request to FMP stable API. Returns parsed JSON or empty list."""
+    url = f"{FMP_BASE}/{path}"
+    query_parts = [f"apikey={api_key}"]
+    if params:
+        for k, v in params.items():
+            query_parts.append(f"{k}={v}")
+    url += "?" + "&".join(query_parts)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
     try:
-        response = http_requests.get(
-            url, params={"symbol": symbol, "metric": "all", "token": key}, timeout=10
-        )
-        if response.status_code == 200:
-            return response.json().get("metric", {})
-        elif response.status_code == 429:
-            print(f"    Rate limited on {symbol}")
-            time.sleep(5)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            print(f"    FMP {path} error: HTTP {e.code}")
+        return []
     except Exception as e:
-        print(f"    Finnhub error for {symbol}: {e}")
+        print(f"    FMP {path} error: {e}")
+        return []
+
+
+def fetch_fmp_ratios(symbol: str, api_key: str) -> dict:
+    """
+    Fetch TTM ratios from FMP. 1 API call, 62 fields.
+    Key fields: priceToEarningsRatioTTM, priceToEarningsGrowthRatioTTM,
+    priceToFreeCashFlowRatioTTM, debtToEquityRatioTTM, quickRatioTTM,
+    operatingProfitMarginTTM, interestCoverageRatioTTM
+    """
+    data = fmp_get("ratios-ttm", api_key, {"symbol": symbol})
+    if data and isinstance(data, list) and data[0]:
+        return data[0]
     return {}
 
 
-def fetch_finnhub_price_target(symbol: str, key: str) -> dict:
-    """Fetch analyst price target consensus. 1 API call."""
-    url = f"{FINNHUB_BASE_URL}/stock/price-target"
-    try:
-        response = http_requests.get(
-            url, params={"symbol": symbol, "token": key}, timeout=10
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception:
-        pass
+def fetch_fmp_profile(symbol: str, api_key: str) -> dict:
+    """
+    Fetch company profile. 1 API call.
+    Returns: companyName, description, image (logo URL), website,
+    sector, industry, price, marketCap, beta, ceo, exchange, country
+    """
+    data = fmp_get("profile", api_key, {"symbol": symbol})
+    if data and isinstance(data, list) and data[0]:
+        return data[0]
     return {}
 
 
-def fetch_finnhub_profile(symbol: str, key: str) -> dict:
+def fetch_fmp_growth(symbol: str, api_key: str) -> dict:
     """
-    Fetch company profile from Finnhub /stock/profile2. 1 API call.
-
-    Returns: name, finnhubIndustry, weburl, logo, country, exchange,
-    marketCapitalization. Note: free tier does NOT return 'description'.
+    Fetch annual financial growth. 1 API call.
+    Key fields: epsgrowth, revenueGrowth, fiveYNetIncomeGrowthPerShare
     """
-    url = f"{FINNHUB_BASE_URL}/stock/profile2"
-    try:
-        response = http_requests.get(
-            url, params={"symbol": symbol, "token": key}, timeout=10
-        )
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 429:
-            print(f"    Rate limited on profile for {symbol}")
-            time.sleep(5)
-    except Exception as e:
-        print(f"    Finnhub profile error for {symbol}: {e}")
+    data = fmp_get("financial-growth", api_key, {"symbol": symbol, "period": "annual", "limit": "1"})
+    if data and isinstance(data, list) and data[0]:
+        return data[0]
     return {}
 
 
-def fetch_polygon_description(symbol: str, polygon_key: str) -> str:
+def fetch_fmp_estimates(symbol: str, api_key: str) -> dict:
     """
-    Fetch company description from Polygon /v3/reference/tickers/{ticker}.
-    Polygon free tier includes full company descriptions.
-    Rate limit: 5 calls/min — only call for final candidates (~6-10 stocks).
+    Fetch analyst EPS estimates. 1 API call.
+    Returns the nearest FUTURE annual estimate (for forward P/E).
+    Fields: epsAvg, epsHigh, epsLow, numAnalystsEps, date
     """
-    url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
-    try:
-        response = http_requests.get(
-            url, params={"apiKey": polygon_key}, timeout=10
-        )
-        if response.status_code == 200:
-            results = response.json().get("results", {})
-            return results.get("description", "")
-    except Exception as e:
-        print(f"    Polygon description error for {symbol}: {e}")
-    return ""
+    data = fmp_get("analyst-estimates", api_key, {"symbol": symbol, "period": "annual", "limit": "10"})
+    if data and isinstance(data, list):
+        today_str = str(date.today())
+        # Find nearest future estimate
+        for est in sorted(data, key=lambda x: x.get("date", "")):
+            if est.get("date", "") > today_str:
+                return est
+    return {}
 
 
-def fetch_finnhub_recommendation(symbol: str, key: str) -> float:
+def fetch_fmp_targets(symbol: str, api_key: str) -> dict:
     """
-    Fetch analyst recommendation consensus. 1 API call.
+    Fetch analyst price target consensus. 1 API call.
+    Fields: lastQuarterAvgPriceTarget, lastQuarterCount,
+    lastYearAvgPriceTarget, lastYearCount
+    """
+    data = fmp_get("price-target-summary", api_key, {"symbol": symbol})
+    if data and isinstance(data, list) and data[0]:
+        return data[0]
+    return {}
 
-    Returns a score: 1=Strong Buy, 2=Buy, 3=Hold, 4=Sell, 5=Strong Sell.
-    Calculated from the most recent recommendation period.
-    Our filter: "Hold or better" = score <= 3.0.
+
+def fetch_fmp_grades(symbol: str, api_key: str) -> float:
     """
-    url = f"{FINNHUB_BASE_URL}/stock/recommendation"
-    try:
-        response = http_requests.get(
-            url, params={"symbol": symbol, "token": key}, timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list) and data:
-                latest = data[0]  # Most recent period
-                strong_buy = latest.get("strongBuy", 0)
-                buy = latest.get("buy", 0)
-                hold = latest.get("hold", 0)
-                sell = latest.get("sell", 0)
-                strong_sell = latest.get("strongSell", 0)
-                total = strong_buy + buy + hold + sell + strong_sell
-                if total > 0:
-                    # Weighted average: 1×SB + 2×B + 3×H + 4×S + 5×SS / total
-                    score = (1*strong_buy + 2*buy + 3*hold + 4*sell + 5*strong_sell) / total
-                    return round(score, 2)
-    except Exception:
-        pass
+    Fetch analyst grades and compute recommendation score. 1 API call.
+
+    FMP /stable/grades returns individual analyst actions:
+    {gradingCompany, previousGrade, newGrade, action, date}
+
+    We map grades to a 1-5 numeric scale and average recent grades
+    to get a consensus score (1=Strong Buy ... 5=Strong Sell).
+    Our filter: score <= 3.0 (Hold or better).
+    """
+    data = fmp_get("grades", api_key, {"symbol": symbol, "limit": "20"})
+    if not data or not isinstance(data, list):
+        return None
+
+    # Grade mapping: various firm-specific terms → 1-5 scale
+    GRADE_MAP = {
+        # Strong Buy = 1
+        "strong buy": 1, "strong-buy": 1, "outperform": 1.5,
+        "overweight": 1.5, "top pick": 1,
+        # Buy = 2
+        "buy": 2, "positive": 2, "accumulate": 2, "sector outperform": 2,
+        "market outperform": 2, "add": 2,
+        # Hold = 3
+        "hold": 3, "neutral": 3, "equal-weight": 3, "equal weight": 3,
+        "market perform": 3, "sector perform": 3, "in-line": 3,
+        "sector weight": 3, "peer perform": 3, "market weight": 3,
+        # Sell = 4
+        "sell": 4, "underperform": 4, "underweight": 4, "reduce": 4,
+        "negative": 4, "sector underperform": 4, "market underperform": 4,
+        # Strong Sell = 5
+        "strong sell": 5,
+    }
+
+    scores = []
+    for grade in data:
+        new_grade = (grade.get("newGrade") or "").lower().strip()
+        mapped = GRADE_MAP.get(new_grade)
+        if mapped:
+            scores.append(mapped)
+
+    if scores:
+        return round(sum(scores) / len(scores), 2)
     return None
 
 
-def enrich_with_finnhub(stock: dict, metrics: dict, target: dict) -> dict:
-    """Apply Finnhub data — override EDGAR EPS with Finnhub's reported TTM EPS."""
+def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
+                    estimates: dict, targets: dict, profile: dict,
+                    grades_score: float) -> dict:
+    """
+    Apply FMP data to a stock dict. Overrides/supplements EDGAR data
+    where FMP provides more accurate or additional information.
+    """
     price = stock.get("price", 0)
 
-    # EPS and P/E from Finnhub — use normalized P/E (strips one-time items)
-    # peNormalizedAnnual is Finnhub's clean P/E excluding extraordinary items.
-    # This prevents one-time gains (VISN, RIGL-type situations) from producing
-    # artificially low P/E ratios.
-    pe_normalized = metrics.get("peNormalizedAnnual")
-    if pe_normalized and pe_normalized > 0 and price:
-        stock["pe_ratio"] = round(pe_normalized, 2)
-        # Back-derive clean EPS from normalized P/E
-        stock["eps"] = round(price / pe_normalized, 4)
+    # --- P/E from FMP ratios (normalized, strips one-time items) ---
+    pe_fmp = ratios.get("priceToEarningsRatioTTM")
+    if pe_fmp and pe_fmp > 0:
+        stock["pe_ratio"] = round(pe_fmp, 2)
 
-    # Also get epsTTM for reference (but don't use it for P/E if normalized is available)
-    eps_ttm = metrics.get("epsTTM")
-    if not pe_normalized and eps_ttm and eps_ttm > 0 and price:
-        stock["eps"] = eps_ttm
-        stock["pe_ratio"] = round(price / eps_ttm, 2)
+    # --- PEG from FMP ratios ---
+    peg_fmp = ratios.get("priceToEarningsGrowthRatioTTM")
+    if peg_fmp is not None:
+        stock["peg_ratio"] = round(peg_fmp, 3)
 
-    # PEG: P/E ÷ EPS growth
-    # Use Finnhub EPS growth if available, else fall back to EDGAR
-    eps_growth = stock.get("eps_growth_yoy")  # EDGAR TTM growth
-    finnhub_eps_growth = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
-    if finnhub_eps_growth:
-        eps_growth = finnhub_eps_growth / 100.0  # Finnhub returns as percentage
+    # --- P/FCF from FMP ratios ---
+    pfcf_fmp = ratios.get("priceToFreeCashFlowRatioTTM")
+    if pfcf_fmp and pfcf_fmp > 0:
+        stock["price_to_fcf"] = round(pfcf_fmp, 2)
 
-    pe = stock.get("pe_ratio")
-    if pe and pe > 0 and eps_growth and eps_growth > 0:
-        stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)
+    # --- D/E from FMP ratios ---
+    de_fmp = ratios.get("debtToEquityRatioTTM")
+    if de_fmp is not None:
+        stock["debt_to_equity"] = round(de_fmp, 3)
 
-    # Price/FCF: Price ÷ FCF per share (FCF from EDGAR)
-    fcf_ps = stock.get("fcf_per_share")
-    if price and fcf_ps and fcf_ps > 0:
-        stock["price_to_fcf"] = round(price / fcf_ps, 2)
+    # --- ICR from FMP ratios ---
+    icr_fmp = ratios.get("interestCoverageRatioTTM")
+    if icr_fmp is not None:
+        stock["interest_coverage_ratio"] = round(icr_fmp, 2)
 
-    # Forward P/E — ONLY from Finnhub (analyst estimate, can't compute from filings)
-    stock["forward_pe"] = metrics.get("peNormalizedAnnual") or metrics.get("peExclExtraAnnual")
+    # --- Quick Ratio from FMP ratios ---
+    qr_fmp = ratios.get("quickRatioTTM")
+    if qr_fmp is not None:
+        stock["quick_ratio"] = round(qr_fmp, 3)
 
-    # Est. LT Growth — ONLY from Finnhub (analyst consensus)
-    lt_g = metrics.get("epsGrowth5Y") or metrics.get("epsGrowth3Y")
-    stock["est_lt_growth"] = lt_g / 100.0 if lt_g else None
+    # --- Operating Margin from FMP ratios ---
+    om_fmp = ratios.get("operatingProfitMarginTTM")
+    if om_fmp is not None:
+        stock["operating_margin"] = round(om_fmp, 4)
 
-    # Analyst target price + upside — DEFERRED (endpoint returns empty on free tier)
-    # Keeping the code path for when we find a working source
-    target_mean = target.get("targetMean") or target.get("targetMedian")
-    if target_mean and price and price > 0:
-        stock["analyst_target_price"] = target_mean
-        stock["target_price_upside"] = (target_mean - price) / price
+    # --- Forward P/E from analyst estimates ---
+    forward_eps = estimates.get("epsAvg")
+    if forward_eps and forward_eps > 0 and price:
+        stock["forward_pe"] = round(price / forward_eps, 2)
 
-    # Market cap from Finnhub (supplement)
-    mc = metrics.get("marketCapitalization")
-    if mc:
-        stock["market_cap"] = mc * 1_000_000
+    # --- EPS Growth from financial-growth ---
+    eps_g = growth.get("epsgrowth")
+    if eps_g is not None:
+        stock["eps_growth_yoy"] = round(eps_g, 4)
+
+    # --- Revenue Growth from financial-growth ---
+    rev_g = growth.get("revenueGrowth")
+    if rev_g is not None:
+        stock["revenue_growth_yoy"] = round(rev_g, 4)
+
+    # --- Long-term Growth estimate ---
+    # FMP fiveYNetIncomeGrowthPerShare is cumulative (e.g., 2.69 = 269% over 5 years).
+    # Convert to annualized CAGR: (1 + cumulative)^(1/5) - 1
+    # Example: 269% over 5 years → (1+2.69)^0.2 - 1 = 0.298 = 29.8% annual
+    lt_g = growth.get("fiveYNetIncomeGrowthPerShare")
+    if lt_g is not None:
+        try:
+            cagr = (1 + lt_g) ** (1 / 5) - 1
+            stock["est_lt_growth"] = round(cagr, 4)
+        except (ValueError, ZeroDivisionError):
+            # If lt_g < -1 (e.g., -1.5 = company lost 150% over 5y), pow fails
+            stock["est_lt_growth"] = None
+
+    # --- Analyst Target Price ---
+    target_price = targets.get("lastQuarterAvgPriceTarget")
+    if not target_price:
+        target_price = targets.get("lastYearAvgPriceTarget")
+    if target_price and price and price > 0:
+        stock["analyst_target_price"] = round(target_price, 2)
+        stock["target_price_upside"] = round((target_price - price) / price, 4)
+
+    # --- Analyst Recommendation (from grades) ---
+    if grades_score is not None:
+        stock["analyst_recommendation"] = grades_score
+
+    # --- Profile data ---
+    if profile:
+        stock["company_name"] = profile.get("companyName", stock.get("company_name", ""))
+        stock["company_description"] = profile.get("description", "")
+        stock["logo"] = profile.get("image", "")
+        stock["weburl"] = profile.get("website", "")
+        if profile.get("sector"):
+            stock["sector"] = profile["sector"]
+        if profile.get("industry"):
+            stock["industry"] = profile["industry"]
+        mc = profile.get("marketCap")
+        if mc:
+            stock["market_cap"] = mc
 
     return stock
 
@@ -483,51 +560,38 @@ def handler(event, context):
     # STAGE 2: Local P/E calculation + pre-filter (zero API calls)
     print(f"  Stage 2: Local P/E + industry-relative pre-filter...")
     candidates, all_enriched, industry_pe_quartiles = local_prefilter(passing, all_prices)
-    print(f"  Pre-filter: {len(candidates)} candidates for Finnhub (from {len(passing)})")
+    print(f"  Pre-filter: {len(candidates)} candidates for FMP (from {len(passing)})")
 
-    # STAGE 3: Finnhub for candidates only (2 calls per stock, 3s pacing)
-    finnhub_key = get_finnhub_key()
-    finnhub_enriched = 0
-    print(f"  Stage 3: Finnhub enrichment for {len(candidates)} stocks...")
+    # STAGE 3: FMP enrichment for candidates (6 calls per stock)
+    # FMP rate limit: 300 req/min. At 6 calls/stock, we can safely do ~40 stocks/min.
+    # Pace at ~1s between stocks (6 calls + 1s pause ≈ 7s/stock).
+    fmp_key = get_fmp_key()
+    fmp_enriched = 0
+    print(f"  Stage 3: FMP enrichment for {len(candidates)} stocks...")
 
     for i, stock in enumerate(candidates):
         symbol = stock.get("symbol", "")
 
-        metrics = fetch_finnhub_metrics(symbol, finnhub_key)
-        time.sleep(1)
+        # Fetch all FMP data for this stock
+        ratios = fetch_fmp_ratios(symbol, fmp_key)
+        growth = fetch_fmp_growth(symbol, fmp_key)
+        estimates = fetch_fmp_estimates(symbol, fmp_key)
+        targets = fetch_fmp_targets(symbol, fmp_key)
+        grades_score = fetch_fmp_grades(symbol, fmp_key)
+        profile = fetch_fmp_profile(symbol, fmp_key)
 
-        if metrics:
-            enrich_with_finnhub(stock, metrics, {})
-            # Analyst recommendation (separate endpoint)
-            time.sleep(1)
-            rec_score = fetch_finnhub_recommendation(symbol, finnhub_key)
-            if rec_score is not None:
-                stock["analyst_recommendation"] = rec_score
-            finnhub_enriched += 1
+        # Apply FMP data to stock
+        if ratios or profile:
+            enrich_with_fmp(stock, ratios, growth, estimates, targets, profile, grades_score)
+            fmp_enriched += 1
 
-        # Company profile (logo, industry, website) from Finnhub
-        time.sleep(1)
-        profile = fetch_finnhub_profile(symbol, finnhub_key)
-        if profile:
-            stock["logo"] = profile.get("logo", "")
-            stock["weburl"] = profile.get("weburl", "")
-            # Supplement sector/industry if not already set
-            if not stock.get("industry") and profile.get("finnhubIndustry"):
-                stock["industry"] = profile.get("finnhubIndustry")
+        if (i + 1) % 10 == 0:
+            print(f"    [{i+1}/{len(candidates)}] enriched {fmp_enriched}")
 
-        if (i + 1) % 25 == 0:
-            print(f"    [{i+1}/{len(candidates)}] enriched {finnhub_enriched}")
-
-        # Pacing: Finnhub allows 60 calls/min. We make 3 calls per stock
-        # (metrics + recommendation + profile). 3s between stocks = safe.
+        # Pacing: 6 calls per stock at 300/min = 50 stocks/min max.
+        # Add 1s between stocks for safety margin.
         if i < len(candidates) - 1:
-            time.sleep(3)
-
-    # STAGE 3b: Polygon descriptions (only for candidates, 5/min rate limit)
-    # Polygon descriptions take 12s each. For ~50-80 candidates, too slow.
-    # Instead, we'll fetch descriptions only in the score-calculator step
-    # after full screen narrows to ~6-10 final stocks.
-    # The enrichment step passes logo/industry/weburl through from Finnhub.
+            time.sleep(1)
 
     # Output: return ALL stocks (enriched candidates + non-candidates with just price/P/E)
     end_time = datetime.now(timezone.utc)
@@ -567,16 +631,16 @@ def handler(event, context):
             "total_stocks": len(passing),
             "prices_matched": sum(1 for s in all_enriched if s.get("price")),
             "local_prefilter_pass": len(candidates),
-            "finnhub_enriched": finnhub_enriched,
+            "fmp_enriched": fmp_enriched,
             "pe_available": pe_count,
             "peg_available": peg_count,
             "trading_date": trading_date,
-            "finnhub_calls": finnhub_enriched * 3,
+            "fmp_calls": fmp_enriched * 6,
             "industries_with_pe_quartile": len(industry_pe_quartiles),
             "duration_seconds": duration,
             "timestamp": end_time.isoformat(),
         },
     }
 
-    print(f"Done in {duration:.1f}s. Finnhub calls: {finnhub_enriched * 3}")
+    print(f"Done in {duration:.1f}s. FMP calls: {fmp_enriched * 6}")
     return write_pipeline_output(result, step_name="step3_enriched")

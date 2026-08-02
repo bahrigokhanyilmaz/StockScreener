@@ -1,95 +1,146 @@
 """
 News Fetcher Lambda
 ===================
-Step 3 in the pipeline.
+Step 5 in the pipeline.
 
-Takes the list of passing/tracked stocks from the screener (Step 2)
-and fetches recent news articles for each using TickerTick API.
+Takes the list of passing/tracked stocks from the full screen (Step 4)
+and fetches recent news articles for each using FMP /stable/news/stock.
 
-TickerTick is:
-- Free, no API key needed
-- Covers all US-listed stocks (~10,000 tickers)
-- Sources from ~10,000 websites (Reuters, WSJ, CNBC, SEC filings, etc.)
-- Rate limit: 10 requests/minute (we respect this with delays)
+FMP News:
+- Requires Starter plan ($19/mo)
+- Endpoint: /stable/news/stock?symbols=AAPL&limit=10
+- Returns: symbol, publishedDate, publisher, title, text, url, image, site
+- Rate limit: 300 requests/minute (very generous)
+- Sources: Motley Fool, Seeking Alpha, Reuters, Bloomberg, etc.
 
-Input (from Step Functions / stock-screener):
+Input (from Step Functions):
     event["passing_stocks"] — stocks that passed value filters
-    event["near_misses"] — stocks close to passing (optional: fetch for these too)
 
 Output:
     - List of stocks with their recent articles attached
-    - Articles include: title, description, source, url, publish time
+    - Articles include: title, description, source, url, published_at
 
 Environment Variables:
     RAW_DATA_BUCKET - S3 bucket for storing raw news data
-    NEWS_LOOKBACK_HOURS - How far back to fetch news (default: 168 = 7 days)
+    DATA_TABLE_NAME - DynamoDB table for GRACE stocks lookup
+    FMP_API_KEY_PARAM - SSM path for FMP API key
 """
 
 import json
 import os
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 import boto3
-import requests
 
 # AWS clients
 s3_client = boto3.client("s3")
+ssm_client = boto3.client("ssm")
 
-# TickerTick API
-TICKERTICK_BASE_URL = "https://api.tickertick.com/feed"
+# FMP API
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
-# Rate limit: 10 requests per minute → 6 seconds between requests
-RATE_LIMIT_DELAY = 6.5  # seconds between requests (safe margin)
+# Rate limit: 300 requests/min → can go fast, but add small delay for safety
+RATE_LIMIT_DELAY = 1.0  # seconds between requests
+
+# Cache
+_fmp_key = None
 
 
-def fetch_news_for_ticker(symbol: str, lookback_hours: int = 168, max_articles: int = 10) -> list[dict]:
+def get_fmp_key() -> str:
+    global _fmp_key
+    if not _fmp_key:
+        param = os.environ.get("FMP_API_KEY_PARAM", "/stock-screener/fmp-api-key")
+        resp = ssm_client.get_parameter(Name=param, WithDecryption=True)
+        _fmp_key = resp["Parameter"]["Value"]
+    return _fmp_key
+
+
+def fetch_news_for_ticker(symbol: str, api_key: str, max_articles: int = 10) -> list[dict]:
     """
-    Fetch recent news articles for a single stock ticker from TickerTick.
-
-    Args:
-        symbol: Stock ticker (e.g., "AAPL")
-        lookback_hours: How far back to search (default 168 = 7 days)
-        max_articles: Maximum articles to return per ticker
-
-    Returns:
-        List of article dicts with: title, description, url, source, published_at
+    Fetch recent news articles for a single stock ticker from FMP.
+    Fallback for when batching doesn't return enough articles for a ticker.
     """
-    params = {
-        "q": f"tt:{symbol.lower()}",
-        "lang": "en",
-        "n": max_articles,
-        "hours_ago": lookback_hours,
-    }
+    url = (f"{FMP_BASE}/news/stock?symbols={symbol}&limit={max_articles}"
+           f"&apikey={api_key}")
+    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
 
     try:
-        response = requests.get(TICKERTICK_BASE_URL, params=params, timeout=15)
-        if response.status_code != 200:
-            print(f"  Warning: TickerTick returned {response.status_code} for {symbol}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+
+        if not isinstance(data, list):
             return []
 
-        data = response.json()
-        stories = data.get("stories", [])
+        return _normalize_articles(data, symbol)
 
-        # Normalize to our standard article schema
-        articles = []
-        for story in stories:
-            article = {
-                "title": story.get("title", ""),
-                "description": story.get("description", ""),
-                "url": story.get("url", ""),
-                "source": story.get("site", ""),
-                "published_at": story.get("time", 0),  # Unix timestamp (ms)
-                "tags": story.get("tags", []),
-                "ticker": symbol,
-            }
-            articles.append(article)
-
-        return articles
-
-    except requests.RequestException as e:
-        print(f"  Warning: TickerTick error for {symbol}: {e}")
+    except urllib.error.HTTPError as e:
+        print(f"  Warning: FMP news returned HTTP {e.code} for {symbol}")
         return []
+    except Exception as e:
+        print(f"  Warning: FMP news error for {symbol}: {e}")
+        return []
+
+
+def fetch_news_batch(symbols: list[str], api_key: str, articles_per_stock: int = 10) -> dict[str, list[dict]]:
+    """
+    Fetch news for multiple stocks in a single API call.
+
+    FMP /stable/news/stock supports comma-separated symbols.
+    The 'limit' parameter is TOTAL across all symbols (not per-symbol),
+    so we set limit = len(symbols) × articles_per_stock to ensure coverage.
+
+    Returns: {symbol: [articles]} dict
+    """
+    symbols_str = ",".join(symbols)
+    total_limit = len(symbols) * articles_per_stock
+    url = (f"{FMP_BASE}/news/stock?symbols={symbols_str}&limit={total_limit}"
+           f"&apikey={api_key}")
+    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+
+        if not isinstance(data, list):
+            return {sym: [] for sym in symbols}
+
+        # Group articles by symbol
+        result = {sym: [] for sym in symbols}
+        for story in data:
+            sym = story.get("symbol", "")
+            if sym in result:
+                result[sym].append(_normalize_article(story))
+
+        return result
+
+    except Exception as e:
+        print(f"  Warning: Batch news fetch error: {e}")
+        return {sym: [] for sym in symbols}
+
+
+def _normalize_article(story: dict) -> dict:
+    """Normalize a single FMP news story to our standard schema."""
+    return {
+        "title": story.get("title", ""),
+        "description": story.get("text", ""),  # FMP 'text' = article summary
+        "url": story.get("url", ""),
+        "source": story.get("publisher", "") or story.get("site", ""),
+        "published_at": story.get("publishedDate", ""),
+        "image": story.get("image", ""),
+        "ticker": story.get("symbol", ""),
+    }
+
+
+def _normalize_articles(data: list, symbol: str) -> list[dict]:
+    """Normalize a list of FMP news stories."""
+    articles = []
+    for story in data:
+        article = _normalize_article(story)
+        article["ticker"] = symbol  # Ensure ticker is set
+        articles.append(article)
+    return articles
 
 
 def store_raw_news(bucket_name: str, data: list, symbol: str):
@@ -174,15 +225,43 @@ def handler(event, context):
     print(f"Fetching news for {len(symbols)} stocks: {symbols[:10]}...")
 
     # Configuration
-    lookback_hours = int(os.environ.get("NEWS_LOOKBACK_HOURS", "168"))  # 7 days
+    api_key = get_fmp_key()
     bucket_name = os.environ.get("RAW_DATA_BUCKET")
 
-    # Fetch news for each stock (respecting rate limits)
+    # Fetch news in batches of 5 symbols (FMP limit is total, not per-symbol)
+    # Batching: 5 symbols × 10 articles = limit=50 per call
+    # For 20 stocks = 4 API calls instead of 20
+    BATCH_SIZE = 5
     stocks_with_news = []
     total_articles = 0
+    all_fetched = {}  # symbol → articles
 
-    for i, symbol in enumerate(symbols):
-        articles = fetch_news_for_ticker(symbol, lookback_hours=lookback_hours)
+    for batch_start in range(0, len(symbols), BATCH_SIZE):
+        batch = symbols[batch_start:batch_start + BATCH_SIZE]
+        batch_results = fetch_news_batch(batch, api_key, articles_per_stock=10)
+
+        for sym, articles in batch_results.items():
+            all_fetched[sym] = articles
+
+        print(f"  Batch {batch_start//BATCH_SIZE + 1}: {batch} → "
+              f"{sum(len(a) for a in batch_results.values())} articles")
+
+        # Rate limiting between batches
+        if batch_start + BATCH_SIZE < len(symbols):
+            time.sleep(RATE_LIMIT_DELAY)
+
+    # For any stock that got 0 articles from batching, try individual fetch
+    for sym in symbols:
+        if not all_fetched.get(sym):
+            articles = fetch_news_for_ticker(sym, api_key)
+            all_fetched[sym] = articles
+            if articles:
+                print(f"  {sym}: fallback individual fetch → {len(articles)} articles")
+            time.sleep(0.5)
+
+    # Build output
+    for symbol in symbols:
+        articles = all_fetched.get(symbol, [])
         total_articles += len(articles)
 
         stock_data = next((s for s in all_stocks if s.get("symbol") == symbol), {})
@@ -192,15 +271,9 @@ def handler(event, context):
             "article_count": len(articles),
         })
 
-        print(f"  [{i+1}/{len(symbols)}] {symbol}: {len(articles)} articles")
-
         # Store raw news in S3
         if bucket_name and articles:
             store_raw_news(bucket_name, articles, symbol)
-
-        # Rate limiting: TickerTick allows 10 req/min
-        if i < len(symbols) - 1:
-            time.sleep(RATE_LIMIT_DELAY)
 
     # Build response
     end_time = datetime.now(timezone.utc)
@@ -211,7 +284,7 @@ def handler(event, context):
         "metadata": {
             "stocks_requested": len(symbols),
             "articles_fetched": total_articles,
-            "lookback_hours": lookback_hours,
+            "lookback_hours": 168,  # FMP returns recent articles by default
             "duration_seconds": duration,
             "timestamp": end_time.isoformat(),
         },

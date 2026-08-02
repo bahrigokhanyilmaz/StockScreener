@@ -8,7 +8,7 @@ sentiment score (from Step 6: sentiment-analyzer) into a single
 **Investability Score** per stock.
 
 Also:
-- Fetches company descriptions from Polygon (only for final ~6-10 stocks)
+- Fetches company descriptions from FMP (fallback for stocks missing from enrichment)
 - Persists results to DynamoDB:
   - LATEST item: current scores (overwritten each run)
   - SCORE#date item: historical score (appended daily, never overwritten)
@@ -31,7 +31,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
-import requests as http_requests
 
 # DynamoDB client
 dynamodb = boto3.resource("dynamodb")
@@ -40,32 +39,35 @@ dynamodb = boto3.resource("dynamodb")
 ssm_client = boto3.client("ssm")
 
 # Cache
-_polygon_key = None
+_fmp_key = None
 
 
-def get_polygon_key() -> str:
-    """Get Polygon API key from SSM (cached)."""
-    global _polygon_key
-    if not _polygon_key:
-        param = os.environ.get("POLYGON_API_KEY_PARAM", "/stock-screener/polygon-api-key")
-        _polygon_key = ssm_client.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
-    return _polygon_key
+def get_fmp_key() -> str:
+    """Get FMP API key from SSM (cached)."""
+    global _fmp_key
+    if not _fmp_key:
+        param = os.environ.get("FMP_API_KEY_PARAM", "/stock-screener/fmp-api-key")
+        _fmp_key = ssm_client.get_parameter(Name=param, WithDecryption=True)["Parameter"]["Value"]
+    return _fmp_key
 
 
 def fetch_company_description(symbol: str) -> str:
     """
-    Fetch company description from Polygon /v3/reference/tickers/{ticker}.
-    Only called for final passing stocks (~6-10), so 5/min limit is fine.
+    Fetch company description from FMP /stable/profile.
+    Only called for final passing stocks that don't already have a description
+    (enrichment step should have set this, so this is a fallback).
     """
     try:
-        key = get_polygon_key()
-        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}"
-        response = http_requests.get(url, params={"apiKey": key}, timeout=10)
-        if response.status_code == 200:
-            results = response.json().get("results", {})
-            return results.get("description", "")
+        import urllib.request
+        key = get_fmp_key()
+        url = f"https://financialmodelingprep.com/stable/profile?symbol={symbol}&apikey={key}"
+        req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            if data and isinstance(data, list) and data[0]:
+                return data[0].get("description", "")
     except Exception as e:
-        print(f"  Warning: Polygon description error for {symbol}: {e}")
+        print(f"  Warning: FMP profile error for {symbol}: {e}")
     return ""
 
 
@@ -100,27 +102,31 @@ def enrich_with_sic_industry(stocks: list):
 
 def backfill_price_history(scored_stocks: list, today: str):
     """
-    Fetch 30-day price history from Polygon for each passing stock.
+    Fetch 30-day price history from FMP for each passing stock.
 
     Stores as PRICE_HISTORY#{ticker} in DynamoDB with a list of daily bars.
     Only backfills if the stock doesn't already have recent price history
     (avoids redundant calls on subsequent runs).
 
-    Polygon /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}: 5 calls/min.
-    For ~6 stocks = ~72 seconds with 12s pacing.
+    FMP /stable/historical-price-eod/full: 300 calls/min.
+    For ~20 stocks = ~20 seconds with 1s pacing.
+    Returns: symbol, date, open, high, low, close, volume, change, changePercent, vwap
     """
     table_name = os.environ.get("DATA_TABLE_NAME", "")
     if not table_name:
         return
 
+    import urllib.request
     from datetime import timedelta
 
     table = dynamodb.Table(table_name)
     today_dt = datetime.strptime(today, "%Y-%m-%d")
-    from_date = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+    from_date = (today_dt - timedelta(days=45)).strftime("%Y-%m-%d")  # 45 days to ensure 30 trading days
 
     symbols = [s.get("symbol", "") for s in scored_stocks if s.get("symbol")]
     print(f"  Backfilling 30-day price history for {len(symbols)} stocks...")
+
+    fmp_key = get_fmp_key()
 
     for i, symbol in enumerate(symbols):
         # Check if we already have recent history (skip if last backfill was today)
@@ -136,29 +142,30 @@ def backfill_price_history(scored_stocks: list, today: str):
         except Exception:
             pass
 
-        # Fetch from Polygon
+        # Fetch from FMP
         try:
-            key = get_polygon_key()
-            url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{from_date}/{today}"
-            resp = http_requests.get(url, params={"apiKey": key, "adjusted": "true"}, timeout=15)
+            url = (f"https://financialmodelingprep.com/stable/historical-price-eod/full"
+                   f"?symbol={symbol}&from={from_date}&to={today}&apikey={fmp_key}")
+            req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                bars_data = json.loads(resp.read().decode())
 
-            if resp.status_code == 200:
-                data = resp.json()
-                bars = data.get("results", [])
-                if bars:
-                    # Store as compact list: [{d: "2026-07-01", c: 123.45, v: 1000000}, ...]
-                    price_history = []
-                    for bar in bars:
-                        ts = bar.get("t", 0) / 1000  # ms → seconds
-                        bar_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                        price_history.append({
-                            "d": bar_date,
-                            "o": round(bar.get("o", 0), 2),
-                            "h": round(bar.get("h", 0), 2),
-                            "l": round(bar.get("l", 0), 2),
-                            "c": round(bar.get("c", 0), 2),
-                            "v": bar.get("v", 0),
-                        })
+            if bars_data and isinstance(bars_data, list):
+                # FMP returns: symbol, date, open, high, low, close, volume, change, changePercent, vwap
+                price_history = []
+                for bar in bars_data:
+                    price_history.append({
+                        "d": bar.get("date", ""),
+                        "o": round(bar.get("open", 0), 2),
+                        "h": round(bar.get("high", 0), 2),
+                        "l": round(bar.get("low", 0), 2),
+                        "c": round(bar.get("close", 0), 2),
+                        "v": bar.get("volume", 0),
+                    })
+
+                if price_history:
+                    # Sort by date ascending (FMP returns newest first)
+                    price_history.sort(key=lambda x: x["d"])
 
                     # Write to DynamoDB
                     table.put_item(Item=_to_decimal({
@@ -175,13 +182,13 @@ def backfill_price_history(scored_stocks: list, today: str):
                 else:
                     print(f"    {symbol}: no bars returned")
             else:
-                print(f"    {symbol}: Polygon returned {resp.status_code}")
+                print(f"    {symbol}: empty response from FMP")
         except Exception as e:
             print(f"    {symbol}: error — {e}")
 
-        # Polygon rate limit: 5 calls/min → 12s pacing
+        # FMP rate limit: 300 calls/min → 1s pacing is very safe
         if i < len(symbols) - 1:
-            time.sleep(12.5)
+            time.sleep(1)
 
 
 # Risk flag penalties — severe issues get hard score reductions
@@ -787,23 +794,28 @@ def handler(event, context):
     moderately_investable = [s for s in scored if 40 <= s["investability_score"] < 70]
     low_investability = [s for s in scored if s["investability_score"] < 40]
 
-    # Fetch company descriptions from Polygon (only ~6-10 stocks, 5/min is fine)
-    print(f"Fetching company descriptions from Polygon for {len(scored)} stocks...")
-    for i, stock in enumerate(scored):
-        symbol = stock.get("symbol", "")
-        if symbol and not stock.get("company_description"):
-            desc = fetch_company_description(symbol)
-            if desc:
-                stock["company_description"] = desc
-                print(f"  {symbol}: got description ({len(desc)} chars)")
-            # Polygon free: 5 calls/min → 12s pacing
-            if i < len(scored) - 1:
-                time.sleep(12.5)
+    # Fetch company descriptions (FMP profile — only for stocks missing description)
+    # Enrichment step should have set this, but fallback if not
+    missing_desc = [s for s in scored if not s.get("company_description")]
+    if missing_desc:
+        print(f"Fetching company descriptions from FMP for {len(missing_desc)} stocks...")
+        for i, stock in enumerate(missing_desc):
+            symbol = stock.get("symbol", "")
+            if symbol:
+                desc = fetch_company_description(symbol)
+                if desc:
+                    stock["company_description"] = desc
+                    print(f"  {symbol}: got description ({len(desc)} chars)")
+                # FMP: 300 calls/min → 1s pacing
+                if i < len(missing_desc) - 1:
+                    time.sleep(1)
+    else:
+        print("All stocks have descriptions from enrichment step")
 
     # Enrich with SEC SIC industry labels (for industry comparison matching)
     enrich_with_sic_industry(scored)
 
-    # Backfill 30-day price history from Polygon (for trend detection)
+    # Backfill 30-day price history from FMP (for trend detection)
     backfill_price_history(scored, today)
 
     # Persist to DynamoDB

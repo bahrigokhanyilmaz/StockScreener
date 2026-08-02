@@ -129,14 +129,14 @@ export class StockScreenerStack extends cdk.Stack {
       memorySize: 256,
       environment: {
         POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
-        FINNHUB_API_KEY_PARAM: '/stock-screener/finnhub-api-key',
+        FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
         DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Step 3: Polygon bulk prices + Finnhub analyst data + industry P/E quartiles',
+      description: 'Step 3: Polygon bulk prices + FMP ratios/growth/targets/grades + industry P/E',
     });
 
-    // Step 5: News Fetcher (TickerTick)
+    // Step 5: News Fetcher (FMP)
     const newsFetcher = new PythonFunction(this, 'NewsFetcher', {
       functionName: 'stock-screener-news-fetcher',
       entry: path.join(__dirname, '../lambdas/news-fetcher'),
@@ -148,10 +148,10 @@ export class StockScreenerStack extends cdk.Stack {
       memorySize: 256,
       environment: {
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
-        NEWS_LOOKBACK_HOURS: '168',
+        FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
         DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Step 5: News for passing + GRACE stocks',
+      description: 'Step 5: FMP news for passing + GRACE stocks',
     });
 
     // Step 6: Sentiment Analyzer (Bedrock/Claude)
@@ -179,16 +179,16 @@ export class StockScreenerStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(5),
+      timeout: cdk.Duration.minutes(10),
       memorySize: 128,
       environment: {
         FUNDAMENTAL_WEIGHT: '0.7',
         SENTIMENT_WEIGHT: '0.3',
         DATA_TABLE_NAME: dataTable.tableName,
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
-        POLYGON_API_KEY_PARAM: '/stock-screener/polygon-api-key',
+        FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
       },
-      description: 'Step 7: Investability score + company profiles + DynamoDB persistence',
+      description: 'Step 7: Investability score + FMP profiles/prices + DynamoDB persistence',
     });
 
     // Step 8: Alert Checker (+ tracking lifecycle)
@@ -309,6 +309,17 @@ export class StockScreenerStack extends cdk.Stack {
     // Step 5: S3 read/write (news storage + pipeline I/O) + DynamoDB read (GRACE stocks)
     rawDataBucket.grantReadWrite(newsFetcher);
     dataTable.grantReadData(newsFetcher);
+    newsFetcher.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/stock-screener/*`],
+    }));
+    newsFetcher.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:Decrypt'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
+    }));
 
     // Step 6: Bedrock + S3 read/write (sentiment storage + pipeline I/O)
     sentimentAnalyzer.addToRolePolicy(new iam.PolicyStatement({

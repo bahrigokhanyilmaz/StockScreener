@@ -85,6 +85,7 @@ class StockFundamentals:
     # === Growth ===
     eps_growth_yoy: Optional[float] = None  # EPS growth year-over-year (as decimal)
     revenue_growth_yoy: Optional[float] = None  # Revenue growth YoY (as decimal)
+    operating_income_growth_yoy: Optional[float] = None  # Operating income growth YoY (as decimal)
     revenue_growth_qoq: Optional[float] = None  # Revenue growth quarter-over-quarter
     earnings_growth_qoq: Optional[float] = None  # Earnings growth QoQ
     estimated_lt_growth: Optional[float] = None  # Analyst est. long-term growth rate

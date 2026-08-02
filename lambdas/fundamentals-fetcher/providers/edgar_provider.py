@@ -409,7 +409,8 @@ class EdgarProvider(DataProvider):
         # Prior TTM for YoY growth: same derivation, shifted one year back
         # prior_annual_period and q1_prior_year already computed above dynamically
         for metric_name, xbrl_tags in [("net_income", ["NetIncomeLoss"]),
-                                        ("revenue", REVENUE_TAGS_FOR_TTM)]:
+                                        ("revenue", REVENUE_TAGS_FOR_TTM),
+                                        ("operating_income", ["OperatingIncomeLoss"])]:
             # Merge all tags for this metric
             prior_ann_data = {}
             q1_prior_merged = {}
@@ -624,6 +625,7 @@ class EdgarProvider(DataProvider):
                 return_on_equity=net_income / equity if net_income and equity and equity > 0 else None,
                 eps_growth_yoy=None,  # Needs prior year comparison
                 revenue_growth_yoy=None,
+                operating_income_growth_yoy=None,
                 revenue_growth_qoq=None,
                 earnings_growth_qoq=None,
                 estimated_lt_growth=None,
@@ -713,6 +715,12 @@ class EdgarProvider(DataProvider):
             if revenue and prev_revenue and prev_revenue > 0:
                 revenue_growth = (revenue - prev_revenue) / prev_revenue
 
+            # Operating income growth YoY
+            prev_operating_income = all_frames.get("prev_operating_income", {}).get(cik)
+            operating_income_growth = None
+            if operating_income and prev_operating_income and prev_operating_income > 0:
+                operating_income_growth = (operating_income - prev_operating_income) / prev_operating_income
+
             # Free cash flow per share (operating cash flow - capex) / shares
             fcf_per_share = None
             if operating_cf and shares and shares > 0:
@@ -751,6 +759,7 @@ class EdgarProvider(DataProvider):
                 return_on_equity=roe,
                 eps_growth_yoy=eps_growth,
                 revenue_growth_yoy=revenue_growth,
+                operating_income_growth_yoy=operating_income_growth,
                 revenue_growth_qoq=None,
                 earnings_growth_qoq=None,
                 estimated_lt_growth=None,  # Requires analyst estimates (Finnhub)
