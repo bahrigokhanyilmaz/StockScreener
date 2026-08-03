@@ -354,20 +354,22 @@ def fetch_fmp_growth(symbol: str, api_key: str) -> dict:
     return {}
 
 
-def fetch_fmp_estimates(symbol: str, api_key: str) -> dict:
+def fetch_fmp_estimates(symbol: str, api_key: str) -> list:
     """
     Fetch analyst EPS estimates. 1 API call.
-    Returns the nearest FUTURE annual estimate (for forward P/E).
-    Fields: epsAvg, epsHigh, epsLow, numAnalystsEps, date
+    Returns ALL future annual estimates sorted by date (nearest first).
+    Each entry has: epsAvg, epsHigh, epsLow, numAnalystsEps, date
+    Used for:
+      - Forward P/E (nearest year epsAvg)
+      - Forward LT Growth (3-year-out epsAvg vs current EPS → CAGR)
     """
     data = fmp_get("analyst-estimates", api_key, {"symbol": symbol, "period": "annual", "limit": "10"})
     if data and isinstance(data, list):
         today_str = str(date.today())
-        # Find nearest future estimate
-        for est in sorted(data, key=lambda x: x.get("date", "")):
-            if est.get("date", "") > today_str:
-                return est
-    return {}
+        future = [e for e in sorted(data, key=lambda x: x.get("date", ""))
+                  if e.get("date", "") > today_str]
+        return future[:5]  # Cap at 5 future years
+    return []
 
 
 def fetch_fmp_targets(symbol: str, api_key: str) -> dict:
@@ -472,10 +474,34 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
     if om_fmp is not None:
         stock["operating_margin"] = round(om_fmp, 4)
 
-    # --- Forward P/E from analyst estimates ---
-    forward_eps = estimates.get("epsAvg")
-    if forward_eps and forward_eps > 0 and price:
-        stock["forward_pe"] = round(price / forward_eps, 2)
+    # --- Forward P/E + LT Growth from analyst estimates ---
+    # estimates is now a list of future annual estimates (nearest first)
+    if estimates and isinstance(estimates, list):
+        # Forward P/E: use nearest year's EPS
+        nearest_eps = estimates[0].get("epsAvg") if estimates else None
+        if nearest_eps and nearest_eps > 0 and price:
+            stock["forward_pe"] = round(price / nearest_eps, 2)
+
+        # Forward LT Growth: CAGR from current EPS to furthest available estimate (up to 3 years)
+        # Use the furthest year available (prefer 3rd, fall back to 2nd, then 1st)
+        current_eps = stock.get("eps")  # TTM EPS from EDGAR
+        if current_eps and current_eps > 0:
+            # Pick the furthest future estimate (up to index 2 = year 3)
+            furthest_idx = min(2, len(estimates) - 1)  # 0-indexed: 0=yr1, 1=yr2, 2=yr3
+            furthest_eps = estimates[furthest_idx].get("epsAvg")
+            years_out = furthest_idx + 1
+
+            if furthest_eps and furthest_eps > 0 and years_out > 0:
+                try:
+                    forward_cagr = (furthest_eps / current_eps) ** (1 / years_out) - 1
+                    stock["est_lt_growth"] = round(forward_cagr, 4)
+                except (ValueError, ZeroDivisionError, OverflowError):
+                    pass
+    elif isinstance(estimates, dict) and estimates:
+        # Backward compatibility: single dict format
+        forward_eps = estimates.get("epsAvg")
+        if forward_eps and forward_eps > 0 and price:
+            stock["forward_pe"] = round(price / forward_eps, 2)
 
     # --- EPS Growth from financial-growth ---
     eps_g = growth.get("epsgrowth")
@@ -487,18 +513,17 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
     if rev_g is not None:
         stock["revenue_growth_yoy"] = round(rev_g, 4)
 
-    # --- Long-term Growth estimate ---
-    # FMP fiveYNetIncomeGrowthPerShare is cumulative (e.g., 2.69 = 269% over 5 years).
-    # Convert to annualized CAGR: (1 + cumulative)^(1/5) - 1
-    # Example: 269% over 5 years → (1+2.69)^0.2 - 1 = 0.298 = 29.8% annual
-    lt_g = growth.get("fiveYNetIncomeGrowthPerShare")
-    if lt_g is not None:
-        try:
-            cagr = (1 + lt_g) ** (1 / 5) - 1
-            stock["est_lt_growth"] = round(cagr, 4)
-        except (ValueError, ZeroDivisionError):
-            # If lt_g < -1 (e.g., -1.5 = company lost 150% over 5y), pow fails
-            stock["est_lt_growth"] = None
+    # --- Long-term Growth estimate (fallback) ---
+    # Only use historical 5Y growth if forward analyst estimates didn't provide est_lt_growth.
+    # Forward estimates (computed above from analyst EPS forecasts) are preferred.
+    if stock.get("est_lt_growth") is None:
+        lt_g = growth.get("fiveYNetIncomeGrowthPerShare")
+        if lt_g is not None:
+            try:
+                cagr = (1 + lt_g) ** (1 / 5) - 1
+                stock["est_lt_growth"] = round(cagr, 4)
+            except (ValueError, ZeroDivisionError):
+                pass
 
     # --- Analyst Target Price ---
     target_price = targets.get("lastQuarterAvgPriceTarget")
