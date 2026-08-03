@@ -297,7 +297,13 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
 # ==========================================
 
 def fmp_get(path: str, api_key: str, params: dict = None):
-    """Make a GET request to FMP stable API. Returns parsed JSON or empty list."""
+    """
+    Make a GET request to FMP stable API.
+    Returns:
+      - Parsed JSON (list or dict) on success
+      - [] on HTTP 200 with empty response (stock doesn't exist)
+      - None on error (timeout, 5xx, network failure) — caller should NOT assume stock doesn't exist
+    """
     url = f"{FMP_BASE}/{path}"
     query_parts = [f"apikey={api_key}"]
     if params:
@@ -310,20 +316,19 @@ def fmp_get(path: str, api_key: str, params: dict = None):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code != 404:
-            print(f"    FMP {path} error: HTTP {e.code}")
-        return []
+        if e.code == 404:
+            return []  # Stock doesn't exist — legitimate empty
+        print(f"    FMP {path} error: HTTP {e.code}")
+        return None  # Error — not "doesn't exist"
     except Exception as e:
         print(f"    FMP {path} error: {e}")
-        return []
+        return None  # Transient failure
 
 
 def fetch_fmp_ratios(symbol: str, api_key: str) -> dict:
     """
     Fetch TTM ratios from FMP. 1 API call, 62 fields.
-    Key fields: priceToEarningsRatioTTM, priceToEarningsGrowthRatioTTM,
-    priceToFreeCashFlowRatioTTM, debtToEquityRatioTTM, quickRatioTTM,
-    operatingProfitMarginTTM, interestCoverageRatioTTM
+    Returns dict of ratios on success, {} if not found or error.
     """
     data = fmp_get("ratios-ttm", api_key, {"symbol": symbol})
     if data and isinstance(data, list) and data[0]:
@@ -331,16 +336,20 @@ def fetch_fmp_ratios(symbol: str, api_key: str) -> dict:
     return {}
 
 
-def fetch_fmp_profile(symbol: str, api_key: str) -> dict:
+def fetch_fmp_profile(symbol: str, api_key: str) -> dict | None:
     """
     Fetch company profile. 1 API call.
-    Returns: companyName, description, image (logo URL), website,
-    sector, industry, price, marketCap, beta, ceo, exchange, country
+    Returns:
+      - dict with profile data on success
+      - {} if FMP returned empty array (stock genuinely doesn't exist)
+      - None if API call failed (transient error — stock may still exist)
     """
     data = fmp_get("profile", api_key, {"symbol": symbol})
-    if data and isinstance(data, list) and data[0]:
+    if data is None:
+        return None  # Transient failure — don't skip this stock
+    if isinstance(data, list) and data:
         return data[0]
-    return {}
+    return {}  # Empty response — stock doesn't exist in FMP
 
 
 def fetch_fmp_growth(symbol: str, api_key: str) -> dict:
@@ -484,7 +493,11 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
 
         # Forward LT Growth: CAGR from current EPS to furthest available estimate (up to 3 years)
         # Use the furthest year available (prefer 3rd, fall back to 2nd, then 1st)
-        current_eps = stock.get("eps")  # TTM EPS from EDGAR
+        # Get current EPS: from FMP ratios (netIncomePerShareTTM), EDGAR, or price/PE
+        current_eps = ratios.get("netIncomePerShareTTM") or stock.get("eps")
+        if not current_eps and price and stock.get("pe_ratio") and stock["pe_ratio"] > 0:
+            current_eps = price / stock["pe_ratio"]
+
         if current_eps and current_eps > 0:
             # Pick the furthest future estimate (up to index 2 = year 3)
             furthest_idx = min(2, len(estimates) - 1)  # 0-indexed: 0=yr1, 1=yr2, 2=yr3
@@ -602,12 +615,18 @@ def handler(event, context):
         ratios = fetch_fmp_ratios(symbol, fmp_key)
         profile = fetch_fmp_profile(symbol, fmp_key)
 
-        # If FMP has no profile data, this ticker doesn't exist on major exchanges.
-        # Skip it — it's likely an OTC/historical variant from EDGAR.
-        if not profile:
+        # Distinguish: profile={} means stock doesn't exist in FMP (GOOGN-type ghost)
+        #              profile=None means transient API failure (proceed without profile)
+        #              profile={...} means success
+        if profile == {}:
+            # Stock genuinely doesn't exist on major exchanges — exclude entirely
             print(f"    {symbol}: not found in FMP (OTC/historical?), skipping")
             stock["_fmp_excluded"] = True
             continue
+        elif profile is None:
+            # Transient failure — proceed with enrichment using whatever data we got
+            print(f"    {symbol}: FMP profile call failed (transient), proceeding without")
+            profile = {}
 
         growth = fetch_fmp_growth(symbol, fmp_key)
         estimates = fetch_fmp_estimates(symbol, fmp_key)
