@@ -296,13 +296,17 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
 # STAGE 3: FMP enrichment (only candidates)
 # ==========================================
 
-def fmp_get(path: str, api_key: str, params: dict = None):
+def fmp_get(path: str, api_key: str, params: dict = None, max_retries: int = 3):
     """
-    Make a GET request to FMP stable API.
+    Make a GET request to FMP stable API with retry on transient failures.
+
+    Retries up to max_retries times with exponential backoff (2s, 4s, 8s)
+    for timeouts and server errors (5xx).
+
     Returns:
       - Parsed JSON (list or dict) on success
-      - [] on HTTP 200 with empty response (stock doesn't exist)
-      - None on error (timeout, 5xx, network failure) — caller should NOT assume stock doesn't exist
+      - [] on HTTP 200 with empty response OR HTTP 404 (stock doesn't exist)
+      - None only after all retries exhausted (genuine persistent failure)
     """
     url = f"{FMP_BASE}/{path}"
     query_parts = [f"apikey={api_key}"]
@@ -311,18 +315,42 @@ def fmp_get(path: str, api_key: str, params: dict = None):
             query_parts.append(f"{k}={v}")
     url += "?" + "&".join(query_parts)
 
-    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return []  # Stock doesn't exist — legitimate empty
-        print(f"    FMP {path} error: HTTP {e.code}")
-        return None  # Error — not "doesn't exist"
-    except Exception as e:
-        print(f"    FMP {path} error: {e}")
-        return None  # Transient failure
+    for attempt in range(max_retries):
+        req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return []  # Stock genuinely doesn't exist
+            if e.code == 429:
+                # Rate limited — wait longer and retry
+                wait = (attempt + 1) * 5
+                print(f"    FMP {path}: rate limited (429), waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            if e.code >= 500:
+                # Server error — retry with backoff
+                wait = 2 ** (attempt + 1)
+                print(f"    FMP {path}: server error ({e.code}), retry {attempt+1}/{max_retries} in {wait}s...")
+                time.sleep(wait)
+                continue
+            # Client error (4xx other than 404/429) — don't retry
+            print(f"    FMP {path} error: HTTP {e.code}")
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # Network timeout or connection failure — retry with backoff
+            wait = 2 ** (attempt + 1)
+            print(f"    FMP {path}: timeout/network error, retry {attempt+1}/{max_retries} in {wait}s...")
+            time.sleep(wait)
+            continue
+        except Exception as e:
+            print(f"    FMP {path} unexpected error: {e}")
+            return None
+
+    # All retries exhausted
+    print(f"    FMP {path}: FAILED after {max_retries} retries")
+    return None
 
 
 def fetch_fmp_ratios(symbol: str, api_key: str) -> dict:
