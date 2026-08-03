@@ -22,8 +22,8 @@ const FILTER_CONFIG = [
   { key: 'operating_margin', label: 'Operating Margin %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
   { key: 'operating_income_growth_yoy', label: 'Op Income Growth % (trailing or forward)', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
   { key: 'revenue_growth_yoy', label: 'Revenue Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
-  { key: 'est_lt_growth', label: 'LT Growth % (soft — partial coverage)', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
-  { key: 'target_price_upside', label: 'Target Upside % (deferred — no data)', type: 'min', default: 20, min: 20, max: 100, step: 5, format: 'percent' },
+  { key: 'est_lt_growth', label: 'LT Growth %', type: 'min', default: 0, min: -50, max: 50, step: 5, format: 'percent' },
+  { key: 'target_price_upside', label: 'Target Upside %', type: 'min', default: 0, min: 0, max: 100, step: 5, format: 'percent' },
 ];
 
 export interface FilterValues {
