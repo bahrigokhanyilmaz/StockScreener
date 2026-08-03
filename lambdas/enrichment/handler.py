@@ -280,10 +280,10 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             and de_passes
             and qr is not None and qr > 1
             and om is not None and om > 0
-            # op_income_growth: allow negative trailing through — will be evaluated in full screen
-            # with FMP forward growth as override
-            and op_income_g is not None
-            and rev_g is not None and rev_g > 0
+            # Growth fields: allow None through (full screen will skip if absent)
+            # Only reject if data EXISTS and is clearly negative
+            and (op_income_g is None or op_income_g > -0.5)
+            and (rev_g is None or rev_g > -0.5)
         )
 
         if passes_prefilter:
@@ -366,18 +366,28 @@ def fetch_fmp_ratios(symbol: str, api_key: str) -> dict:
 
 def fetch_fmp_profile(symbol: str, api_key: str) -> dict | None:
     """
-    Fetch company profile. 1 API call.
+    Fetch company profile. Retries if FMP returns empty (FMP sometimes
+    returns [] for valid stocks on transient data issues).
+
     Returns:
       - dict with profile data on success
-      - {} if FMP returned empty array (stock genuinely doesn't exist)
-      - None if API call failed (transient error — stock may still exist)
+      - {} if consistently empty after retries (stock may not exist)
+      - None if API errors persist after retries
     """
     data = fmp_get("profile", api_key, {"symbol": symbol})
     if data is None:
-        return None  # Transient failure — don't skip this stock
+        return None  # All retries failed with errors
+
     if isinstance(data, list) and data:
-        return data[0]
-    return {}  # Empty response — stock doesn't exist in FMP
+        return data[0]  # Success
+
+    # Got empty [] — FMP sometimes does this transiently. Retry once more.
+    time.sleep(2)
+    data = fmp_get("profile", api_key, {"symbol": symbol})
+    if data and isinstance(data, list) and data:
+        return data[0]  # Succeeded on retry
+
+    return {}  # Consistently empty — stock likely doesn't exist
 
 
 def fetch_fmp_growth(symbol: str, api_key: str) -> dict:
