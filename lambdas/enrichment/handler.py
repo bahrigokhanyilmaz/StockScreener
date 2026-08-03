@@ -575,16 +575,23 @@ def handler(event, context):
 
         # Fetch all FMP data for this stock
         ratios = fetch_fmp_ratios(symbol, fmp_key)
+        profile = fetch_fmp_profile(symbol, fmp_key)
+
+        # If FMP has no profile data, this ticker doesn't exist on major exchanges.
+        # Skip it — it's likely an OTC/historical variant from EDGAR.
+        if not profile:
+            print(f"    {symbol}: not found in FMP (OTC/historical?), skipping")
+            stock["_fmp_excluded"] = True
+            continue
+
         growth = fetch_fmp_growth(symbol, fmp_key)
         estimates = fetch_fmp_estimates(symbol, fmp_key)
         targets = fetch_fmp_targets(symbol, fmp_key)
         grades_score = fetch_fmp_grades(symbol, fmp_key)
-        profile = fetch_fmp_profile(symbol, fmp_key)
 
         # Apply FMP data to stock
-        if ratios or profile:
-            enrich_with_fmp(stock, ratios, growth, estimates, targets, profile, grades_score)
-            fmp_enriched += 1
+        enrich_with_fmp(stock, ratios, growth, estimates, targets, profile, grades_score)
+        fmp_enriched += 1
 
         if (i + 1) % 10 == 0:
             print(f"    [{i+1}/{len(candidates)}] enriched {fmp_enriched}")
@@ -594,7 +601,8 @@ def handler(event, context):
         if i < len(candidates) - 1:
             time.sleep(1)
 
-    # Output: return ALL stocks (enriched candidates + non-candidates with just price/P/E)
+    # Output: return ALL stocks EXCEPT those excluded by FMP (not on major exchanges)
+    all_enriched = [s for s in all_enriched if not s.get("_fmp_excluded")]
     end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds()
 

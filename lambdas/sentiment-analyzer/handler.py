@@ -207,14 +207,18 @@ def calculate_aggregate_sentiment(analyzed_articles: list) -> dict:
         # Track risk flags with the article's publication date
         for flag in analysis.get("risk_flags", []):
             all_risk_flags.append(flag)
-            pub_time = article.get("published_at", 0)
-            # Convert ms timestamp to date string
-            if pub_time and pub_time > 0:
+            pub_time = article.get("published_at", "")
+            # Handle both formats:
+            # - FMP: "2026-08-02 08:53:01" (string)
+            # - Legacy TickerTick: Unix timestamp in ms (integer)
+            pub_date = ""
+            if isinstance(pub_time, str) and pub_time:
+                # FMP format: "2026-08-02 08:53:01" → take date part
+                pub_date = pub_time[:10]
+            elif isinstance(pub_time, (int, float)) and pub_time > 0:
                 from datetime import datetime, timezone
                 ts = pub_time / 1000 if pub_time > 1e12 else pub_time
                 pub_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-            else:
-                pub_date = ""
             # Keep the earliest publication date per flag
             if flag not in risk_flag_dates or (pub_date and pub_date < risk_flag_dates[flag]):
                 risk_flag_dates[flag] = pub_date

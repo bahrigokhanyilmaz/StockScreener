@@ -327,10 +327,17 @@ function sentimentColor(score: number | null): string {
   return '#f59e0b';
 }
 
-function formatTimeAgo(timestamp: number): string {
+function formatTimeAgo(timestamp: number | string): string {
   const now = Date.now();
-  const ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
+  let ms: number;
+  if (typeof timestamp === 'string') {
+    // FMP format: "2026-08-02 08:53:01"
+    ms = new Date(timestamp.replace(' ', 'T') + 'Z').getTime();
+  } else {
+    ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
+  }
   const diff = now - ms;
+  if (diff < 0) return 'just now';
   const hours = Math.floor(diff / 3600000);
   if (hours < 1) return 'just now';
   if (hours < 24) return `${hours}h ago`;
