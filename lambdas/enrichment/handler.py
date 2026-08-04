@@ -247,9 +247,28 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     except Exception as e:
         print(f"  Warning: Could not compute industry P/E quartiles: {e}")
 
-    # All stocks that passed Step 2 are candidates for FMP enrichment.
-    # No second filter — Step 2 already decided they qualify.
-    candidates = [s for s in all_enriched if s.get("price") is not None]
+    # Price-dependent pre-filter: only checks conditions Step 2 cannot evaluate
+    # (Step 2 has no prices, so it can't compute P/E, PEG, or P/FCF)
+    for stock in all_enriched:
+        price = stock.get("price")
+        pe = stock.get("pe_ratio")
+        peg = stock.get("peg_ratio")
+        pfcf = stock.get("price_to_fcf")
+
+        if price is None:
+            continue
+
+        pe_threshold = stock.get("_pe_industry_q1") or 50
+        pe_passes = pe is not None and pe > 0 and pe < pe_threshold
+
+        passes = (
+            pe_passes
+            and peg is not None and peg < 1.0
+            and pfcf is not None and pfcf < 20
+        )
+
+        if passes:
+            candidates.append(stock)
 
     return candidates, all_enriched, industry_pe_quartiles
 
