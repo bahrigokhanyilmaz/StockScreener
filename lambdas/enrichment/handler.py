@@ -672,12 +672,13 @@ def handler(event, context):
             time.sleep(1)
 
     # Output: return ALL stocks EXCEPT those excluded by FMP (not on major exchanges)
-    all_enriched = [s for s in all_enriched if not s.get("_fmp_excluded")]
+    # Remove excluded stocks from candidates (not found in FMP, or below market cap)
+    final_candidates = [s for s in candidates if not s.get("_fmp_excluded")]
     end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds()
 
-    pe_count = sum(1 for s in all_enriched if s.get("pe_ratio") is not None)
-    peg_count = sum(1 for s in all_enriched if s.get("peg_ratio") is not None)
+    pe_count = sum(1 for s in final_candidates if s.get("pe_ratio") is not None)
+    peg_count = sum(1 for s in final_candidates if s.get("peg_ratio") is not None)
 
     # Persist industry P/E quartiles to DynamoDB (for full screen + dashboard)
     if industry_pe_quartiles:
@@ -705,10 +706,10 @@ def handler(event, context):
             print(f"  Warning: Could not persist P/E quartiles: {e}")
 
     result = {
-        "enriched_stocks": all_enriched,
+        "enriched_stocks": final_candidates,
         "metadata": {
             "total_stocks": len(passing),
-            "prices_matched": sum(1 for s in all_enriched if s.get("price")),
+            "prices_matched": sum(1 for s in final_candidates if s.get("price")),
             "local_prefilter_pass": len(candidates),
             "fmp_enriched": fmp_enriched,
             "pe_available": pe_count,
