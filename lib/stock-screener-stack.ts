@@ -382,7 +382,7 @@ export class StockScreenerStack extends cdk.Stack {
 
     const step4_fullScreen = new tasks.LambdaInvoke(this, 'FullScreen', {
       lambdaFunction: stockScreener,
-      comment: 'Step 4: Full screen with price-based filters (P/E, Price/FCF)',
+      comment: 'Step 4: Compute fundamental score + apply soft filters',
       payloadResponseOnly: true,
       retryOnServiceExceptions: true,
     });
