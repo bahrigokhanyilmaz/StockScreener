@@ -247,49 +247,9 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     except Exception as e:
         print(f"  Warning: Could not compute industry P/E quartiles: {e}")
 
-    # Step 3: Pre-filter using industry-relative P/E
-    for stock in all_enriched:
-        price = stock.get("price")
-        pe = stock.get("pe_ratio")
-        peg = stock.get("peg_ratio")
-        pfcf = stock.get("price_to_fcf")
-        de = stock.get("debt_to_equity")
-        icr = stock.get("interest_coverage_ratio")
-        qr = stock.get("quick_ratio")
-        om = stock.get("operating_margin")
-        rev_g = stock.get("revenue_growth_yoy")
-
-        # P/E must be below industry lower quartile (cheaper than 75% of peers)
-        # Fallback to P/E < 50 if no industry data available
-        pe_threshold = stock.get("_pe_industry_q1") or 50
-        pe_passes = pe is not None and pe > 0 and pe < pe_threshold
-
-        # D/E: same rule as full screen — D/E ≤ 1.0 OR ICR > 3.0
-        de_passes = (
-            (de is not None and de <= 1.0)
-            or (de is not None and icr is not None and icr > 3.0)
-        )
-
-        # Operating margin: > 0% OR revenue growth > 20% (override)
-        om_passes = (
-            (om is not None and om > 0)
-            or (om is not None and rev_g is not None and rev_g > 0.20)
-            or om is None  # Allow through if no data (full screen decides)
-        )
-
-        passes_prefilter = (
-            price is not None
-            and pe_passes
-            and peg is not None and peg < 1.0
-            and pfcf is not None and pfcf < 20
-            and de_passes
-            and qr is not None and qr > 1
-            and om_passes
-            and (rev_g is None or rev_g > -0.5)  # Allow None or mildly negative through
-        )
-
-        if passes_prefilter:
-            candidates.append(stock)
+    # All stocks that passed Step 2 are candidates for FMP enrichment.
+    # No second filter — Step 2 already decided they qualify.
+    candidates = [s for s in all_enriched if s.get("price") is not None]
 
     return candidates, all_enriched, industry_pe_quartiles
 
