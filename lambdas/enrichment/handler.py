@@ -667,6 +667,13 @@ def handler(event, context):
             # Transient failure — proceed with enrichment using whatever data we got
             print(f"    {symbol}: FMP profile call failed (transient), proceeding without")
             profile = {}
+        else:
+            # Profile exists — enforce market cap floor ($300M minimum)
+            mcap = profile.get("marketCap", 0) or 0
+            if mcap < 300_000_000:
+                print(f"    {symbol}: market cap ${mcap/1e6:.0f}M < $300M floor, skipping")
+                stock["_fmp_excluded"] = True
+                continue
 
         growth = fetch_fmp_growth(symbol, fmp_key)
         estimates = fetch_fmp_estimates(symbol, fmp_key)

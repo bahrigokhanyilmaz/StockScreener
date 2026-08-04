@@ -143,6 +143,67 @@ def _normalize_articles(data: list, symbol: str) -> list[dict]:
     return articles
 
 
+def fetch_tickertick_news(symbol: str, max_articles: int = 10) -> list[dict]:
+    """
+    Fetch news from TickerTick (free, no API key needed).
+    Catches articles from sources FMP doesn't cover (tickerreport, gurufocus, sec.gov, etc.)
+    Rate limit: 10 req/min — caller must pace.
+    """
+    url = f"https://api.tickertick.com/feed?q=tt:{symbol.lower()}&lang=en&n={max_articles}"
+    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+        stories = data.get("stories", [])
+        articles = []
+        for story in stories:
+            ts = story.get("time", 0)
+            # Convert ms timestamp to date string
+            pub_date = ""
+            if ts and ts > 0:
+                from datetime import datetime as dt
+                pub_date = dt.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            articles.append({
+                "title": story.get("title", ""),
+                "description": story.get("description", ""),
+                "url": story.get("url", ""),
+                "source": story.get("site", ""),
+                "published_at": pub_date,
+                "image": "",
+                "ticker": symbol,
+            })
+        return articles
+    except Exception as e:
+        print(f"  TickerTick error for {symbol}: {e}")
+        return []
+
+
+def merge_and_deduplicate(fmp_articles: list, tt_articles: list) -> list:
+    """
+    Merge articles from FMP and TickerTick, removing duplicates by title similarity.
+    FMP articles take priority (they have better text summaries).
+    """
+    # Use first 50 chars of lowercase title as dedup key
+    seen_titles = set()
+    merged = []
+
+    # FMP first (preferred)
+    for a in fmp_articles:
+        key = a.get("title", "").lower()[:50]
+        if key and key not in seen_titles:
+            seen_titles.add(key)
+            merged.append(a)
+
+    # Then TickerTick (adds coverage FMP doesn't have)
+    for a in tt_articles:
+        key = a.get("title", "").lower()[:50]
+        if key and key not in seen_titles:
+            seen_titles.add(key)
+            merged.append(a)
+
+    return merged
+
+
 def store_raw_news(bucket_name: str, data: list, symbol: str):
     """Store raw news data in S3, organized by date and ticker."""
     now = datetime.now(timezone.utc)
@@ -250,14 +311,28 @@ def handler(event, context):
         if batch_start + BATCH_SIZE < len(symbols):
             time.sleep(RATE_LIMIT_DELAY)
 
-    # For any stock that got 0 articles from batching, try individual fetch
+    # For any stock that got 0 articles from batching, try individual FMP fetch
     for sym in symbols:
         if not all_fetched.get(sym):
             articles = fetch_news_for_ticker(sym, api_key)
             all_fetched[sym] = articles
             if articles:
-                print(f"  {sym}: fallback individual fetch → {len(articles)} articles")
+                print(f"  {sym}: fallback individual FMP fetch → {len(articles)} articles")
             time.sleep(0.5)
+
+    # Merge with TickerTick (catches sources FMP misses: sec.gov, tickerreport, gurufocus)
+    # TickerTick rate limit: 10 req/min → 6.5s pacing
+    print(f"  Fetching TickerTick for {len(symbols)} stocks...")
+    for sym in symbols:
+        tt_articles = fetch_tickertick_news(sym, max_articles=10)
+        fmp_articles = all_fetched.get(sym, [])
+        if tt_articles:
+            merged = merge_and_deduplicate(fmp_articles, tt_articles)
+            new_count = len(merged) - len(fmp_articles)
+            if new_count > 0:
+                print(f"    {sym}: +{new_count} from TickerTick (total {len(merged)})")
+            all_fetched[sym] = merged
+        time.sleep(6.5)  # TickerTick: 10 req/min
 
     # Build output
     for symbol in symbols:
