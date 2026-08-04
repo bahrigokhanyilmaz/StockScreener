@@ -283,12 +283,12 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                 passed_count += 1
                 continue
 
-        # CONDITIONAL OVERRIDE: Operating Income Growth can be overridden by forward growth estimates.
-        # A company with negative trailing operating income growth but positive analyst forward
-        # estimates is experiencing a temporary dip (e.g., heavy investment phase) — not structural decline.
-        if filter_name == "operating_income_growth_yoy" and not passes:
-            forward_growth = stock.get("est_lt_growth")
-            if forward_growth is not None and forward_growth > 0:
+        # CONDITIONAL OVERRIDE: Operating Margin can be overridden by high revenue growth.
+        # A company with negative operating margin but >20% revenue growth is likely
+        # investing heavily to capture market share — negative margins are strategic, not structural.
+        if filter_name == "operating_margin" and not passes:
+            rev_growth = stock.get("revenue_growth_yoy")
+            if rev_growth is not None and rev_growth > 0.20:
                 passes = True
                 filter_results[filter_name] = {
                     "value": value,
@@ -296,9 +296,9 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
                     "type": filter_type,
                     "passes": True,
                     "skipped": False,
-                    "override": "forward_growth_estimate",
-                    "override_value": round(forward_growth * 100, 1),
-                    "override_reason": f"Trailing op income growth {value*100:.1f}% is negative, but forward estimate is +{forward_growth*100:.1f}%",
+                    "override": "high_revenue_growth",
+                    "override_value": round(rev_growth * 100, 1),
+                    "override_reason": f"Operating margin {value*100:.1f}% is negative, but revenue growing {rev_growth*100:.1f}% (>20%)",
                 }
                 evaluated_count += 1
                 passed_count += 1
@@ -374,7 +374,7 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
     # Step 2: Join industry to all stocks in memory
     metrics_to_compute = [
         "pe_ratio", "debt_to_equity", "quick_ratio", "operating_margin",
-        "operating_income_growth_yoy", "revenue_growth_yoy",
+        "revenue_growth_yoy",
     ]
 
     # Group metric values by industry

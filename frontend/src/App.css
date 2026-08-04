@@ -1359,3 +1359,35 @@ th.sticky-col {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ===== Toggle Filters ===== */
+.toggle-section {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #334155;
+}
+
+.toggle-section h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.toggle-row.active {
+  color: #f1f5f9;
+}
+
+.toggle-row input[type="checkbox"] {
+  accent-color: #2563eb;
+}

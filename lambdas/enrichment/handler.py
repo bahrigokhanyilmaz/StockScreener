@@ -257,8 +257,6 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
         icr = stock.get("interest_coverage_ratio")
         qr = stock.get("quick_ratio")
         om = stock.get("operating_margin")
-        eps_g = stock.get("eps_growth_yoy")
-        op_income_g = stock.get("operating_income_growth_yoy")
         rev_g = stock.get("revenue_growth_yoy")
 
         # P/E must be below industry lower quartile (cheaper than 75% of peers)
@@ -272,6 +270,13 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             or (de is not None and icr is not None and icr > 3.0)
         )
 
+        # Operating margin: > 0% OR revenue growth > 20% (override)
+        om_passes = (
+            (om is not None and om > 0)
+            or (om is not None and rev_g is not None and rev_g > 0.20)
+            or om is None  # Allow through if no data (full screen decides)
+        )
+
         passes_prefilter = (
             price is not None
             and pe_passes
@@ -279,11 +284,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             and pfcf is not None and pfcf < 20
             and de_passes
             and qr is not None and qr > 1
-            and om is not None and om > 0
-            # Growth fields: allow None through (full screen will skip if absent)
-            # Only reject if data EXISTS and is clearly negative
-            and (op_income_g is None or op_income_g > -0.5)
-            and (rev_g is None or rev_g > -0.5)
+            and om_passes
+            and (rev_g is None or rev_g > -0.5)  # Allow None or mildly negative through
         )
 
         if passes_prefilter:

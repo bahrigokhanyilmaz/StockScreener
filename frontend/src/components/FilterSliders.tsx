@@ -3,31 +3,32 @@ import { useState } from 'react';
 /**
  * FilterSliders Component
  *
- * Lets you adjust KPI thresholds with sliders and instantly re-filter
- * the stock table. This is client-side exploration — it re-filters the
- * data already loaded from the API, no additional API calls needed.
+ * Two types of client-side filters:
+ * 1. Sliders — always active, mirror pipeline hard filters, can only tighten
+ * 2. Toggles — off by default, opt-in restrictions for analyst/growth data
  *
- * The slider config comes from screener-filters.json (same source of truth
- * the backend uses). When you move a slider, the parent re-filters stocks.
+ * All filtering is client-side (no API calls). Stocks already passed the pipeline.
  */
 
-// Filter definitions matching shared/config/screener-filters.json
-// Slider ranges capped at pipeline defaults — you can only tighten, not loosen
-// (loosening would show no additional stocks since the pipeline already filtered them)
-const FILTER_CONFIG = [
+// Slider filters: always active, match pipeline hard filter thresholds
+const SLIDER_CONFIG = [
   { key: 'peg_ratio', label: 'PEG Ratio', type: 'max', default: 1.0, min: 0.1, max: 1.0, step: 0.1, format: 'ratio' },
   { key: 'price_to_fcf', label: 'Price / FCF', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
   { key: 'debt_to_equity', label: 'Debt / Equity', type: 'max', default: 1.0, min: 0.0, max: 1.0, step: 0.1, format: 'ratio' },
   { key: 'quick_ratio', label: 'Quick Ratio', type: 'min', default: 1.0, min: 1.0, max: 5.0, step: 0.1, format: 'ratio' },
-  { key: 'operating_margin', label: 'Operating Margin %', type: 'min', default: 0, min: 0, max: 50, step: 1, format: 'percent' },
-  { key: 'operating_income_growth_yoy', label: 'Op Income Growth % (trailing or forward)', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
   { key: 'revenue_growth_yoy', label: 'Revenue Growth %', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
-  { key: 'est_lt_growth', label: 'LT Growth %', type: 'min', default: 0, min: -50, max: 50, step: 5, format: 'percent' },
-  { key: 'target_price_upside', label: 'Target Upside %', type: 'min', default: 0, min: 0, max: 100, step: 5, format: 'percent' },
+];
+
+// Toggle filters: off by default, opt-in
+const TOGGLE_CONFIG = [
+  { key: 'toggle_analyst_rec', field: 'analyst_recommendation', type: 'max', threshold: 3.0, label: 'Analyst Rec ≤ 3.0 (Hold or better)' },
+  { key: 'toggle_target_upside', field: 'target_price_upside', type: 'min', threshold: 0.20, label: 'Target Upside ≥ 20%' },
+  { key: 'toggle_lt_growth', field: 'est_lt_growth', type: 'min', threshold: 0.0, label: 'EPS Growth 5Y > 0%' },
+  { key: 'toggle_pos_margin', field: 'operating_margin', type: 'min', threshold: 0.0, label: 'Positive Operating Margin' },
 ];
 
 export interface FilterValues {
-  [key: string]: number;
+  [key: string]: number | boolean;
 }
 
 interface Props {
@@ -40,32 +41,56 @@ interface Props {
 
 export function getDefaultFilters(): FilterValues {
   const defaults: FilterValues = {};
-  for (const f of FILTER_CONFIG) {
+  for (const f of SLIDER_CONFIG) {
     defaults[f.key] = f.default;
+  }
+  for (const t of TOGGLE_CONFIG) {
+    defaults[t.key] = false;
   }
   return defaults;
 }
 
 export function applyFilters(stocks: Record<string, unknown>[], filters: FilterValues): Record<string, unknown>[] {
   return stocks.filter(stock => {
-    for (const config of FILTER_CONFIG) {
+    // Apply slider filters
+    for (const config of SLIDER_CONFIG) {
       const value = stock[config.key] as number | null | undefined;
       if (value === null || value === undefined) continue; // Skip if no data
 
-      const threshold = filters[config.key];
-      // Convert percent filters: slider shows 20 (meaning 20%), data stores 0.20
+      const threshold = filters[config.key] as number;
       const effectiveThreshold = config.format === 'percent' ? threshold / 100 : threshold;
 
       if (config.type === 'max' && value > effectiveThreshold) {
-        // D/E override: skip if Interest Coverage Ratio > 3.0 (debt is serviceable)
+        // D/E override: skip if Interest Coverage Ratio > 3.0
         if (config.key === 'debt_to_equity') {
           const icr = stock['interest_coverage_ratio'] as number | null | undefined;
-          if (icr !== null && icr !== undefined && icr > 3.0) continue; // override
+          if (icr !== null && icr !== undefined && icr > 3.0) continue;
         }
         return false;
       }
-      if (config.type === 'min' && value < effectiveThreshold) return false;
+      if (config.type === 'min' && value < effectiveThreshold) {
+        // Operating margin override: skip if revenue growth > 20%
+        if (config.key === 'operating_margin') {
+          const revG = stock['revenue_growth_yoy'] as number | null | undefined;
+          if (revG !== null && revG !== undefined && revG > 0.20) continue;
+        }
+        return false;
+      }
     }
+
+    // Apply toggle filters (only when toggled ON)
+    for (const toggle of TOGGLE_CONFIG) {
+      if (!filters[toggle.key]) continue; // Toggle is off — don't filter
+
+      const value = stock[toggle.field] as number | null | undefined;
+      // Toggle filters EXCLUDE stocks with null data (that's the point —
+      // "only show stocks WITH analyst coverage that meets threshold")
+      if (value === null || value === undefined) return false;
+
+      if (toggle.type === 'max' && value > toggle.threshold) return false;
+      if (toggle.type === 'min' && value < toggle.threshold) return false;
+    }
+
     return true;
   });
 }
@@ -75,6 +100,10 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
 
   function handleSliderChange(key: string, value: number) {
     onChange({ ...filters, [key]: value });
+  }
+
+  function handleToggleChange(key: string) {
+    onChange({ ...filters, [key]: !filters[key] });
   }
 
   return (
@@ -94,8 +123,8 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
 
       {!collapsed && (
         <div className="filter-sliders">
-          {FILTER_CONFIG.map(config => {
-            const value = filters[config.key];
+          {SLIDER_CONFIG.map(config => {
+            const value = filters[config.key] as number;
             const isDefault = value === config.default;
 
             return (
@@ -122,6 +151,20 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
               </div>
             );
           })}
+
+          <div className="toggle-section">
+            <h4>Optional Restrictions</h4>
+            {TOGGLE_CONFIG.map(toggle => (
+              <label key={toggle.key} className={`toggle-row ${filters[toggle.key] ? 'active' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={!!filters[toggle.key]}
+                  onChange={() => handleToggleChange(toggle.key)}
+                />
+                <span>{toggle.label}</span>
+              </label>
+            ))}
+          </div>
         </div>
       )}
     </div>

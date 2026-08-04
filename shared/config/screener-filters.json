@@ -1,9 +1,9 @@
 {
-  "description": "Default stock screening filters based on value investing criteria",
+  "description": "Stock screening filters. Hard filters are always enforced by the pipeline. Toggle filters are optional client-side restrictions.",
   "universe": {
     "min_market_cap": 300000000,
     "min_market_cap_label": "Minimum Market Cap ($)",
-    "min_market_cap_description": "Pre-filter for liquidity. Only stocks above this market cap are included in the scannable universe. Configurable — increase for large-cap focus, decrease to include small-caps.",
+    "min_market_cap_description": "Pre-filter for liquidity. Only stocks above this market cap are included in the scannable universe.",
     "exchanges": ["NYSE", "NASDAQ"],
     "exclude_types": ["ETF", "warrant", "right", "unit", "preferred"],
     "universe_refresh_frequency": "weekly",
@@ -20,17 +20,7 @@
       "step": 1,
       "data_format": "ratio",
       "industry_relative": true,
-      "description": "P/E must be below the lower quartile (25th percentile) of the stock's SEC SIC industry group. The hardcoded threshold is a fallback only when industry data is unavailable."
-    },
-    "forward_pe": {
-      "label": "Forward P/E",
-      "type": "max",
-      "default": 20,
-      "min": 5,
-      "max": 50,
-      "step": 1,
-      "data_format": "ratio",
-      "description": "P/E based on estimated future earnings. Lower = cheaper on projected growth."
+      "description": "P/E must be below the lower quartile (25th percentile) of the stock's SEC SIC industry group."
     },
     "peg_ratio": {
       "label": "PEG Ratio",
@@ -60,7 +50,8 @@
       "max": 3.0,
       "step": 0.1,
       "data_format": "ratio",
-      "description": "Total debt relative to shareholders equity. Below 1 = conservative balance sheet."
+      "override": "icr_gt_3",
+      "description": "Total debt relative to shareholders equity. Below 1 = conservative balance sheet. Override: passes if ICR > 3.0."
     },
     "quick_ratio": {
       "label": "Quick Ratio",
@@ -80,17 +71,8 @@
       "max": 50,
       "step": 1,
       "data_format": "percent_as_decimal",
-      "description": "Percentage of revenue kept after operating costs. Positive = profitable operations."
-    },
-    "operating_income_growth_yoy": {
-      "label": "Op Income Growth YoY (%)",
-      "type": "min",
-      "default": 0,
-      "min": -50,
-      "max": 100,
-      "step": 1,
-      "data_format": "percent_as_decimal",
-      "description": "Operating income growth year-over-year. Measures core business profit growth without tax/debt/one-time noise."
+      "override": "revenue_growth_gt_20",
+      "description": "Percentage of revenue kept after operating costs. Override: passes if Revenue Growth > 20% (investing heavily for growth)."
     },
     "revenue_growth_yoy": {
       "label": "Revenue Growth YoY (%)",
@@ -101,60 +83,45 @@
       "step": 1,
       "data_format": "percent_as_decimal",
       "description": "Revenue growth year-over-year. Positive = growing revenue."
-    },
-    "est_lt_growth": {
-      "label": "Est. LT Growth (%)",
-      "type": "min",
-      "default": 0,
-      "min": -10,
-      "max": 50,
-      "step": 1,
-      "data_format": "percent_as_decimal",
-      "description": "Analyst estimated long-term growth rate. Positive = expected to keep growing."
-    },
-    "institutional_transactions": {
-      "label": "Institutional Transactions (%)",
-      "type": "min",
-      "default": 0,
-      "min": -50,
-      "max": 50,
-      "step": 1,
-      "data_format": "percent_as_decimal",
-      "deferred": true,
-      "deferred_reason": "13F filings are quarterly and complex to parse. Finnhub endpoint requires testing with fresh quota. Re-enable when verified working.",
-      "description": "Net institutional buying (%). Positive = smart money is buying."
-    },
+    }
+  },
+  "toggle_filters": {
     "analyst_recommendation": {
-      "label": "Analyst Recommendation",
+      "label": "Analyst Rec ≤ 3.0 (Hold or better)",
+      "field": "analyst_recommendation",
       "type": "max",
-      "default": 3.0,
-      "min": 1.0,
-      "max": 5.0,
-      "step": 0.5,
-      "data_format": "ratio",
-      "description": "Analyst consensus: 1=Strong Buy, 2=Buy, 3=Hold, 4=Sell, 5=Strong Sell. Lower is better."
+      "threshold": 3.0,
+      "description": "Only show stocks where analyst consensus is Hold or better. Excludes stocks with no analyst coverage."
     },
     "target_price_upside": {
-      "label": "Target Price Upside (%)",
+      "label": "Target Upside ≥ 20%",
+      "field": "target_price_upside",
       "type": "min",
-      "default": 20,
-      "min": 0,
-      "max": 100,
-      "step": 5,
-      "data_format": "percent_as_decimal",
-      "deferred": true,
-      "deferred_reason": "Finnhub price-target endpoint requires paid tier. Re-enable when paid source available.",
-      "description": "How far current price is below analyst target. Higher = more upside potential."
+      "threshold": 0.20,
+      "description": "Only show stocks at least 20% below analyst price target. Excludes stocks with no target."
     },
-    "sentiment_score": {
-      "label": "Sentiment Score",
+    "est_lt_growth": {
+      "label": "EPS Growth 5Y > 0%",
+      "field": "est_lt_growth",
       "type": "min",
-      "default": -0.3,
-      "min": -1.0,
-      "max": 1.0,
-      "step": 0.1,
+      "threshold": 0.0,
+      "description": "Only show stocks where analysts project positive EPS growth over the next 3-5 years. Excludes stocks with no estimates."
+    },
+    "positive_operating_margin": {
+      "label": "Positive Operating Margin",
+      "field": "operating_margin",
+      "type": "min",
+      "threshold": 0.0,
+      "description": "Only show stocks with positive operating margin. Excludes companies currently investing heavily at a loss."
+    }
+  },
+  "soft_filters": {
+    "forward_pe": {
+      "label": "Forward P/E",
+      "type": "max",
+      "default": 20,
       "data_format": "ratio",
-      "description": "News sentiment from -1 (very negative) to +1 (very positive). Filters out stocks with bad news."
+      "description": "Skip if absent. Fail if present and > 20."
     }
   }
 }
