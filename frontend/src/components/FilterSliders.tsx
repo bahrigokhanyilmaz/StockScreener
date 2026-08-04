@@ -1,5 +1,3 @@
-import { useState } from 'react';
-
 /**
  * FilterSliders Component
  *
@@ -96,7 +94,6 @@ export function applyFilters(stocks: Record<string, unknown>[], filters: FilterV
 }
 
 export default function FilterSliders({ filters, onChange, onReset, matchCount, totalCount }: Props) {
-  const [collapsed, setCollapsed] = useState(true);
 
   function handleSliderChange(key: string, value: number) {
     onChange({ ...filters, [key]: value });
@@ -113,60 +110,53 @@ export default function FilterSliders({ filters, onChange, onReset, matchCount, 
           <h3>Filters</h3>
           <span className="match-count">{matchCount} / {totalCount} match</span>
         </div>
-        <div className="filter-actions">
-          <button className="btn-reset" onClick={onReset}>Reset</button>
-          <button className="btn-collapse" onClick={() => setCollapsed(!collapsed)}>
-            {collapsed ? '▼ Expand' : '▲ Collapse'}
-          </button>
-        </div>
+        <button className="btn-reset" onClick={onReset}>Reset</button>
       </div>
 
-      {!collapsed && (
-        <div className="filter-sliders">
-          {SLIDER_CONFIG.map(config => {
-            const value = filters[config.key] as number;
-            const isDefault = value === config.default;
+      <div className="filter-sliders">
+        {SLIDER_CONFIG.map(config => {
+          const value = filters[config.key] as number;
+          const isDefault = value === config.default;
 
-            return (
-              <div key={config.key} className={`slider-row ${isDefault ? '' : 'modified'}`}>
-                <div className="slider-label-row">
-                  <label>{config.label}</label>
-                  <span className="slider-value">
-                    {config.type === 'max' ? '< ' : '> '}
-                    {value}{config.format === 'percent' ? '%' : ''}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={config.min}
-                  max={config.max}
-                  step={config.step}
-                  value={value}
-                  onChange={(e) => handleSliderChange(config.key, parseFloat(e.target.value))}
-                  className="slider-input"
-                />
-                {config.key === 'debt_to_equity' && (
-                  <span className="override-note">or ICR &gt; 3.0x</span>
-                )}
+          return (
+            <div key={config.key} className={`slider-row ${isDefault ? '' : 'modified'}`}>
+              <div className="slider-label-row">
+                <label>{config.label}</label>
+                <span className="slider-value">
+                  {config.type === 'max' ? '< ' : '> '}
+                  {value}{config.format === 'percent' ? '%' : ''}
+                </span>
               </div>
-            );
-          })}
+              <input
+                type="range"
+                min={config.min}
+                max={config.max}
+                step={config.step}
+                value={value}
+                onChange={(e) => handleSliderChange(config.key, parseFloat(e.target.value))}
+                className="slider-input"
+              />
+              {config.key === 'debt_to_equity' && (
+                <span className="override-note">or ICR &gt; 3.0x</span>
+              )}
+            </div>
+          );
+        })}
 
-          <div className="toggle-section">
-            <h4>Optional Restrictions</h4>
-            {TOGGLE_CONFIG.map(toggle => (
-              <label key={toggle.key} className={`toggle-row ${filters[toggle.key] ? 'active' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={!!filters[toggle.key]}
-                  onChange={() => handleToggleChange(toggle.key)}
-                />
-                <span>{toggle.label}</span>
-              </label>
-            ))}
-          </div>
+        <div className="toggle-section">
+          <h4>Optional Restrictions</h4>
+          {TOGGLE_CONFIG.map(toggle => (
+            <label key={toggle.key} className={`toggle-row ${filters[toggle.key] ? 'active' : ''}`}>
+              <input
+                type="checkbox"
+                checked={!!filters[toggle.key]}
+                onChange={() => handleToggleChange(toggle.key)}
+              />
+              <span>{toggle.label}</span>
+            </label>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }
