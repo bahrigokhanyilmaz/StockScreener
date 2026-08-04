@@ -1,7 +1,7 @@
 {
   "description": "Stock screening filters. Hard filters are always enforced by the pipeline. Toggle filters are optional client-side restrictions.",
   "universe": {
-    "min_market_cap": 300000000,
+    "min_market_cap": 150000000,
     "min_market_cap_label": "Minimum Market Cap ($)",
     "min_market_cap_description": "Pre-filter for liquidity. Only stocks above this market cap are included in the scannable universe.",
     "exchanges": ["NYSE", "NASDAQ"],

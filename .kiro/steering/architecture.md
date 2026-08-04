@@ -33,51 +33,95 @@ Always keep README and steering docs updated without being asked.
 ```
 EventBridge (Mon-Fri 4PM ET / 8PM UTC)
     → Step Functions (stock-screener-pipeline)
-        → Step 1: EDGAR Bulk Fundamentals (~10 calls → 5,097 companies, ~4s)
-        → Step 2: Pre-Screen (5 EDGAR filters → ~69 pass, instant)
-        → Step 3: Enrichment (Polygon 1 call + Finnhub 3 calls/candidate → ~5-8 min)
-        → Step 4: Full Screen (12 filters, missing data = FAIL → ~6 pass, instant)
-        → Step 5: News Fetch (TickerTick, 6.5s/stock → ~40s)
+        → Step 1: EDGAR Bulk Fundamentals (~10 calls → 5,097 companies, ~3 min)
+        → Step 2: Pre-Screen (non-price EDGAR filters → ~500 pass, instant)
+        → Step 3: Enrichment (Polygon 1 call + FMP 6 calls/candidate → ~2 min)
+        → Step 4: Full Screen + Scoring (fundamental_score + soft filters, instant)
+        → Step 5: News Fetch (FMP + TickerTick merged → ~4 min)
         → Step 6: Sentiment Analysis (Bedrock Claude Haiku 4.5 → ~5 min)
-        → Step 7: Score Calculator (investability + Polygon descriptions + DynamoDB → ~75s)
+        → Step 7: Score Calculator (investability + FMP price history + DynamoDB → ~1 min)
         → Step 8: Alert Checker (thresholds + tracking lifecycle → SNS, instant)
 
-Total: ~15-20 minutes per run.
+Total: ~12-15 minutes per run.
 ```
 
-### Pipeline Step Details
+### Pipeline Step Details & Reasoning
 
-**Step 1 — EDGAR Bulk Fetch** (~2-3 minutes)
+**Step 1 — EDGAR Bulk Fetch** (~3 minutes)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
-- Dynamically discovers latest quarter with >= 4000 companies
-- **TTM (Trailing Twelve Months)** for income items:
-  - Primary: direct sum of 4 quarterly frames (if all 4 present for a company)
-  - Fallback: `Annual + Latest_Q1 - Prior_Q1` (algebraically identical, for companies with non-calendar fiscal years that don't have all 4 quarters in EDGAR)
-  - A company only gets a TTM value via one method — never a partial sum
-- **Prior TTM**: same derivation shifted 1 year back (for YoY growth)
-- Uses BROAD universal tags for maximum coverage:
-  - `Liabilities` (4,862 cos) + `LiabilitiesCurrent` (4,199) → D/E = (Liabilities - LiabilitiesCurrent) / Equity
-  - `NetIncomeLoss` (4,944) → TTM EPS (for industry quartile computation only)
-  - `OperatingIncomeLoss` (4,004) → Operating Margin
-  - Both `RevenueFromContractWithCustomer...` (2,306) + `Revenues` (1,683) merged per quarter for TTM
-  - `CommonStockSharesOutstanding` + `WeightedAverageNumberOfDilutedSharesOutstanding` fallback
-- **P/E for candidates** is recalculated in Step 3 using Finnhub's `peNormalizedAnnual` (strips one-time items)
+- Fetches fundamentals for ~5,097 US companies in ~10 bulk API calls
+- Computes TTM (sum of 4 quarters or annual derivation fallback)
+- Computes Prior TTM (shifted 1 year back) for YoY growth
+- Uses broad XBRL tags for maximum coverage (Liabilities, Revenue, NetIncome, OperatingIncome, etc.)
 - All dates computed dynamically from today — no hardcoded quarters
-- Output: S3 `step1_fundamentals_*.json`
+- Output: ~5,097 stocks with EPS, D/E, QR, Operating Margin, Revenue Growth, FCF per share
+- **Reasoning:** EDGAR is free, covers the entire US market, and gives us the raw fundamentals needed for initial filtering. No API key required, no rate limits.
 
 **Step 2 — Pre-Screen** (instant)
-- Applies 5 EDGAR-evaluable filters:
-  - Debt/Equity < 1.0 (overridable if ICR > 3.0)
-  - Quick Ratio > 1.0
-  - Operating Margin > 0%
-  - EPS Growth YoY > 0%
-  - Revenue Growth YoY > 0%
-- 5,097 → ~69 pass
-- Also computes industry medians: loads `ticker_industry_map.json` from S3, groups all stocks by SEC SIC industry, computes medians, persists to DynamoDB as `INDUSTRY_AVG#` items
-- Output: S3 `step2_prescreen_*.json` (passing_stocks + all_screened)
+- Applies non-price hard filters (these don't require stock prices):
+  - Debt/Equity ≤ 1.0 (override: ICR > 3.0 — can service debt comfortably)
+  - Quick Ratio > 1.0 (can pay short-term obligations)
+  - Operating Margin > 0% (override: Revenue Growth > 20% — investing for growth)
+  - Revenue Growth YoY > 0% (top-line expanding)
+- Missing data = skip (pre-screen is lenient because EDGAR coverage varies)
+- ~5,097 → ~500 pass (lenient because many stocks have None fields that get skipped)
+- Also computes industry medians (D/E, QR, Op Margin, Rev Growth) from full universe and persists to DynamoDB
+- **Reasoning:** Cheap first, expensive second. Eliminates obviously disqualified stocks before we spend any API calls. Price-dependent checks (P/E, PEG, P/FCF) cannot run here because EDGAR doesn't provide stock prices.
 
-**Step 3 — Price + Metrics Enrichment** (~5-8 minutes)
-- Stage 1: Polygon.io Grouped Daily — ONE API call → prices for ALL 12,000+ US stocks (date = T-2 for free tier)
+**Step 3 — Enrichment** (~2-3 minutes)
+- **Stage A — Bulk prices:** Polygon.io Grouped Daily (1 free API call → 12,000+ US stock prices)
+- **Stage B — Industry P/E quartiles:** Loads full ~5,000 stock universe from Step 1 S3 output. Computes P/E for each using Polygon price ÷ EDGAR EPS. Groups by SEC SIC industry. Calculates 25th percentile (non-tech) or 50th percentile (tech SIC codes 35xx, 36xx, 737x). Persists to DynamoDB.
+- **Stage C — Price-dependent filter on the ~500 passers:** Computes their P/E, PEG, P/FCF locally (Polygon price + EDGAR EPS/FCF). Applies: P/E < industry quartile, PEG < 1.0, P/FCF < 20. ~500 → ~30 pass.
+- **Stage D — FMP enrichment (only ~30 survivors):** For each:
+  - `/stable/profile` → if stock doesn't exist in FMP: exclude (OTC ghost). If market cap < $150M: exclude (no analyst coverage).
+  - `/stable/ratios-ttm` → validated P/E, PEG, P/FCF, D/E, ICR, QR, Operating Margin (62 fields)
+  - `/stable/financial-growth` → EPS growth, revenue growth, 5Y net income growth
+  - `/stable/analyst-estimates` → forward EPS for next 3 years (→ forward P/E + forward LT growth CAGR)
+  - `/stable/price-target-summary` → analyst consensus price target
+  - `/stable/grades` → individual analyst Buy/Hold/Sell grades → recommendation score (1-5)
+  - `/stable/profile` → company description, logo, website, sector, industry
+  - 6 API calls per stock with retry logic (3 retries, exponential backoff)
+  - Output: ~25-30 stocks with complete enriched data
+- **Reasoning:** The price-dependent filter runs BEFORE FMP calls to minimize expensive API usage. 500 stocks × 6 FMP calls = 3,000 calls (too many). 30 stocks × 6 = 180 calls (fine). The local P/E/PEG/P/FCF computation using free Polygon+EDGAR data eliminates 94% of stocks at zero API cost.
+
+**Step 4 — Full Screen + Scoring** (instant)
+- Receives ~30 fully enriched stocks from Step 3
+- Re-evaluates ALL hard filters using FMP-enriched data (catches values FMP updated that differ from EDGAR)
+- Applies soft filters: Forward P/E < 20 (skip if absent, fail if present and bad)
+- Computes `fundamental_score` (0-100): for each filter, scores 0-1 based on how far beyond threshold. Average × 100.
+- Missing data = FAIL (full screen is strict — stock must prove it qualifies with complete data)
+- ~30 → ~20-30 pass with scores
+- **Reasoning:** Step 4 exists to compute `fundamental_score` which is 70% of the investability formula. It also catches edge cases where FMP data differs from EDGAR (e.g., FMP reports different revenue growth than EDGAR computed from filings).
+
+**Step 5 — News Fetch** (~4 minutes)
+- For each passing stock + GRACE stocks from DynamoDB:
+  - FMP `/stable/news/stock` — batched 5 symbols per call, good article summaries
+  - TickerTick API — individual calls, 6.5s pacing. Catches SEC filings, short interest reports, analyst downgrades that FMP misses.
+  - Merge and deduplicate by title (first 50 chars). FMP articles take priority.
+- ~10-15 articles per stock after merge
+- **Reasoning:** Dual sources because FMP misses critical articles for smaller stocks (e.g., "Short Interest Up 859%" only appeared on TickerTick for WETH). TickerTick is free but slow (10 req/min). FMP is fast but incomplete for niche sources (sec.gov, tickerreport, gurufocus).
+
+**Step 6 — Sentiment Analysis** (~5 minutes)
+- Amazon Bedrock Claude Haiku 4.5 per article
+- Returns: relevance, sentiment (-1 to +1), confidence, risk flags, summary
+- Risk flags constrained to 8 values (fraud, SEC investigation, accounting, regulatory, lawsuit, revenue risk, management departure, product recall)
+- Aggregate per stock: confidence-weighted average sentiment
+- **Reasoning:** AI reads every article and produces structured sentiment. Humans can't read 200 articles daily. Claude identifies specific risk categories that feed into the scoring penalty system.
+
+**Step 7 — Score Calculator** (~1-2 minutes)
+- Investability = (0.7 × fundamental_score) + (0.3 × sentiment_normalized) + risk_penalties
+- Fetches 30-day OHLCV price history from FMP `/stable/historical-price-eod/full` (1s pacing)
+- Fetches company descriptions from FMP `/stable/profile` (fallback if not already present)
+- Manages risk flag ledger (time-decay for one-time events, persistence for uncertain events)
+- Persists ALL to DynamoDB: LATEST, SCORE#date, TRACKING, ARTICLES, PRICE_HISTORY#
+- Computes portfolio signals (green/yellow/red) for owned stocks
+- **Reasoning:** Single step that combines fundamental + sentiment into one actionable score, persists everything for the dashboard, and maintains the risk lifecycle.
+
+**Step 8 — Alert Checker** (instant)
+- Detects: new passers, dropped stocks, sentiment crashes, risk flags, grace expiry
+- ACTIVE → GRACE (30 days) → removed (full cleanup)
+- Sends email via SNS if thresholds breached
+- **Reasoning:** Lifecycle management ensures stale stocks don't persist forever. Alerts notify the user of material changes between dashboard visits.
 - Stage 2: Local P/E calculation + industry-relative pre-filter:
   - P/E = Polygon Price ÷ EDGAR TTM EPS (for all pre-screen passers)
   - Loads Step 1 full universe from S3 to compute P/E for all 4,500+ stocks

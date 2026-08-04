@@ -649,8 +649,8 @@ def handler(event, context):
         else:
             # Profile exists — enforce market cap floor ($300M minimum)
             mcap = profile.get("marketCap", 0) or 0
-            if mcap < 300_000_000:
-                print(f"    {symbol}: market cap ${mcap/1e6:.0f}M < $300M floor, skipping")
+            if mcap < 150_000_000:
+                print(f"    {symbol}: market cap ${mcap/1e6:.0f}M < $150M floor, skipping")
                 stock["_fmp_excluded"] = True
                 continue
 
