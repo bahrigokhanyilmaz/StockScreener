@@ -107,30 +107,19 @@ function App() {
 
         {!loading && !error && (
           <>
+            <div className="top-filters">
+              <FilterSliders
+                filters={filters}
+                onChange={setFilters}
+                onReset={() => setFilters(getDefaultFilters())}
+                matchCount={filteredStocks.length}
+                totalCount={allStocks.length}
+              />
+            </div>
+
             <Portfolio key={portfolioKey} />
 
             <div className="content-layout">
-              <div className="left-panel">
-                <div className="filters-section">
-                  <FilterSliders
-                    filters={filters}
-                    onChange={setFilters}
-                    onReset={() => setFilters(getDefaultFilters())}
-                    matchCount={filteredStocks.length}
-                    totalCount={allStocks.length}
-                  />
-                </div>
-
-                {selectedTicker && (
-                  <div className="detail-section">
-                    <StockDetail
-                      ticker={selectedTicker}
-                      onClose={() => setSelectedTicker(null)}
-                    />
-                  </div>
-                )}
-              </div>
-
               <div className="table-section">
                 <StockTable
                   stocks={filteredStocks}
@@ -144,6 +133,15 @@ function App() {
                   }}
                 />
               </div>
+
+              {selectedTicker && (
+                <div className="detail-section">
+                  <StockDetail
+                    ticker={selectedTicker}
+                    onClose={() => setSelectedTicker(null)}
+                  />
+                </div>
+              )}
             </div>
           </>
         )}
