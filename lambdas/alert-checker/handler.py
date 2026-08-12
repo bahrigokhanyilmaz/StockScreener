@@ -179,6 +179,27 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
             status = update["status"]
 
             if status == "EXPIRED":
+                # Check if user owns this stock — never expire portfolio positions
+                try:
+                    portfolio_check = table.get_item(
+                        Key={"PK": f"PORTFOLIO#{symbol}", "SK": "SUMMARY"},
+                        ProjectionExpression="symbol",
+                    )
+                    if portfolio_check.get("Item"):
+                        # User owns this stock — keep it tracked as GRACE (don't delete)
+                        print(f"    PROTECTED: {symbol} is in portfolio — keeping in GRACE despite expiry")
+                        item = {
+                            "PK": f"STOCK#{symbol}",
+                            "SK": "TRACKING",
+                            "symbol": symbol,
+                            "tracking_status": "GRACE",
+                            "last_updated": now_iso,
+                        }
+                        batch.put_item(Item=item)
+                        continue
+                except Exception:
+                    pass
+
                 # Remove ALL items for this stock (it's no longer tracked)
                 for sk in ["TRACKING", "LATEST", "ARTICLES"]:
                     table.delete_item(Key={"PK": f"STOCK#{symbol}", "SK": sk})
@@ -348,6 +369,81 @@ def handler(event, context):
         tracking_alerts, tracking_updates = check_tracking_changes(
             scored_stocks, previous_status, today
         )
+
+        # Also check for ACTIVE stocks that didn't appear in today's pipeline at all
+        # (failed at Step 3 or earlier — never reached Step 8)
+        pipeline_symbols = set(symbols)
+        try:
+            import boto3 as _boto3
+            from boto3.dynamodb.conditions import Key as _Key
+            resp = table.query(
+                IndexName="tracking-status-index",
+                KeyConditionExpression=_Key("tracking_status").eq("ACTIVE"),
+            )
+            grace_days = int(os.environ.get("GRACE_PERIOD_DAYS", str(DEFAULT_GRACE_PERIOD_DAYS)))
+            missing_count = 0
+            for item in resp.get("Items", []):
+                if item.get("SK") != "TRACKING":
+                    continue
+                sym = item.get("symbol", "")
+                if sym and sym not in pipeline_symbols:
+                    # This ACTIVE stock didn't make it through today's pipeline — flip to GRACE
+                    missing_count += 1
+                    tracking_updates.append({
+                        "symbol": sym,
+                        "status": "GRACE",
+                        "last_passed": item.get("last_passed", ""),
+                        "first_tracked": item.get("first_tracked", ""),
+                        "grace_start": today,
+                    })
+                    tracking_alerts.append({
+                        "type": "dropped_off",
+                        "severity": "medium",
+                        "symbol": sym,
+                        "company_name": "",
+                        "message": f"DROPPED: {sym} no longer passes filters. Moving to {grace_days}-day grace period.",
+                        "data": {"previous_status": "ACTIVE", "reason": "absent_from_pipeline"},
+                    })
+            if missing_count:
+                print(f"  {missing_count} ACTIVE stocks absent from pipeline → GRACE")
+
+            # Also check GRACE stocks not in pipeline for expiry
+            resp_grace = table.query(
+                IndexName="tracking-status-index",
+                KeyConditionExpression=_Key("tracking_status").eq("GRACE"),
+            )
+            expired_count = 0
+            for item in resp_grace.get("Items", []):
+                if item.get("SK") != "TRACKING":
+                    continue
+                sym = item.get("symbol", "")
+                if sym and sym not in pipeline_symbols:
+                    # Check if grace period expired
+                    last_passed = item.get("last_passed", today)
+                    try:
+                        last_passed_date = datetime.strptime(str(last_passed), "%Y-%m-%d")
+                        today_date = datetime.strptime(today, "%Y-%m-%d")
+                        days_in_grace = (today_date - last_passed_date).days
+                        if days_in_grace >= grace_days:
+                            expired_count += 1
+                            tracking_updates.append({
+                                "symbol": sym,
+                                "status": "EXPIRED",
+                            })
+                            tracking_alerts.append({
+                                "type": "grace_expired",
+                                "severity": "low",
+                                "symbol": sym,
+                                "message": f"EXPIRED: {sym} grace period ended ({days_in_grace} days). Removed from tracking.",
+                                "data": {"days_in_grace": days_in_grace},
+                            })
+                    except (ValueError, TypeError):
+                        pass
+            if expired_count:
+                print(f"  {expired_count} GRACE stocks expired → removed")
+        except Exception as e:
+            print(f"  Warning: Could not check for missing ACTIVE stocks: {e}")
+
         # Update tracking in DynamoDB
         update_tracking_in_dynamodb(table, tracking_updates, today)
         print(f"  Tracking updates: {len(tracking_updates)}")

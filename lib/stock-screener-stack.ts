@@ -144,7 +144,7 @@ export class StockScreenerStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(10),
+      timeout: cdk.Duration.minutes(15),
       memorySize: 256,
       environment: {
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
@@ -167,8 +167,9 @@ export class StockScreenerStack extends cdk.Stack {
       environment: {
         BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
+        DATA_TABLE_NAME: dataTable.tableName,
       },
-      description: 'Step 6: Bedrock/Claude sentiment analysis per article',
+      description: 'Step 6: Bedrock/Claude sentiment analysis + competition assessment',
     });
 
     // Step 7: Score Calculator (+ DynamoDB persistence + Polygon descriptions)
@@ -182,8 +183,9 @@ export class StockScreenerStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(10),
       memorySize: 128,
       environment: {
-        FUNDAMENTAL_WEIGHT: '0.7',
-        SENTIMENT_WEIGHT: '0.3',
+        FUNDAMENTAL_WEIGHT: '0.6',
+        SENTIMENT_WEIGHT: '0.25',
+        COMPETITION_WEIGHT: '0.15',
         DATA_TABLE_NAME: dataTable.tableName,
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
         FMP_API_KEY_PARAM: '/stock-screener/fmp-api-key',
@@ -225,6 +227,23 @@ export class StockScreenerStack extends cdk.Stack {
         RAW_DATA_BUCKET: rawDataBucket.bucketName,
       },
       description: 'REST API for the stock screener dashboard',
+    });
+
+    // Tag Discovery (monthly — finds missing XBRL tags for coverage gaps)
+    const tagDiscovery = new PythonFunction(this, 'TagDiscovery', {
+      functionName: 'stock-screener-tag-discovery',
+      entry: path.join(__dirname, '../lambdas/tag-discovery'),
+      index: 'handler.py',
+      handler: 'handler',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
+      timeout: cdk.Duration.minutes(10),
+      memorySize: 512,
+      environment: {
+        RAW_DATA_BUCKET: rawDataBucket.bucketName,
+        DISCOVERY_SAMPLE_SIZE: '50',
+      },
+      description: 'Monthly: Discover alternative XBRL tags for EDGAR coverage gaps',
     });
 
     // ==========================================
@@ -321,13 +340,14 @@ export class StockScreenerStack extends cdk.Stack {
       conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
     }));
 
-    // Step 6: Bedrock + S3 read/write (sentiment storage + pipeline I/O)
+    // Step 6: Bedrock + S3 read/write (sentiment storage + pipeline I/O) + DynamoDB read (HHI scores)
     sentimentAnalyzer.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
       resources: ['*'],
     }));
     rawDataBucket.grantReadWrite(sentimentAnalyzer);
+    dataTable.grantReadData(sentimentAnalyzer);
 
     // Steps 7 & 8: DynamoDB + S3 read/write (pipeline I/O)
     dataTable.grantReadWriteData(scoreCalculator);
@@ -354,6 +374,9 @@ export class StockScreenerStack extends cdk.Stack {
     // API: DynamoDB read/write + S3 read (for news articles)
     dataTable.grantReadWriteData(apiHandler);
     rawDataBucket.grantRead(apiHandler);
+
+    // Tag Discovery: S3 read/write (reads Step 1 output, writes discovered_tags.json)
+    rawDataBucket.grantReadWrite(tagDiscovery);
 
     // ==========================================
     // STEP FUNCTIONS — 8-Step Pipeline
@@ -448,6 +471,20 @@ export class StockScreenerStack extends cdk.Stack {
     dailyRule.addTarget(new targets.SfnStateMachine(stateMachine, {
       input: events.RuleTargetInput.fromObject({}),
     }));
+
+    // Monthly tag discovery (1st of each month at 6 AM UTC)
+    const monthlyDiscoveryRule = new events.Rule(this, 'MonthlyTagDiscovery', {
+      ruleName: 'stock-screener-monthly-tag-discovery',
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '6',
+        day: '1',
+        month: '*',
+      }),
+      description: 'Monthly: Discover missing XBRL tags for EDGAR coverage gaps',
+    });
+
+    monthlyDiscoveryRule.addTarget(new targets.LambdaFunction(tagDiscovery));
 
     // ==========================================
     // OUTPUTS

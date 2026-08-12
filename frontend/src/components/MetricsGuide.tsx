@@ -166,6 +166,17 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     decreasing: 'News coverage becoming more negative. May precede price declines. Watch for risk flags (lawsuits, SEC investigations, management changes).',
     category: 'sentiment',
   },
+  {
+    key: 'competition_score',
+    name: 'Competition Score',
+    shortName: 'Comp',
+    definition: 'Competitive landscape rating from 1 (dominant/near-monopoly) to 5 (highly competitive/fragmented). Combines quantitative HHI analysis from SEC revenue data with Claude AI adjustment for niche positioning, moat strength, and recent competitive dynamics.',
+    formula: 'Base: HHI from SEC SIC industry revenue concentration → mapped to 1-5. Adjusted by Claude considering moat, switching costs, brand, network effects, and recent news.',
+    threshold: 'Lower is better (1=strong position, contributes +15% to investability)',
+    increasing: 'Competition intensifying. New entrants, pricing pressure, or loss of differentiation. May signal margin compression ahead.',
+    decreasing: 'Competitive position strengthening. Could indicate consolidation, regulatory barriers, or successful moat building.',
+    category: 'sentiment',
+  },
 ];
 
 // ==========================================
@@ -303,18 +314,20 @@ export default function MetricsGuide({ stock }: Props) {
             <span className="def-name">Investability Score (0–100)</span>
           </div>
           <p className="def-text">
-            The final ranking score that combines fundamentals and market sentiment. Both components are on a 0–100 scale, so the result properly fills 0–100.
+            The final ranking score that combines fundamentals, market sentiment, and competitive positioning. All components are on a 0–100 scale, so the result properly fills 0–100.
           </p>
           <div className="def-formula">
-            <span className="formula-label">Formula:</span> (0.7 × Fundamental Score) + (0.3 × Sentiment Normalized) + Risk Penalties
+            <span className="formula-label">Formula:</span> (0.6 × Fundamental Score) + (0.25 × Sentiment Normalized) + (0.15 × Competition Normalized) + Risk Penalties
           </div>
           <div className="score-breakdown-details">
             <p><strong>Sentiment Normalized (0–100):</strong> 50 + (raw_sentiment × 50 × confidence)</p>
             <p>• Neutral news or low confidence → 50 (no impact)</p>
             <p>• Very positive, high confidence → approaches 100 (boosts score)</p>
             <p>• Very negative, high confidence → approaches 0 (drags score down)</p>
+            <p><strong>Competition Normalized (0–100):</strong> (5 - competition_score) × 25</p>
+            <p>• Score 1 (dominant) → 100 | Score 3 (moderate) → 50 | Score 5 (fragmented) → 0</p>
             <p><strong>Risk Penalties:</strong> Fraud (-35), SEC investigation (-30), accounting irregularity (-25), revenue risk (-15), regulatory risk (-15), lawsuit/management/recall (-10)</p>
-            <p><strong>Example:</strong> Fundamental 64, Sentiment raw -0.28 with confidence 0.55 → Sentiment normalized = 50 + (-0.28 × 50 × 0.55) = 42.3 → Investability = (0.7 × 64) + (0.3 × 42.3) = 44.8 + 12.7 = <strong>57.5</strong> before penalties.</p>
+            <p><strong>Example:</strong> Fundamental 64, Sentiment raw -0.28 with confidence 0.55, Competition score 2 → Sentiment normalized = 42.3, Competition normalized = 75 → Investability = (0.6 × 64) + (0.25 × 42.3) + (0.15 × 75) = 38.4 + 10.6 + 11.3 = <strong>60.3</strong> before penalties.</p>
           </div>
         </div>
 

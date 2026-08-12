@@ -107,6 +107,13 @@
       "threshold": 0.0,
       "description": "Only show stocks where analysts project positive EPS growth over the next 3-5 years. Excludes stocks with no estimates."
     },
+    "eps_growth_yoy": {
+      "label": "EPS Growth YoY > 0%",
+      "field": "eps_growth_yoy",
+      "type": "min",
+      "threshold": 0.0,
+      "description": "Only show stocks with positive trailing EPS growth year-over-year. Excludes stocks with declining earnings."
+    },
     "positive_operating_margin": {
       "label": "Positive Operating Margin",
       "field": "operating_margin",

@@ -65,7 +65,7 @@ Scoring guide:
   "regulatory_risk" — new regulation threatening the business model
   "management_departure" — sudden CEO/CFO exit without succession plan
   "product_recall" — major product safety issue or recall
-  "revenue_risk" — significant revenue threat (major contract loss, key customer departure, partnership termination)
+  "revenue_risk" — concrete threat to future revenue: lowered guidance, major contract non-renewal announced, key customer publicly departing, regulatory ban on a revenue stream, or pricing collapse in core market. Do NOT flag for: past revenue declines already reflected in financials, one-time items normalizing, divestitures, or accounting reclassifications. A quarter-over-quarter decline alone is not a flag — there must be evidence of ongoing or future deterioration.
 
 Article title: {title}
 Article source: {source}
@@ -158,6 +158,93 @@ def analyze_article(article: dict, ticker: str, company_name: str, model_id: str
                 "summary": f"Analysis failed — {str(e)[:50]}",
                 "risk_flags": [],
             },
+        }
+
+
+COMPETITION_PROMPT = """You are a financial analyst assessing the competitive landscape for {ticker} ({company_name}).
+
+CONTEXT:
+- SEC SIC Industry: {sic_industry}
+- HHI-based competition score: {hhi_score}/5 (1=concentrated/low competition, 5=fragmented/high competition)
+- NOTE: The HHI score is computed from SEC SIC industry classifications which are BROAD. A company may dominate a specific niche within a broadly classified industry. Adjust accordingly.
+- NOTE: Your training data may not reflect very recent market entries, exits, mergers, or competitive shifts. If the article summaries below mention new competitors, market share changes, or industry consolidation, factor that into your adjustment.
+
+Recent article summaries for this stock:
+{article_summaries}
+
+TASK: Assess the ACTUAL competitive intensity this specific company faces (not just its broad industry).
+
+Consider:
+- Does this company have a moat? (brand, network effects, switching costs, patents, regulatory barriers)
+- How many direct competitors operate in its specific niche (not just the broad SIC category)?
+- Is competition increasing or decreasing based on recent news?
+- Does the company have pricing power?
+
+Return ONLY valid JSON (no markdown):
+{{
+  "competition_score": <integer 1-5: 1=dominant/near-monopoly, 2=strong position/few competitors, 3=moderate competition, 4=competitive market, 5=highly competitive/commoditized>,
+  "reasoning": "<2-3 sentences explaining your adjustment from the HHI score, or why you agree with it>"
+}}
+"""
+
+
+def assess_competition(stock: dict, analyzed_articles: list, model_id: str) -> dict:
+    """
+    Make one Claude call per stock to assess competitive landscape.
+    
+    Receives the HHI-based score and article summaries, returns adjusted score.
+    """
+    ticker = stock.get("symbol", "?")
+    company_name = stock.get("company_name", ticker)
+    sic_industry = stock.get("sic_industry", stock.get("_sic_industry", "Unknown"))
+    hhi_score = stock.get("hhi_score", 3)  # Default to middle if not available
+
+    # Build article summaries for context
+    summaries = []
+    for art in analyzed_articles:
+        analysis = art.get("analysis", {})
+        if analysis.get("relevant") and analysis.get("summary"):
+            summaries.append(f"- {analysis['summary']}")
+    article_summaries = "\n".join(summaries[:8]) if summaries else "No recent articles available."
+
+    prompt = COMPETITION_PROMPT.format(
+        ticker=ticker,
+        company_name=company_name,
+        sic_industry=sic_industry,
+        hhi_score=hhi_score,
+        article_summaries=article_summaries,
+    )
+
+    try:
+        response = bedrock_client.invoke_model(
+            modelId=model_id,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+            }),
+        )
+        result = json.loads(response["body"].read())
+        text = result["content"][0]["text"]
+
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+        analysis = json.loads(text)
+        return {
+            "hhi_score": hhi_score,
+            "competition_score": int(analysis.get("competition_score", hhi_score)),
+            "competition_reasoning": analysis.get("reasoning", ""),
+        }
+    except Exception as e:
+        print(f"    Warning: Competition assessment failed for {ticker}: {e}")
+        return {
+            "hhi_score": hhi_score,
+            "competition_score": hhi_score,  # Fall back to HHI
+            "competition_reasoning": f"Assessment failed, using HHI default: {e}",
         }
 
 
@@ -281,7 +368,37 @@ def handler(event, context):
     model_id = os.environ.get("BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
     bucket_name = os.environ.get("RAW_DATA_BUCKET")
 
+    # Load HHI scores from DynamoDB industry averages (for competition assessment)
+    hhi_by_industry = {}
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if table_name:
+        try:
+            dynamodb = boto3.resource("dynamodb")
+            table = dynamodb.Table(table_name)
+            # Scan for INDUSTRY_AVG items that have hhi_score
+            response = table.scan(
+                FilterExpression="begins_with(PK, :pk)",
+                ExpressionAttributeValues={":pk": "INDUSTRY_AVG#"},
+                ProjectionExpression="industry, hhi_score",
+            )
+            for item in response.get("Items", []):
+                industry = item.get("industry", "")
+                hhi = item.get("hhi_score")
+                if industry and hhi is not None:
+                    hhi_by_industry[industry] = int(hhi)
+            print(f"  Loaded HHI scores for {len(hhi_by_industry)} industries")
+        except Exception as e:
+            print(f"  Warning: Could not load HHI scores: {e}")
+
+    # Attach HHI score to each stock based on its sic_industry
+    for stock in stocks_with_news:
+        sic_industry = stock.get("sic_industry", "")
+        if sic_industry and sic_industry in hhi_by_industry:
+            stock["hhi_score"] = hhi_by_industry[sic_industry]
+
     print(f"Analyzing articles for {len(stocks_with_news)} stocks using {model_id}")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     stocks_with_sentiment = []
     total_articles_analyzed = 0
@@ -292,36 +409,43 @@ def handler(event, context):
         articles = stock.get("articles", [])
 
         if not articles:
+            competition = assess_competition(stock, [], model_id)
             stocks_with_sentiment.append({
                 **stock,
                 "sentiment": calculate_aggregate_sentiment([]),
+                "competition": competition,
             })
             continue
 
         print(f"  {symbol}: analyzing {len(articles)} articles...")
 
-        # Analyze each article with Claude
+        # Analyze articles in parallel (4 concurrent Bedrock calls per stock)
         analyzed_articles = []
-        for article in articles:
-            result = analyze_article(article, symbol, company_name, model_id)
-            analyzed_articles.append(result)
-            total_articles_analyzed += 1
-
-            # Small delay between Bedrock calls (avoid throttling)
-            time.sleep(0.1)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(analyze_article, article, symbol, company_name, model_id): article 
+                       for article in articles}
+            for future in as_completed(futures):
+                result = future.result()
+                analyzed_articles.append(result)
+                total_articles_analyzed += 1
 
         # Calculate aggregate sentiment for this stock
         aggregate = calculate_aggregate_sentiment(analyzed_articles)
+
+        # Assess competitive landscape (one call per stock)
+        competition = assess_competition(stock, analyzed_articles, model_id)
 
         stocks_with_sentiment.append({
             **stock,
             "articles": analyzed_articles,  # Now includes per-article analysis
             "sentiment": aggregate,
+            "competition": competition,
         })
 
         print(f"    Score: {aggregate['sentiment_score']}, "
               f"Confidence: {aggregate['confidence']}, "
-              f"Flags: {aggregate['risk_flags']}")
+              f"Flags: {aggregate['risk_flags']}, "
+              f"Competition: HHI={competition['hhi_score']}→Adj={competition['competition_score']}")
 
     # Store raw results in S3
     if bucket_name and stocks_with_sentiment:

@@ -75,23 +75,38 @@ def get_fmp_key() -> str:
     return _fmp_key
 
 
-def get_last_trading_day() -> str:
+def get_last_trading_day(polygon_key: str = None) -> str:
     """
     Get the most recent COMPLETED trading day for Polygon data.
-    
-    Polygon free tier has a 1 full trading day delay. Data for Monday
-    isn't available until Tuesday. So we need the PREVIOUS completed
-    trading day — not yesterday (which might be today's market).
-    
-    Safe approach: go back 2 days from UTC, then skip weekends.
-    This guarantees we hit a completed trading day even if running
-    early Monday UTC (which is still Sunday/Monday evening US time).
+
+    Strategy: Try T-1 first (yesterday, skipping weekends). If Polygon
+    returns an error (data not yet published), fall back to T-2.
+
+    Polygon free tier publishes previous day's data by ~5 AM UTC.
+    Since our pipeline runs at 8 PM UTC (well past that), T-1 should
+    always work. The fallback exists as a safety net.
     """
-    # Go back 2 days to ensure we're past any Polygon delay
-    target = datetime.now(timezone.utc).date() - timedelta(days=2)
-    # Skip weekends
+    # Try T-1 first (skip weekends)
+    target = datetime.now(timezone.utc).date() - timedelta(days=1)
     while target.weekday() >= 5:
         target = target - timedelta(days=1)
+
+    # If we have the API key, verify T-1 is available
+    if polygon_key:
+        test_url = f"{POLYGON_GROUPED_URL}/{target.strftime('%Y-%m-%d')}"
+        try:
+            resp = http_requests.get(test_url, params={"apiKey": polygon_key}, timeout=10)
+            if resp.status_code == 200:
+                return target.strftime("%Y-%m-%d")
+            print(f"  T-1 ({target}) not available (HTTP {resp.status_code}), falling back to T-2")
+        except Exception as e:
+            print(f"  T-1 check failed ({e}), falling back to T-2")
+
+        # Fallback: T-2 (guaranteed available)
+        target = datetime.now(timezone.utc).date() - timedelta(days=2)
+        while target.weekday() >= 5:
+            target = target - timedelta(days=1)
+
     return target.strftime("%Y-%m-%d")
 
 
@@ -114,7 +129,7 @@ def fetch_all_prices(polygon_key: str, date: str) -> dict[str, float]:
 # STAGE 2: Local compute & pre-filter
 # ==========================================
 
-def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
+def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]:
     """
     Calculate P/E locally, compute industry P/E quartiles, and apply filters.
     
@@ -161,6 +176,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
     # Uses ALL stocks from Step 1 (full universe ~4,500) for meaningful industry samples,
     # not just the 70 pre-screen passers.
     industry_pe_quartiles = {}
+    industry_pe_q1 = {}
     try:
         bucket = os.environ.get("RAW_DATA_BUCKET", "")
         if bucket:
@@ -215,26 +231,15 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
             for industry, values in industry_pe_values.items():
                 if len(values) >= 5:
                     sorted_vals = sorted(values)
-                    # Determine if this is a tech industry by looking up its SIC code
-                    # from any company in this industry group
-                    is_tech = False
-                    for stock in all_universe_stocks:
-                        entry = industry_map.get(stock.get("symbol", ""))
-                        if entry and entry.get("industry") == industry:
-                            sic_code = entry.get("sic", "")
-                            if sic_code.startswith(TECH_SIC_PREFIXES):
-                                is_tech = True
-                            break
+                    # Pipeline threshold: 50th percentile (median) for ALL industries
+                    # Stock must be cheaper than half its industry peers to pass
+                    median_idx = len(sorted_vals) // 2
+                    industry_pe_quartiles[industry] = round(sorted_vals[median_idx], 2)
+                    # Also compute 25th percentile for frontend "strict" toggle
+                    q1_idx = len(sorted_vals) // 4
+                    industry_pe_q1[industry] = round(sorted_vals[q1_idx], 2)
 
-                    if is_tech:
-                        # 50th percentile (median) for tech
-                        idx = len(sorted_vals) // 2
-                    else:
-                        # 25th percentile (lower quartile) for non-tech
-                        idx = len(sorted_vals) // 4
-                    industry_pe_quartiles[industry] = round(sorted_vals[idx], 2)
-
-            print(f"  Computed P/E lower quartile for {len(industry_pe_quartiles)} industries "
+            print(f"  Computed P/E median (50th pctile) for {len(industry_pe_quartiles)} industries "
                   f"(from {len(all_universe_stocks)} stocks)")
 
             # Tag each pre-screen passer with its industry P/E threshold
@@ -260,17 +265,23 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict]:
 
         pe_threshold = stock.get("_pe_industry_q1") or 50
         pe_passes = pe is not None and pe > 0 and pe < pe_threshold
+        peg_passes = peg is not None and peg > 0 and peg < 1.0
+        pfcf_passes = pfcf is not None and pfcf > 0 and pfcf < 20
 
-        passes = (
-            pe_passes
-            and peg is not None and peg < 1.0
-            and pfcf is not None and pfcf < 20
-        )
+        # Valuation gate: must pass at least one of P/E or PEG
+        # PEG < 1.0 exempts from P/E check (growth justifies the multiple)
+        # P/E < industry median exempts from PEG check (cheap regardless of growth)
+        valuation_passes = pe_passes or peg_passes
+
+        # Must have at least one computable valuation metric
+        has_valuation = (pe is not None and pe > 0) or (peg is not None and peg > 0)
+
+        passes = valuation_passes and has_valuation and pfcf_passes
 
         if passes:
             candidates.append(stock)
 
-    return candidates, all_enriched, industry_pe_quartiles
+    return candidates, all_enriched, industry_pe_quartiles, industry_pe_q1
 
 
 # ==========================================
@@ -526,8 +537,11 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
             if furthest_eps and furthest_eps > 0 and years_out > 0:
                 try:
                     forward_cagr = (furthest_eps / current_eps) ** (1 / years_out) - 1
-                    stock["est_lt_growth"] = round(forward_cagr, 4)
-                except (ValueError, ZeroDivisionError, OverflowError):
+                    if isinstance(forward_cagr, complex):
+                        pass
+                    else:
+                        stock["est_lt_growth"] = round(forward_cagr, 4)
+                except (ValueError, ZeroDivisionError, OverflowError, TypeError):
                     pass
     elif isinstance(estimates, dict) and estimates:
         # Backward compatibility: single dict format
@@ -553,8 +567,9 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if lt_g is not None:
             try:
                 cagr = (1 + lt_g) ** (1 / 5) - 1
-                stock["est_lt_growth"] = round(cagr, 4)
-            except (ValueError, ZeroDivisionError):
+                if not isinstance(cagr, complex):
+                    stock["est_lt_growth"] = round(cagr, 4)
+            except (ValueError, ZeroDivisionError, TypeError):
                 pass
 
     # --- Analyst Target Price ---
@@ -610,14 +625,37 @@ def handler(event, context):
 
     # STAGE 1: Bulk prices from Polygon (1 API call)
     polygon_key = get_polygon_key()
-    trading_date = get_last_trading_day()
+    trading_date = get_last_trading_day(polygon_key)
     print(f"  Stage 1: Polygon grouped daily for {trading_date}...")
     all_prices = fetch_all_prices(polygon_key, trading_date)
     print(f"  Got {len(all_prices)} prices")
 
+    # Load foreign filer fundamentals from monthly reference file
+    # These are 20-F/6-K filers not covered by the Frames API
+    bucket = os.environ.get("RAW_DATA_BUCKET", "")
+    if bucket:
+        try:
+            s3_ref = boto3.client("s3")
+            ref_resp = s3_ref.get_object(Bucket=bucket, Key="reference/foreign_filer_fundamentals.json")
+            foreign_data = json.loads(ref_resp["Body"].read())
+            foreign_stocks = foreign_data.get("stocks", [])
+            # Only include foreign filers that have Polygon prices (actively traded)
+            step1_symbols = {s.get("symbol") for s in passing}
+            added = 0
+            for stock in foreign_stocks:
+                sym = stock.get("symbol", "")
+                if sym in all_prices and sym not in step1_symbols:
+                    stock["price"] = all_prices[sym]
+                    passing.append(stock)
+                    added += 1
+            if added:
+                print(f"  Loaded {added} foreign filers from reference file")
+        except Exception as e:
+            print(f"  Note: No foreign filer reference file yet ({e})")
+
     # STAGE 2: Local P/E calculation + pre-filter (zero API calls)
     print(f"  Stage 2: Local P/E + industry-relative pre-filter...")
-    candidates, all_enriched, industry_pe_quartiles = local_prefilter(passing, all_prices)
+    candidates, all_enriched, industry_pe_quartiles, industry_pe_q1 = local_prefilter(passing, all_prices)
     print(f"  Pre-filter: {len(candidates)} candidates for FMP (from {len(passing)})")
 
     # STAGE 3: FMP enrichment for candidates (6 calls per stock)
@@ -691,17 +729,19 @@ def handler(event, context):
                 _table = _dynamodb.Table(_table_name)
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 with _table.batch_writer() as batch:
-                    for industry, q1_pe in industry_pe_quartiles.items():
-                        # Update existing INDUSTRY_AVG item with pe_q1
+                    for industry, median_pe in industry_pe_quartiles.items():
+                        q1_pe = industry_pe_q1.get(industry, median_pe)
+                        # Update existing INDUSTRY_AVG item with both pe thresholds
                         _table.update_item(
                             Key={"PK": f"INDUSTRY_AVG#{industry}", "SK": "METRICS"},
-                            UpdateExpression="SET pe_lower_quartile = :q1, pe_updated = :d",
+                            UpdateExpression="SET pe_median = :med, pe_lower_quartile = :q1, pe_updated = :d",
                             ExpressionAttributeValues={
+                                ":med": Decimal(str(median_pe)),
                                 ":q1": Decimal(str(q1_pe)),
                                 ":d": today,
                             },
                         )
-                print(f"  Persisted P/E lower quartiles for {len(industry_pe_quartiles)} industries")
+                print(f"  Persisted P/E median + Q1 for {len(industry_pe_quartiles)} industries")
         except Exception as e:
             print(f"  Warning: Could not persist P/E quartiles: {e}")
 

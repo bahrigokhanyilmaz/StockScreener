@@ -243,33 +243,35 @@ def handler(event, context):
     # Get passing stocks (Step Functions only passes stocks that cleared the full screen)
     passing_stocks = data.get("passing_stocks", [])
 
-    # Also include GRACE stocks from DynamoDB (they need fresh news/sentiment too)
-    grace_stocks = []
+    # Also include ACTIVE and GRACE tracked stocks from DynamoDB
+    # (they need fresh news/sentiment/competition even if they failed today's filters)
+    tracked_stocks = []
     try:
         import boto3
         table_name = os.environ.get("DATA_TABLE_NAME", "")
         if table_name:
             dynamodb = boto3.resource("dynamodb")
             table = dynamodb.Table(table_name)
-            resp = table.query(
-                IndexName="tracking-status-index",
-                KeyConditionExpression=boto3.dynamodb.conditions.Key("tracking_status").eq("GRACE"),
-            )
             passing_symbols = {s.get("symbol") for s in passing_stocks}
-            for item in resp.get("Items", []):
-                if item.get("SK") == "LATEST" and item.get("symbol") not in passing_symbols:
-                    # Convert DynamoDB item to stock dict format
-                    grace_stocks.append({
-                        "symbol": item.get("symbol"),
-                        "company_name": item.get("company_name", ""),
-                        "price": float(item["price"]) if item.get("price") else None,
-                    })
-            if grace_stocks:
-                print(f"  Including {len(grace_stocks)} GRACE stocks for news refresh")
+            for status in ["GRACE", "ACTIVE"]:
+                resp = table.query(
+                    IndexName="tracking-status-index",
+                    KeyConditionExpression=boto3.dynamodb.conditions.Key("tracking_status").eq(status),
+                )
+                for item in resp.get("Items", []):
+                    if item.get("SK") == "LATEST" and item.get("symbol") not in passing_symbols:
+                        tracked_stocks.append({
+                            "symbol": item.get("symbol"),
+                            "company_name": item.get("company_name", ""),
+                            "sic_industry": item.get("sic_industry", ""),
+                            "price": float(item["price"]) if item.get("price") else None,
+                        })
+            if tracked_stocks:
+                print(f"  Including {len(tracked_stocks)} tracked stocks (ACTIVE+GRACE) for news refresh")
     except Exception as e:
-        print(f"  Warning: Could not load GRACE stocks: {e}")
+        print(f"  Warning: Could not load tracked stocks: {e}")
 
-    all_stocks = passing_stocks + grace_stocks
+    all_stocks = passing_stocks + tracked_stocks
     symbols = [s.get("symbol") for s in all_stocks if s.get("symbol")]
 
     if not symbols:
@@ -299,7 +301,7 @@ def handler(event, context):
 
     for batch_start in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[batch_start:batch_start + BATCH_SIZE]
-        batch_results = fetch_news_batch(batch, api_key, articles_per_stock=10)
+        batch_results = fetch_news_batch(batch, api_key, articles_per_stock=6)
 
         for sym, articles in batch_results.items():
             all_fetched[sym] = articles
@@ -322,9 +324,11 @@ def handler(event, context):
 
     # Merge with TickerTick (catches sources FMP misses: sec.gov, tickerreport, gurufocus)
     # TickerTick rate limit: 10 req/min → 6.5s pacing
-    print(f"  Fetching TickerTick for {len(symbols)} stocks...")
-    for sym in symbols:
-        tt_articles = fetch_tickertick_news(sym, max_articles=10)
+    # Only fetch TickerTick for stocks with <4 articles from FMP (save time)
+    tt_candidates = [sym for sym in symbols if len(all_fetched.get(sym, [])) < 4]
+    print(f"  Fetching TickerTick for {len(tt_candidates)}/{len(symbols)} stocks (skipping those with enough FMP articles)...")
+    for sym in tt_candidates:
+        tt_articles = fetch_tickertick_news(sym, max_articles=6)
         fmp_articles = all_fetched.get(sym, [])
         if tt_articles:
             merged = merge_and_deduplicate(fmp_articles, tt_articles)

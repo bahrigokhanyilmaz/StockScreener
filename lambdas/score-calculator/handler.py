@@ -357,33 +357,41 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     """
     Calculate the final Investability Score for a single stock.
 
-    Formula: (0.7 × fundamental) + (0.3 × sentiment_normalized) + risk_penalties
+    Formula: (0.6 × fundamental) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties
 
     All components on 0-100 scale:
     - Fundamental: 0 = barely passed, 100 = crushed every filter
     - Sentiment normalized: 0 = worst possible, 50 = neutral, 100 = best possible
       Blended toward neutral (50) when confidence is low:
       sentiment_normalized = 50 + (raw_sentiment × 50 × confidence)
+    - Competition normalized: 1 (high competition) → 0, 5 (no competition) → 100
+      Inverted: lower competition = higher score contribution
 
     This ensures:
-    - Max possible (before penalties): (0.7 × 100) + (0.3 × 100) = 100
-    - Neutral sentiment, perfect fundamentals: (0.7 × 100) + (0.3 × 50) = 85
-    - Min possible: (0.7 × 0) + (0.3 × 0) = 0
+    - Max possible (before penalties): (0.6 × 100) + (0.25 × 100) + (0.15 × 100) = 100
+    - Neutral sentiment, perfect fundamentals, avg competition: (0.6 × 100) + (0.25 × 50) + (0.15 × 50) = 80
+    - Min possible: 0
     """
     fundamental_score = stock.get("fundamental_score", 0.0)
     sentiment_data = stock.get("sentiment", {})
     sentiment_score = sentiment_data.get("sentiment_score", 0.0)
     sentiment_confidence = sentiment_data.get("confidence", 0.0)
+    competition_data = stock.get("competition", {})
+    competition_score = competition_data.get("competition_score", 3)  # Default 3 (middle)
 
-    w_fundamental = float(os.environ.get("FUNDAMENTAL_WEIGHT", "0.7"))
-    w_sentiment = float(os.environ.get("SENTIMENT_WEIGHT", "0.3"))
+    w_fundamental = float(os.environ.get("FUNDAMENTAL_WEIGHT", "0.6"))
+    w_sentiment = float(os.environ.get("SENTIMENT_WEIGHT", "0.25"))
+    w_competition = float(os.environ.get("COMPETITION_WEIGHT", "0.15"))
 
     # Normalize sentiment to 0-100 scale, blended toward neutral by confidence
     # raw=-1,conf=1 → 0 | raw=0 or conf=0 → 50 | raw=+1,conf=1 → 100
     sentiment_normalized = 50 + (sentiment_score * 50 * sentiment_confidence)
     sentiment_normalized = max(0.0, min(100.0, sentiment_normalized))
 
-    base_score = (w_fundamental * fundamental_score) + (w_sentiment * sentiment_normalized)
+    # Normalize competition to 0-100 (inverted: 1=dominant→100, 5=fragmented→0)
+    competition_normalized = (5 - competition_score) * 25.0  # 1→100, 2→75, 3→50, 4→25, 5→0
+
+    base_score = (w_fundamental * fundamental_score) + (w_sentiment * sentiment_normalized) + (w_competition * competition_normalized)
 
     # Build/update risk flag ledger — use risk_flags_with_dates (has article publication dates)
     # Falls back to plain risk_flags list for backward compat
@@ -406,6 +414,9 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
             "sentiment_confidence": sentiment_confidence,
             "sentiment_normalized": round(sentiment_normalized, 1),
             "sentiment_weighted": round(w_sentiment * sentiment_normalized, 1),
+            "competition_score": competition_score,
+            "competition_normalized": round(competition_normalized, 1),
+            "competition_weighted": round(w_competition * competition_normalized, 1),
             "risk_penalties": applied_penalties,
             "total_penalty": total_penalty,
             "base_score_before_penalty": round(base_score, 1),
@@ -559,9 +570,13 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "est_lt_growth": stock.get("est_lt_growth"),
                 "analyst_recommendation": stock.get("analyst_recommendation"),
                 "target_price_upside": stock.get("target_price_upside"),
+                "analyst_target_price": stock.get("analyst_target_price"),
                 "institutional_transactions": stock.get("institutional_transactions"),
                 "interest_coverage_ratio": stock.get("interest_coverage_ratio"),
                 "sic_industry": stock.get("sic_industry", ""),
+                "hhi_score": stock.get("competition", {}).get("hhi_score"),
+                "competition_score": stock.get("competition", {}).get("competition_score"),
+                "competition_reasoning": stock.get("competition", {}).get("competition_reasoning", ""),
                 "first_tracked": first_tracked,
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status
@@ -776,6 +791,33 @@ def handler(event, context):
         }
 
     print(f"Calculating investability scores for {len(stocks)} stocks...")
+
+    # For tracked stocks that bypassed Steps 2-4 (came directly from news→sentiment),
+    # backfill their fundamental_score and metrics from their existing DynamoDB LATEST item
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if table_name:
+        _table = dynamodb.Table(table_name)
+        for stock in stocks:
+            if stock.get("fundamental_score") is None:
+                symbol = stock.get("symbol", "")
+                try:
+                    resp = _table.get_item(
+                        Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                        ProjectionExpression="fundamental_score, pe_ratio, peg_ratio, price_to_fcf, "
+                                            "debt_to_equity, quick_ratio, operating_margin, "
+                                            "revenue_growth_yoy, eps_growth_yoy, est_lt_growth, "
+                                            "forward_pe, interest_coverage_ratio, analyst_recommendation, "
+                                            "target_price_upside, analyst_target_price, market_cap, "
+                                            "company_description, logo, weburl, sector, industry",
+                    )
+                    existing = resp.get("Item", {})
+                    if existing:
+                        for key, val in existing.items():
+                            if key not in ("PK", "SK") and stock.get(key) is None:
+                                stock[key] = float(val) if isinstance(val, (int, float)) or (hasattr(val, 'is_finite') and val.is_finite()) else val
+                        print(f"    Backfilled {symbol} from DynamoDB (fundamental_score={existing.get('fundamental_score')})")
+                except Exception as e:
+                    print(f"    Warning: Could not backfill {symbol}: {e}")
 
     # Load existing risk flag ledgers from DynamoDB (for lifecycle management)
     existing_ledgers = load_existing_risk_ledgers([s.get("symbol", "") for s in stocks])

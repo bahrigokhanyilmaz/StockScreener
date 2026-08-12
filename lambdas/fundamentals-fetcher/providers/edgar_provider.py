@@ -181,10 +181,30 @@ class EdgarProvider(DataProvider):
 
         income_tags = {
             "net_income": "NetIncomeLoss",
-            "operating_income": "OperatingIncomeLoss",
-            "operating_cash_flow": "NetCashProvidedByUsedInOperatingActivities",
-            "capex": "PaymentsToAcquirePropertyPlantAndEquipment",
         }
+
+        # Operating income needs multi-tag merge
+        # Some companies don't report OperatingIncomeLoss but report pre-tax income
+        OPERATING_INCOME_TAGS = [
+            "OperatingIncomeLoss",  # Primary: true operating income
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            # Fallback: pre-tax income (includes non-operating items but covers 90% of gap)
+        ]
+
+        # Operating cash flow needs multi-tag merge
+        # Companies with discontinued operations only report the ContinuingOperations variant
+        OPERATING_CF_TAGS = [
+            "NetCashProvidedByUsedInOperatingActivities",  # Primary (most common)
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+            # Fallback: continuing operations variant
+        ]
+
+        # Capex needs multi-tag merge (like revenue and interest expense)
+        # Financial/service companies use PaymentsToAcquireProductiveAssets instead of PP&E
+        CAPEX_TAGS = [
+            "PaymentsToAcquirePropertyPlantAndEquipment",  # Most common (mfg, tech)
+            "PaymentsToAcquireProductiveAssets",            # Financial/service companies (EZPW, etc.)
+        ]
 
         # Interest expense needs multi-tag merge (like revenue)
         INTEREST_EXPENSE_TAGS = [
@@ -197,6 +217,8 @@ class EdgarProvider(DataProvider):
         REVENUE_TAGS_FOR_TTM = [
             "RevenueFromContractWithCustomerExcludingAssessedTax",
             "Revenues",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            # Retailers/telecom that include sales tax in top-line revenue
         ]
 
         # Determine latest available quarter with adequate coverage
@@ -405,12 +427,168 @@ class EdgarProvider(DataProvider):
         all_data["interest_expense"] = interest_ttm
         print(f"    interest_expense (TTM, multi-tag): {len(interest_ttm)} companies")
 
+        # CAPEX TTM: merge 2 tags (same pattern as revenue/interest)
+        # PaymentsToAcquirePropertyPlantAndEquipment is most common,
+        # but financial/service companies use PaymentsToAcquireProductiveAssets
+        capex_quarterly = {}
+        for q in quarterly_periods:
+            merged_quarter = {}
+            for capex_tag in CAPEX_TAGS:
+                frame = self._fetch_frame(capex_tag, "USD", False, quarter=q)
+                for cik, val in frame.items():
+                    if cik not in merged_quarter:
+                        merged_quarter[cik] = val
+                time.sleep(0.1)
+            for cik, val in merged_quarter.items():
+                if cik not in capex_quarterly:
+                    capex_quarterly[cik] = {}
+                capex_quarterly[cik][q] = val
+
+        # Annual fallback for capex
+        capex_annual = {}
+        capex_q1_current = {}
+        capex_q1_prior = {}
+        for capex_tag in CAPEX_TAGS:
+            frame = self._fetch_frame(capex_tag, "USD", False, quarter=annual_period)
+            for cik, val in frame.items():
+                if cik not in capex_annual:
+                    capex_annual[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(capex_tag, "USD", False, quarter=q1_current_year)
+            for cik, val in frame.items():
+                if cik not in capex_q1_current:
+                    capex_q1_current[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(capex_tag, "USD", False, quarter=q1_prior_year)
+            for cik, val in frame.items():
+                if cik not in capex_q1_prior:
+                    capex_q1_prior[cik] = val
+            time.sleep(0.1)
+
+        # Compute capex TTM
+        capex_ttm = {}
+        for cik, quarters_data in capex_quarterly.items():
+            if len(quarters_data) == 4:
+                capex_ttm[cik] = sum(quarters_data.values())
+            elif cik in capex_annual and cik in capex_q1_current and cik in capex_q1_prior:
+                capex_ttm[cik] = capex_annual[cik] + capex_q1_current[cik] - capex_q1_prior[cik]
+        for cik in set(capex_annual.keys()) & set(capex_q1_current.keys()) & set(capex_q1_prior.keys()):
+            if cik not in capex_ttm:
+                capex_ttm[cik] = capex_annual[cik] + capex_q1_current[cik] - capex_q1_prior[cik]
+
+        all_data["capex"] = capex_ttm
+        print(f"    capex (TTM, multi-tag): {len(capex_ttm)} companies")
+
+        # OPERATING INCOME TTM: merge 2 tags
+        # Primary: OperatingIncomeLoss. Fallback: pre-tax income (broader but catches
+        # companies that don't report operating income separately)
+        oi_quarterly = {}
+        for q in quarterly_periods:
+            merged_quarter = {}
+            for oi_tag in OPERATING_INCOME_TAGS:
+                frame = self._fetch_frame(oi_tag, "USD", False, quarter=q)
+                for cik, val in frame.items():
+                    if cik not in merged_quarter:
+                        merged_quarter[cik] = val
+                time.sleep(0.1)
+            for cik, val in merged_quarter.items():
+                if cik not in oi_quarterly:
+                    oi_quarterly[cik] = {}
+                oi_quarterly[cik][q] = val
+
+        # Annual fallback for operating income
+        oi_annual = {}
+        oi_q1_current = {}
+        oi_q1_prior = {}
+        for oi_tag in OPERATING_INCOME_TAGS:
+            frame = self._fetch_frame(oi_tag, "USD", False, quarter=annual_period)
+            for cik, val in frame.items():
+                if cik not in oi_annual:
+                    oi_annual[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(oi_tag, "USD", False, quarter=q1_current_year)
+            for cik, val in frame.items():
+                if cik not in oi_q1_current:
+                    oi_q1_current[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(oi_tag, "USD", False, quarter=q1_prior_year)
+            for cik, val in frame.items():
+                if cik not in oi_q1_prior:
+                    oi_q1_prior[cik] = val
+            time.sleep(0.1)
+
+        # Compute operating income TTM
+        oi_ttm = {}
+        for cik, quarters_data in oi_quarterly.items():
+            if len(quarters_data) == 4:
+                oi_ttm[cik] = sum(quarters_data.values())
+            elif cik in oi_annual and cik in oi_q1_current and cik in oi_q1_prior:
+                oi_ttm[cik] = oi_annual[cik] + oi_q1_current[cik] - oi_q1_prior[cik]
+        for cik in set(oi_annual.keys()) & set(oi_q1_current.keys()) & set(oi_q1_prior.keys()):
+            if cik not in oi_ttm:
+                oi_ttm[cik] = oi_annual[cik] + oi_q1_current[cik] - oi_q1_prior[cik]
+
+        all_data["operating_income"] = oi_ttm
+        print(f"    operating_income (TTM, multi-tag): {len(oi_ttm)} companies")
+
+        # OPERATING CASH FLOW TTM: merge 2 tags
+        # Primary: NetCashProvidedByUsedInOperatingActivities
+        # Fallback: ContinuingOperations variant (companies with discontinued ops)
+        ocf_quarterly = {}
+        for q in quarterly_periods:
+            merged_quarter = {}
+            for ocf_tag in OPERATING_CF_TAGS:
+                frame = self._fetch_frame(ocf_tag, "USD", False, quarter=q)
+                for cik, val in frame.items():
+                    if cik not in merged_quarter:
+                        merged_quarter[cik] = val
+                time.sleep(0.1)
+            for cik, val in merged_quarter.items():
+                if cik not in ocf_quarterly:
+                    ocf_quarterly[cik] = {}
+                ocf_quarterly[cik][q] = val
+
+        # Annual fallback for operating cash flow
+        ocf_annual = {}
+        ocf_q1_current = {}
+        ocf_q1_prior = {}
+        for ocf_tag in OPERATING_CF_TAGS:
+            frame = self._fetch_frame(ocf_tag, "USD", False, quarter=annual_period)
+            for cik, val in frame.items():
+                if cik not in ocf_annual:
+                    ocf_annual[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(ocf_tag, "USD", False, quarter=q1_current_year)
+            for cik, val in frame.items():
+                if cik not in ocf_q1_current:
+                    ocf_q1_current[cik] = val
+            time.sleep(0.1)
+            frame = self._fetch_frame(ocf_tag, "USD", False, quarter=q1_prior_year)
+            for cik, val in frame.items():
+                if cik not in ocf_q1_prior:
+                    ocf_q1_prior[cik] = val
+            time.sleep(0.1)
+
+        # Compute operating cash flow TTM
+        ocf_ttm = {}
+        for cik, quarters_data in ocf_quarterly.items():
+            if len(quarters_data) == 4:
+                ocf_ttm[cik] = sum(quarters_data.values())
+            elif cik in ocf_annual and cik in ocf_q1_current and cik in ocf_q1_prior:
+                ocf_ttm[cik] = ocf_annual[cik] + ocf_q1_current[cik] - ocf_q1_prior[cik]
+        for cik in set(ocf_annual.keys()) & set(ocf_q1_current.keys()) & set(ocf_q1_prior.keys()):
+            if cik not in ocf_ttm:
+                ocf_ttm[cik] = ocf_annual[cik] + ocf_q1_current[cik] - ocf_q1_prior[cik]
+
+        all_data["operating_cash_flow"] = ocf_ttm
+        print(f"    operating_cash_flow (TTM, multi-tag): {len(ocf_ttm)} companies")
+
         # Prior TTM for YoY growth
         # Prior TTM for YoY growth: same derivation, shifted one year back
         # prior_annual_period and q1_prior_year already computed above dynamically
         for metric_name, xbrl_tags in [("net_income", ["NetIncomeLoss"]),
                                         ("revenue", REVENUE_TAGS_FOR_TTM),
-                                        ("operating_income", ["OperatingIncomeLoss"])]:
+                                        ("operating_income", OPERATING_INCOME_TAGS)]:
             # Merge all tags for this metric
             prior_ann_data = {}
             q1_prior_merged = {}
@@ -477,6 +655,20 @@ class EdgarProvider(DataProvider):
             all_data[metric_name] = frame_data
             print(f"    {metric_name} ({balance_primary}+{balance_fallback}): {len(frame_data)} companies")
             time.sleep(0.1)
+
+        # Stockholders equity fallback: companies with consolidated subsidiaries
+        # report StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+        # instead of plain StockholdersEquity
+        equity_data = all_data.get("stockholders_equity", {})
+        equity_alt_tag = "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"
+        for frame_period in [balance_primary, balance_fallback]:
+            alt_data = self._fetch_frame(equity_alt_tag, "USD", False, quarter=frame_period)
+            for cik, val in alt_data.items():
+                if cik not in equity_data:
+                    equity_data[cik] = val
+            time.sleep(0.1)
+        all_data["stockholders_equity"] = equity_data
+        print(f"    stockholders_equity (with NCI fallback): {len(equity_data)} companies")
 
         # Shares fallback: many companies report diluted weighted average shares
         # (a duration metric) instead of CommonStockSharesOutstanding (instant).
@@ -777,6 +969,309 @@ class EdgarProvider(DataProvider):
             results.append(stock)
 
         print(f"  Built fundamentals for {len(results)}/{len(symbols)} stocks")
+
+        # Backfill stocks with missing metrics from non-standard fiscal years
+        self._backfill_missing_from_companyfacts(results)
+
+        # Coverage report: log how many stocks have data for each key metric
+        total = len(results)
+        if total > 0:
+            coverage_metrics = [
+                ("eps", "EPS"),
+                ("fcf_per_share", "FCF/share"),
+                ("operating_margin", "Op Margin"),
+                ("debt_to_equity", "D/E"),
+                ("quick_ratio", "Quick Ratio"),
+                ("revenue_growth_yoy", "Rev Growth"),
+                ("eps_growth_yoy", "EPS Growth"),
+                ("interest_coverage_ratio", "ICR"),
+                ("revenue_per_share", "Rev/share"),
+            ]
+            print(f"  === COVERAGE REPORT ({total} stocks) ===")
+            for field, label in coverage_metrics:
+                has_data = sum(1 for s in results if getattr(s, field, None) is not None)
+                pct = has_data / total * 100
+                flag = " ⚠️" if pct < 75 else ""
+                print(f"    {label:<12s}: {has_data:>5d}/{total} ({pct:.1f}%){flag}")
+
+        return results
+
+    def _backfill_missing_from_companyfacts(self, results: list) -> list:
+        """
+        Backfill stocks with missing critical metrics using per-company companyfacts API.
+
+        The Frames API uses calendar-year quarters (CYxxQx) which misses companies
+        with non-standard fiscal years (e.g., EZPW ends Sept 30). For these, we
+        fetch their individual companyfacts JSON and compute TTM from their actual
+        fiscal quarters.
+
+        Rate limited to 10 req/sec (SEC limit) using ThreadPoolExecutor + pacer.
+        Typically ~800-1200 stocks need backfill, taking ~100-120 seconds.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+
+        # Identify stocks needing backfill (missing key income/cash flow metrics)
+        needs_backfill = []
+        for stock in results:
+            # Only backfill if we have shares (needed for per-share calc) but missing key metrics
+            if getattr(stock, 'eps', None) is not None:
+                # Has EPS, so has shares+net_income. Check if FCF or operating margin missing
+                if getattr(stock, 'fcf_per_share', None) is None or getattr(stock, 'operating_margin', None) is None:
+                    cik = self._ticker_to_cik.get(stock.symbol)
+                    if cik:
+                        needs_backfill.append((stock, cik))
+            elif getattr(stock, 'quick_ratio', None) is not None:
+                # Has balance sheet but missing income metrics entirely
+                cik = self._ticker_to_cik.get(stock.symbol)
+                if cik:
+                    needs_backfill.append((stock, cik))
+
+        if not needs_backfill:
+            print(f"  Backfill: No stocks need companyfacts backfill")
+            return results
+
+        print(f"  Backfill: {len(needs_backfill)} stocks need companyfacts data...")
+
+        # Rate limiter: max 10 requests per second
+        rate_lock = threading.Lock()
+        request_times: list[float] = []
+
+        def rate_limited_fetch(cik: int) -> dict:
+            """Fetch companyfacts with rate limiting."""
+            with rate_lock:
+                now = time.time()
+                # Remove timestamps older than 1 second
+                while request_times and now - request_times[0] > 1.0:
+                    request_times.pop(0)
+                # If at limit, wait
+                if len(request_times) >= 9:  # Leave 1 slot margin
+                    sleep_time = 1.0 - (now - request_times[0])
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                request_times.append(time.time())
+
+            url = COMPANYFACTS_URL.format(cik=cik)
+            try:
+                resp = http_requests.get(url, headers=self.HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception:
+                pass
+            return {}
+
+        def compute_ttm_from_facts(facts: dict, tag: str, unit: str = "USD") -> float | None:
+            """
+            Compute TTM for a given tag from companyfacts data.
+
+            EDGAR 10-Q cash flow/income filings are YTD cumulative (not standalone quarters).
+            TTM = most recent 10-K (12 months) + latest YTD 10-Q - equivalent prior-year YTD 10-Q.
+
+            Falls back to most recent annual if derivation isn't possible.
+            """
+            from datetime import datetime as _dt
+
+            us_gaap = facts.get("facts", {}).get("us-gaap", {})
+            tag_data = us_gaap.get(tag, {})
+            units_list = tag_data.get("units", {}).get(unit, [])
+            if not units_list:
+                return None
+
+            # Only consider recent filings (last 3 years)
+            cutoff = "2023-01-01"
+            filings = [u for u in units_list 
+                       if u.get("form") in ("10-Q", "10-K") 
+                       and u.get("end", "") >= cutoff
+                       and u.get("start")
+                       and u.get("val") is not None]
+
+            if not filings:
+                return None
+
+            # Find 10-K (12-month) filings
+            annuals = sorted(
+                [f for f in filings if f["form"] == "10-K"],
+                key=lambda x: x["end"], reverse=True
+            )
+            # Find 10-Q filings
+            quarterlies = sorted(
+                [f for f in filings if f["form"] == "10-Q"],
+                key=lambda x: x["end"], reverse=True
+            )
+
+            # Deduplicate (EDGAR sometimes has duplicate entries)
+            seen = set()
+            unique_q = []
+            for q in quarterlies:
+                key = (q["start"], q["end"])
+                if key not in seen:
+                    seen.add(key)
+                    unique_q.append(q)
+            quarterlies = unique_q
+
+            # Strategy: 10-K + latest YTD - prior year equivalent YTD
+            if annuals and quarterlies:
+                latest_annual = annuals[0]
+                annual_end = latest_annual["end"]
+                annual_val = latest_annual["val"]
+
+                # Find the most recent 10-Q that ends AFTER the annual period
+                latest_ytd = None
+                for q in quarterlies:
+                    if q["end"] > annual_end:
+                        latest_ytd = q
+                        break
+
+                if latest_ytd:
+                    # Find the equivalent prior-year YTD (same start-month duration, one year earlier)
+                    ytd_start = latest_ytd["start"]
+                    ytd_end = latest_ytd["end"]
+                    try:
+                        ytd_s = _dt.strptime(ytd_start, "%Y-%m-%d")
+                        ytd_e = _dt.strptime(ytd_end, "%Y-%m-%d")
+                        ytd_months = round((ytd_e - ytd_s).days / 30.4)
+
+                        # Look for prior year equivalent (same number of months, starting 1 year earlier)
+                        prior_ytd = None
+                        for q in quarterlies:
+                            q_s = _dt.strptime(q["start"], "%Y-%m-%d")
+                            q_e = _dt.strptime(q["end"], "%Y-%m-%d")
+                            q_months = round((q_e - q_s).days / 30.4)
+                            # Same duration, starts ~1 year before current YTD
+                            if q_months == ytd_months and abs((ytd_s - q_s).days - 365) < 45:
+                                prior_ytd = q
+                                break
+
+                        if prior_ytd:
+                            ttm = annual_val + latest_ytd["val"] - prior_ytd["val"]
+                            return ttm
+                    except (ValueError, TypeError):
+                        pass
+
+                # No YTD after annual — just use the annual directly
+                return annual_val
+
+            # Fallback: most recent annual only
+            if annuals:
+                return annuals[0]["val"]
+
+            return None
+
+        def backfill_stock(stock_cik_pair):
+            """Fetch and compute missing metrics for one stock."""
+            stock, cik = stock_cik_pair
+            facts = rate_limited_fetch(cik)
+            if not facts:
+                return
+
+            # Recency check: skip stocks whose most recent filing is older than 180 days
+            most_recent_end = None
+            us_gaap = facts.get("facts", {}).get("us-gaap", {})
+            for tag_name in list(us_gaap.keys())[:20]:
+                for unit_data in us_gaap[tag_name].get("units", {}).values():
+                    for entry in unit_data:
+                        end = entry.get("end", "")
+                        if end and (most_recent_end is None or end > most_recent_end):
+                            most_recent_end = end
+            if most_recent_end:
+                from datetime import date as _date
+                try:
+                    end_date = datetime.strptime(most_recent_end, "%Y-%m-%d").date()
+                    if (_date.today() - end_date).days > 180:
+                        return  # Data too stale
+                except (ValueError, TypeError):
+                    pass
+
+            # Determine shares (needed for per-share metrics)
+            # Use existing EPS to back-derive net_income, or fetch shares
+            shares = None
+            if getattr(stock, 'revenue_per_share', None) and getattr(stock, 'eps', None):
+                # We have per-share data already — stock has shares from bulk fetch
+                # Back-derive: shares = revenue / revenue_per_share (if both exist)
+                pass
+
+            # Try to get shares from facts
+            shares_val = compute_ttm_from_facts(facts, "WeightedAverageNumberOfDilutedSharesOutstanding", "shares")
+            if not shares_val:
+                shares_val = compute_ttm_from_facts(facts, "CommonStockSharesOutstanding", "shares")
+            # For shares, we want latest instant, not TTM sum
+            us_gaap = facts.get("facts", {}).get("us-gaap", {})
+            shares_data = us_gaap.get("CommonStockSharesOutstanding", {}).get("units", {}).get("shares", [])
+            if shares_data:
+                latest_shares = sorted(
+                    [s for s in shares_data if s.get("end") and s.get("val")],
+                    key=lambda x: x["end"], reverse=True
+                )
+                if latest_shares:
+                    shares = latest_shares[0]["val"]
+            if not shares:
+                shares_data2 = us_gaap.get("WeightedAverageNumberOfDilutedSharesOutstanding", {}).get("units", {}).get("shares", [])
+                if shares_data2:
+                    latest = sorted(
+                        [s for s in shares_data2 if s.get("end") and s.get("val") and s.get("form") in ("10-Q", "10-K")],
+                        key=lambda x: x["end"], reverse=True
+                    )
+                    if latest:
+                        shares = latest[0]["val"]
+
+            if not shares or shares <= 0:
+                return
+
+            # Backfill operating cash flow → FCF
+            if getattr(stock, 'fcf_per_share', None) is None:
+                ocf = compute_ttm_from_facts(facts, "NetCashProvidedByUsedInOperatingActivities")
+                if ocf is None:
+                    ocf = compute_ttm_from_facts(facts, "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations")
+                capex = compute_ttm_from_facts(facts, "PaymentsToAcquirePropertyPlantAndEquipment")
+                if capex is None:
+                    capex = compute_ttm_from_facts(facts, "PaymentsToAcquireProductiveAssets")
+                if ocf is not None:
+                    fcf = ocf - (capex or 0)
+                    stock.fcf_per_share = round(fcf / shares, 4)
+
+            # Backfill operating income → operating margin
+            if getattr(stock, 'operating_margin', None) is None:
+                op_income = compute_ttm_from_facts(facts, "OperatingIncomeLoss")
+                if op_income is None:
+                    op_income = compute_ttm_from_facts(facts, "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest")
+                revenue = compute_ttm_from_facts(facts, "RevenueFromContractWithCustomerExcludingAssessedTax")
+                if revenue is None:
+                    revenue = compute_ttm_from_facts(facts, "Revenues")
+                if revenue is None:
+                    revenue = compute_ttm_from_facts(facts, "RevenueFromContractWithCustomerIncludingAssessedTax")
+                if op_income is not None and revenue and revenue > 0:
+                    stock.operating_margin = round(op_income / revenue, 4)
+
+            # Backfill net income → EPS
+            if getattr(stock, 'eps', None) is None:
+                net_income = compute_ttm_from_facts(facts, "NetIncomeLoss")
+                if net_income is not None:
+                    stock.eps = round(net_income / shares, 4)
+
+            # Backfill revenue → revenue_per_share
+            if getattr(stock, 'revenue_per_share', None) is None:
+                revenue = compute_ttm_from_facts(facts, "RevenueFromContractWithCustomerExcludingAssessedTax")
+                if revenue is None:
+                    revenue = compute_ttm_from_facts(facts, "Revenues")
+                if revenue is not None and shares > 0:
+                    stock.revenue_per_share = round(revenue / shares, 4)
+
+        # Execute backfill with 8 threads (stays under 10 req/sec with rate limiter)
+        backfilled = 0
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(backfill_stock, pair): pair for pair in needs_backfill}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    stock = futures[future][0]
+                    if getattr(stock, 'fcf_per_share', None) is not None:
+                        backfilled += 1
+                except Exception:
+                    pass
+
+        print(f"  Backfill complete: {backfilled}/{len(needs_backfill)} stocks got FCF data")
         return results
 
     def get_rate_limit_delay(self) -> float:

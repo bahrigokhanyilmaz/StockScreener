@@ -124,6 +124,20 @@ body {
   z-index: 1;
 }
 
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th:hover {
+  color: #e2e8f0;
+}
+
+.sort-arrow {
+  font-size: 0.6rem;
+  opacity: 0.8;
+}
+
 .stock-table td {
   padding: 0.5rem;
   border-bottom: 1px solid #1e293b;
@@ -135,12 +149,27 @@ body {
   position: sticky;
   left: 0;
   background: #0f172a;
-  z-index: 2;
+  z-index: 4;
+  min-width: 150px;
+}
+
+.sticky-col-2 {
+  position: sticky;
+  left: 150px;
+  background: #0f172a;
+  z-index: 3;
+  border-right: 1px solid #334155;
 }
 
 th.sticky-col {
   background: #1e293b;
-  z-index: 3;
+  z-index: 6;
+}
+
+th.sticky-col-2 {
+  background: #1e293b;
+  z-index: 5;
+  border-right: 1px solid #334155;
 }
 
 .stock-row {
@@ -149,11 +178,17 @@ th.sticky-col {
 }
 
 .stock-row:hover { background: #1e293b; }
+.stock-row:hover td.sticky-col,
+.stock-row:hover td.sticky-col-2 { background: #1e293b; }
 .stock-row.selected { background: #1e3a5f; }
+.stock-row.selected td.sticky-col,
+.stock-row.selected td.sticky-col-2 { background: #1e3a5f; }
 
 .stock-name-cell {
   display: flex;
   flex-direction: column;
+  max-width: 140px;
+  overflow: hidden;
 }
 
 .stock-symbol {
@@ -983,23 +1018,72 @@ th.sticky-col {
 
 
 /* Table Risk Flag Badges */
+.score-cell {
+  white-space: nowrap;
+}
+
+.risk-cell {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.risk-indicator {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: default;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+}
+
+.risk-dot {
+  font-size: 0.9rem;
+}
+
+.risk-count {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.risk-tooltip {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 0.5rem);
+  transform: translateY(-50%);
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 0.4rem;
+  z-index: 100;
+  flex-direction: column;
+  gap: 3px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  white-space: nowrap;
+}
+
+.risk-indicator:hover .risk-tooltip {
+  display: flex;
+}
+
 .table-risk-flags {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.15rem;
-  margin-top: 0.2rem;
+  gap: 2px;
 }
 
 .table-risk-badge {
   display: inline-block;
   background: #7f1d1d;
   color: #fca5a5;
-  padding: 0.1rem 0.3rem;
+  padding: 2px 0.3rem;
   border-radius: 3px;
   font-size: 0.55rem;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  line-height: 1.3;
 }
 
 .table-risk-badge.risk-decayed {
@@ -1012,6 +1096,26 @@ th.sticky-col {
   background: #422006;
   color: #fbbf24;
 }
+
+/* Competition Score Badge */
+.comp-cell {
+  text-align: center;
+  cursor: help;
+}
+
+.comp-badge {
+  display: inline-block;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.comp-1 { background: #14532d44; color: #4ade80; } /* Dominant */
+.comp-2 { background: #16533044; color: #86efac; } /* Strong */
+.comp-3 { background: #71380044; color: #fbbf24; } /* Moderate */
+.comp-4 { background: #7c2d1244; color: #fb923c; } /* Competitive */
+.comp-5 { background: #7f1d1d44; color: #f87171; } /* Fragmented */
 
 /* Detail Panel Risk Flags */
 .risk-flag-item {

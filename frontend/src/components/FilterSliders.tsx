@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { IndustryAverages } from '../api.ts';
 
 /**
  * FilterSliders Component
@@ -17,9 +18,11 @@ const SLIDER_CONFIG = [
 ];
 
 const TOGGLE_CONFIG = [
+  { key: 'toggle_pe_q1', field: 'pe_ratio', type: 'industry_q1', threshold: 0, label: 'P/E < Q1' },
   { key: 'toggle_analyst_rec', field: 'analyst_recommendation', type: 'max', threshold: 3.0, label: 'Hold+' },
   { key: 'toggle_target_upside', field: 'target_price_upside', type: 'min', threshold: 0.20, label: 'Target ≥20%' },
   { key: 'toggle_lt_growth', field: 'est_lt_growth', type: 'min', threshold: 0.0, label: 'EPS 5Y ↑' },
+  { key: 'toggle_eps_growth', field: 'eps_growth_yoy', type: 'min', threshold: 0.0, label: 'EPS YoY ↑' },
   { key: 'toggle_pos_margin', field: 'operating_margin', type: 'min', threshold: 0.0, label: 'Op Margin +' },
 ];
 
@@ -46,7 +49,7 @@ export function getDefaultFilters(): FilterValues {
   return defaults;
 }
 
-export function applyFilters(stocks: Record<string, unknown>[], filters: FilterValues): Record<string, unknown>[] {
+export function applyFilters(stocks: Record<string, unknown>[], filters: FilterValues, industryAverages?: IndustryAverages): Record<string, unknown>[] {
   return stocks.filter(stock => {
     for (const config of SLIDER_CONFIG) {
       const value = stock[config.key] as number | null | undefined;
@@ -67,6 +70,18 @@ export function applyFilters(stocks: Record<string, unknown>[], filters: FilterV
 
     for (const toggle of TOGGLE_CONFIG) {
       if (!filters[toggle.key]) continue;
+
+      // Special: P/E < industry 25th percentile
+      if (toggle.type === 'industry_q1') {
+        const pe = stock['pe_ratio'] as number | null | undefined;
+        const sicIndustry = stock['sic_industry'] as string | undefined;
+        if (!pe || !sicIndustry || !industryAverages) return false;
+        const q1 = industryAverages[sicIndustry]?.pe_lower_quartile;
+        if (q1 == null) return false;
+        if (pe > q1) return false;
+        continue;
+      }
+
       const value = stock[toggle.field] as number | null | undefined;
       if (value === null || value === undefined) return false;
       if (toggle.type === 'max' && value > toggle.threshold) return false;

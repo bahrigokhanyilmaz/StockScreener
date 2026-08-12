@@ -37,6 +37,9 @@ export interface Stock {
   target_price_upside: number | null;
   analyst_target_price: number | null;
   interest_coverage_ratio: number | null;
+  hhi_score: number | null;
+  competition_score: number | null;
+  competition_reasoning: string | null;
   risk_flags: (string | Record<string, unknown>)[];
   first_tracked: string;
   last_updated: string;
@@ -159,6 +162,8 @@ export async function sellStock(ticker: string, price: number, lotId?: string): 
 export interface IndustryAverages {
   [industry: string]: {
     pe_ratio?: number;
+    pe_median?: number;
+    pe_lower_quartile?: number;
     debt_to_equity?: number;
     quick_ratio?: number;
     operating_margin?: number;

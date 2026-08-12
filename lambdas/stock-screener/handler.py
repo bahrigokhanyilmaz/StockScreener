@@ -420,6 +420,53 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
 
     print(f"  Computed medians for {len(industry_medians)} industries (min 5 stocks each)")
 
+    # Step 3b: Compute HHI (Herfindahl-Hirschman Index) per industry from revenue data
+    # HHI = sum of (market share %)² for each company in the industry
+    # Measures concentration: high HHI = few dominant players, low HHI = many competitors
+    # Mapped to 1-5 scale: 1 = concentrated (low competition), 5 = fragmented (high competition)
+    industry_revenue: dict[str, list[float]] = defaultdict(list)
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        entry = industry_map.get(symbol)
+        if not entry:
+            continue
+        industry = entry.get("industry", "")
+        if not industry:
+            continue
+        # Use revenue (TTM) — revenue_per_share × shares isn't available, but we have
+        # the raw revenue from the stock dict if the fundamentals-fetcher stored it
+        # Actually revenue_per_share * shares would give us revenue, but we don't have shares here.
+        # Instead, use revenue_per_share as a proxy for relative size within industry.
+        rev_ps = stock.get("revenue_per_share")
+        if rev_ps and rev_ps > 0:
+            industry_revenue[industry].append(rev_ps)
+
+    industry_hhi = {}
+    for industry, revenues in industry_revenue.items():
+        if len(revenues) < 5:
+            continue
+        total_rev = sum(revenues)
+        if total_rev <= 0:
+            continue
+        # HHI = sum of (share%)² where share% = (company_rev / total_rev) * 100
+        hhi = sum(((r / total_rev) * 100) ** 2 for r in revenues)
+        # Map HHI to 1-5 scale (inverted: low HHI = high competition = 5)
+        # HHI ranges: 100 (perfectly competitive) to 10000 (monopoly)
+        # Typical public market industries: 500-4000
+        if hhi >= 4000:
+            score = 1  # Very concentrated (near monopoly/duopoly)
+        elif hhi >= 2500:
+            score = 2  # Concentrated
+        elif hhi >= 1500:
+            score = 3  # Moderate concentration
+        elif hhi >= 750:
+            score = 4  # Competitive
+        else:
+            score = 5  # Highly competitive (fragmented)
+        industry_hhi[industry] = {"hhi_raw": round(hhi, 1), "hhi_score": score}
+
+    print(f"  Computed HHI for {len(industry_hhi)} industries")
+
     # Step 4: Persist to DynamoDB
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(table_name)
@@ -442,6 +489,11 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
             }
             for k, v in metrics.items():
                 item[k] = to_decimal(v) if isinstance(v, float) else v
+            # Add HHI data if available for this industry
+            hhi_data = industry_hhi.get(industry)
+            if hhi_data:
+                item["hhi_raw"] = to_decimal(hhi_data["hhi_raw"])
+                item["hhi_score"] = hhi_data["hhi_score"]
             batch.put_item(Item=item)
 
     print(f"  Persisted {len(industry_medians)} industry averages to DynamoDB")

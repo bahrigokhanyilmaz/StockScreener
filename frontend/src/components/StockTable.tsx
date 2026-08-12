@@ -1,4 +1,5 @@
-import type { Stock } from '../api.ts';
+import { useState } from 'react';
+import type { Stock, IndustryAverages } from '../api.ts';
 import type { TrendData } from '../utils/trends.ts';
 
 /**
@@ -11,6 +12,8 @@ import type { TrendData } from '../utils/trends.ts';
 interface Props {
   stocks: Stock[];
   trends: Record<string, TrendData>;
+  ownedSymbols: Set<string>;
+  industryAverages: IndustryAverages;
   selectedTicker: string | null;
   onSelectStock: (ticker: string) => void;
   onBuy: (ticker: string) => void;
@@ -42,6 +45,13 @@ function metricColor(key: string, value: number | null | undefined): string {
   const passes = passesThreshold(key, value);
   if (passes === null) return '#64748b'; // gray — no data
   return passes ? '#4ade80' : '#f87171'; // green or red
+}
+
+function targetUpsideColor(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '#64748b'; // gray — no data
+  if (value < 0) return '#f87171';    // red — above target (no upside)
+  if (value < 0.20) return '#fbbf24'; // yellow — some upside but <20%
+  return '#4ade80';                    // green — 20%+ upside
 }
 
 function icrColor(value: number | null | undefined): string {
@@ -170,7 +180,10 @@ function renderTrendCell(trend: TrendData | undefined) {
   );
 }
 
-export default function StockTable({ stocks, trends, selectedTicker, onSelectStock, onBuy, onRelease }: Props) {
+export default function StockTable({ stocks, trends, ownedSymbols, industryAverages, selectedTicker, onSelectStock, onBuy, onRelease }: Props) {
+  const [sortCol, setSortCol] = useState<string>('investability_score');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
   if (stocks.length === 0) {
     return (
       <div className="empty-state">
@@ -179,67 +192,143 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
     );
   }
 
+  const columns: { key: string; label: string; className?: string }[] = [
+    { key: 'symbol', label: 'Stock', className: 'sticky-col' },
+    { key: 'investability_score', label: 'Score', className: 'sticky-col-2' },
+    { key: 'risk_flags', label: 'Risk' },
+    { key: 'competition_score', label: 'Comp' },
+    { key: 'tracking_status', label: 'Status' },
+    { key: 'first_tracked', label: 'Days' },
+    { key: 'price', label: 'Price' },
+    { key: 'market_cap', label: 'Mkt Cap' },
+    { key: '_daily', label: 'Daily' },
+    { key: 'pe_ratio', label: 'P/E' },
+    { key: '_pe_50th', label: 'P/E 50th' },
+    { key: 'forward_pe', label: 'Fwd P/E' },
+    { key: 'peg_ratio', label: 'PEG' },
+    { key: 'price_to_fcf', label: 'P/FCF' },
+    { key: 'debt_to_equity', label: 'D/E' },
+    { key: 'interest_coverage_ratio', label: 'ICR' },
+    { key: 'quick_ratio', label: 'QR' },
+    { key: 'operating_margin', label: 'Op Margin' },
+    { key: 'revenue_growth_yoy', label: 'Rev Gr' },
+    { key: 'est_lt_growth', label: 'LT Gr' },
+    { key: 'target_price_upside', label: 'Target ↑' },
+    { key: '_signal', label: 'Signal' },
+    { key: '_buy', label: '' },
+    { key: '_release', label: '' },
+  ];
+
+  function handleSort(key: string) {
+    if (key.startsWith('_')) return; // Non-sortable columns
+    if (sortCol === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(key);
+      setSortDir(key === 'symbol' || key === 'tracking_status' ? 'asc' : 'desc');
+    }
+  }
+
+  const sortedStocks = [...stocks].sort((a, b) => {
+    let aVal: unknown = (a as unknown as Record<string, unknown>)[sortCol];
+    let bVal: unknown = (b as unknown as Record<string, unknown>)[sortCol];
+
+    // Special cases
+    if (sortCol === 'risk_flags') {
+      aVal = (a.risk_flags || []).length;
+      bVal = (b.risk_flags || []).length;
+    } else if (sortCol === 'first_tracked') {
+      aVal = a.first_tracked ? new Date(a.first_tracked).getTime() : 0;
+      bVal = b.first_tracked ? new Date(b.first_tracked).getTime() : 0;
+    }
+
+    // Nulls always sort last
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+
+    let cmp = 0;
+    if (typeof aVal === 'string' && typeof bVal === 'string') {
+      cmp = aVal.localeCompare(bVal);
+    } else {
+      cmp = (aVal as number) - (bVal as number);
+    }
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
   return (
     <div className="stock-table-container">
       <table className="stock-table">
         <thead>
           <tr>
-            <th className="sticky-col">Stock</th>
-            <th>Score</th>
-            <th>Status</th>
-            <th>Days</th>
-            <th>Price</th>
-            <th>Mkt Cap</th>
-            <th>Daily</th>
-            <th>P/E</th>
-            <th>Fwd P/E</th>
-            <th>PEG</th>
-            <th>P/FCF</th>
-            <th>D/E</th>
-            <th>ICR</th>
-            <th>QR</th>
-            <th>Op Margin</th>
-            <th>Rev Gr</th>
-            <th>LT Gr</th>
-            <th>Target ↑</th>
-            <th>Signal</th>
-            <th></th>
-            <th></th>
+            {columns.map(col => (
+              <th
+                key={col.key}
+                className={`${col.className || ''} ${col.key.startsWith('_') ? '' : 'sortable-th'}`}
+                onClick={() => handleSort(col.key)}
+              >
+                {col.label}
+                {sortCol === col.key && <span className="sort-arrow">{sortDir === 'asc' ? ' ▲' : ' ▼'}</span>}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {stocks.map((stock) => {
-            const signal = getSellSignal(stock.price, stock.analyst_target_price ?? null);
+          {sortedStocks.map((stock) => {
+            const isOwned = ownedSymbols.has(stock.symbol);
+            const signal = isOwned ? getSellSignal(stock.price, stock.analyst_target_price ?? null) : '';
             return (
               <tr
                 key={stock.symbol}
                 className={`stock-row ${selectedTicker === stock.symbol ? 'selected' : ''} ${stock.tracking_status === 'GRACE' ? 'grace-row' : ''}`}
                 onClick={() => onSelectStock(stock.symbol)}
               >
-                <td className="stock-name-cell sticky-col">
-                  <span className="stock-symbol">{stock.symbol}</span>
-                  <span className="stock-company">{stock.company_name}</span>
+                <td className="sticky-col">
+                  <div className="stock-name-cell">
+                    <span className="stock-symbol">{stock.symbol}</span>
+                    <span className="stock-company">{stock.company_name}</span>
+                  </div>
                 </td>
-                <td>
+                <td className="score-cell sticky-col-2">
                   <span className="score-badge" style={{ backgroundColor: getScoreColor(stock.investability_score) }}>
                     {stock.investability_score !== null ? stock.investability_score.toFixed(0) : '—'}
                   </span>
-                  {stock.risk_flags && stock.risk_flags.length > 0 && (
-                    <div className="table-risk-flags">
-                      {stock.risk_flags.map((flag: string | Record<string, unknown>, i: number) => {
-                        const { label, status, tooltip } = formatRiskFlag(flag);
-                        return (
-                          <span
-                            key={i}
-                            className={`table-risk-badge ${status === 'decayed' ? 'risk-decayed' : status === 'decaying' ? 'risk-decaying' : ''}`}
-                            title={tooltip}
-                          >
-                            {label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
+                </td>
+                <td className="risk-cell">
+                  {stock.risk_flags && stock.risk_flags.length > 0 && (() => {
+                    const count = stock.risk_flags.length;
+                    const color = count >= 4 ? '#ef4444' : count >= 3 ? '#f97316' : count >= 2 ? '#eab308' : '#facc15';
+                    const bg = count >= 4 ? '#7f1d1d44' : count >= 3 ? '#7c2d1244' : count >= 2 ? '#71380044' : '#71380033';
+                    return (
+                      <span className="risk-indicator" style={{ background: bg }}>
+                        <span className="risk-dot" style={{ color }}>⚠</span>
+                        <span className="risk-count" style={{ color }}>{count}</span>
+                        <div className="risk-tooltip">
+                          {stock.risk_flags.map((flag: string | Record<string, unknown>, i: number) => {
+                            const { label, status, tooltip } = formatRiskFlag(flag);
+                            return (
+                              <span
+                                key={i}
+                                className={`table-risk-badge ${status === 'decayed' ? 'risk-decayed' : status === 'decaying' ? 'risk-decaying' : ''}`}
+                                title={tooltip}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td className="comp-cell" title={stock.competition_reasoning || ''}>
+                  {stock.competition_score != null ? (
+                    <span className={`comp-badge comp-${stock.competition_score}`}>
+                      {stock.hhi_score != null && stock.hhi_score !== stock.competition_score
+                        ? `${stock.hhi_score}→${stock.competition_score}`
+                        : stock.competition_score}
+                    </span>
+                  ) : '—'}
                 </td>
                 <td>
                   <span className={`status-pill ${stock.tracking_status === 'ACTIVE' ? 'status-active' : stock.tracking_status === 'GRACE' ? 'status-grace' : ''}`}>
@@ -251,6 +340,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
                 <td>{formatMarketCap(stock.market_cap)}</td>
                 <td>{renderTrendCell(trends[stock.symbol])}</td>
                 <td style={{ color: metricColor('pe_ratio', stock.pe_ratio) }}>{formatNum(stock.pe_ratio, 1)}</td>
+                <td style={{ color: '#64748b' }}>{formatNum(((industryAverages[stock.sic_industry] || {}).pe_median ?? (industryAverages[stock.sic_industry] || {}).pe_lower_quartile) as number | undefined, 1)}</td>
                 <td style={{ color: metricColor('forward_pe', stock.forward_pe as number | null) }}>{formatNum(stock.forward_pe as number | null, 1)}</td>
                 <td style={{ color: metricColor('peg_ratio', stock.peg_ratio) }}>{formatNum(stock.peg_ratio)}</td>
                 <td style={{ color: metricColor('price_to_fcf', stock.price_to_fcf as number | null) }}>{formatNum(stock.price_to_fcf as number | null, 1)}</td>
@@ -265,7 +355,7 @@ export default function StockTable({ stocks, trends, selectedTicker, onSelectSto
                 <td style={{ color: metricColor('operating_margin', stock.operating_margin) }}>{formatPct(stock.operating_margin)}</td>
                 <td style={{ color: metricColor('revenue_growth_yoy', stock.revenue_growth_yoy as number | null) }}>{formatPct(stock.revenue_growth_yoy as number | null)}</td>
                 <td style={{ color: metricColor('est_lt_growth', stock.est_lt_growth as number | null) }}>{formatPct(stock.est_lt_growth as number | null)}</td>
-                <td style={{ color: metricColor('target_price_upside', stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
+                <td style={{ color: targetUpsideColor(stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
                 <td>
                   {signal && <span className={`sell-indicator ${signal === 'SELL' ? 'sell-now' : ''}`}>{signal}</span>}
                 </td>

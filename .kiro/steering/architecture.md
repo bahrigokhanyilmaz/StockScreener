@@ -91,7 +91,7 @@ Total: ~12-15 minutes per run.
 - Computes `fundamental_score` (0-100): for each filter, scores 0-1 based on how far beyond threshold. Average × 100.
 - Missing data = FAIL (full screen is strict — stock must prove it qualifies with complete data)
 - ~30 → ~20-30 pass with scores
-- **Reasoning:** Step 4 exists to compute `fundamental_score` which is 70% of the investability formula. It also catches edge cases where FMP data differs from EDGAR (e.g., FMP reports different revenue growth than EDGAR computed from filings).
+- **Reasoning:** Step 4 exists to compute `fundamental_score` which is 60% of the investability formula. It also catches edge cases where FMP data differs from EDGAR (e.g., FMP reports different revenue growth than EDGAR computed from filings).
 
 **Step 5 — News Fetch** (~4 minutes)
 - For each passing stock + GRACE stocks from DynamoDB:
@@ -106,16 +106,17 @@ Total: ~12-15 minutes per run.
 - Returns: relevance, sentiment (-1 to +1), confidence, risk flags, summary
 - Risk flags constrained to 8 values (fraud, SEC investigation, accounting, regulatory, lawsuit, revenue risk, management departure, product recall)
 - Aggregate per stock: confidence-weighted average sentiment
-- **Reasoning:** AI reads every article and produces structured sentiment. Humans can't read 200 articles daily. Claude identifies specific risk categories that feed into the scoring penalty system.
+- **Competition assessment:** One additional Claude call per stock after all articles analyzed. Receives HHI score + article summaries, returns adjusted competition_score (1-5) + reasoning.
+- **Reasoning:** AI reads every article and produces structured sentiment. Humans can't read 200 articles daily. Claude identifies specific risk categories that feed into the scoring penalty system. Competition assessment leverages Claude's broad knowledge of market dynamics to adjust the quantitative HHI score.
 
 **Step 7 — Score Calculator** (~1-2 minutes)
-- Investability = (0.7 × fundamental_score) + (0.3 × sentiment_normalized) + risk_penalties
+- Investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties
 - Fetches 30-day OHLCV price history from FMP `/stable/historical-price-eod/full` (1s pacing)
 - Fetches company descriptions from FMP `/stable/profile` (fallback if not already present)
 - Manages risk flag ledger (time-decay for one-time events, persistence for uncertain events)
 - Persists ALL to DynamoDB: LATEST, SCORE#date, TRACKING, ARTICLES, PRICE_HISTORY#
 - Computes portfolio signals (green/yellow/red) for owned stocks
-- **Reasoning:** Single step that combines fundamental + sentiment into one actionable score, persists everything for the dashboard, and maintains the risk lifecycle.
+- **Reasoning:** Single step that combines fundamental + sentiment + competition into one actionable score, persists everything for the dashboard, and maintains the risk lifecycle.
 
 **Step 8 — Alert Checker** (instant)
 - Detects: new passers, dropped stocks, sentiment crashes, risk flags, grace expiry
@@ -158,7 +159,7 @@ Total: ~12-15 minutes per run.
 
 **Step 7 — Score Calculator** (~2-3 minutes)
 - Loads existing risk flag ledgers from DynamoDB (for lifecycle management)
-- Investability formula: `(0.7 × fundamental) + (0.3 × sentiment_normalized) + risk_penalties`
+- Investability formula: `(0.6 × fundamental) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties`
 - Sentiment normalized: `50 + (raw × 50 × confidence)` — maps to 0-100
 - Risk flag ledger: merges new flags from sentiment with existing, applies time-decay
 - Fetches company descriptions from Polygon `/v3/reference/tickers/{ticker}` (12s pacing)
@@ -236,7 +237,7 @@ Total: ~12-15 minutes per run.
 
 **GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated, projection: ALL)
 
-**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, target_price_upside, institutional_transactions, last_updated
+**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, hhi_score, competition_score, competition_reasoning, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, analyst_target_price, target_price_upside, institutional_transactions, last_updated
 
 ### API Endpoints
 
@@ -302,7 +303,7 @@ Source of truth: `shared/config/screener-filters.json`
 ### Investability Score Formula
 
 ```
-investability = (0.7 × fundamental_score) + (0.3 × sentiment_normalized) + risk_penalties
+investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties
 
 fundamental_score: 0-100
   Per filter: 0 = at threshold (barely passed), 1.0 = best possible
@@ -313,15 +314,44 @@ sentiment_normalized: 0-100
   = 50 + (raw_sentiment × 50 × confidence)
   Where raw_sentiment is -1 to +1, confidence is 0 to 1
   Neutral (no news or low confidence) = 50
+
+competition_normalized: 0-100
+  = (5 - competition_score) × 25
+  Where competition_score is 1-5 (1=dominant, 5=fragmented)
+  Maps: 1→100, 2→75, 3→50, 4→25, 5→0
   
 risk_penalties: applied from risk flag ledger (see below)
 Final: clamped [0, 100]
 
 Range verification:
-  Max: (0.7 × 100) + (0.3 × 100) = 100 ✓
+  Max: (0.6 × 100) + (0.25 × 100) + (0.15 × 100) = 100 ✓
   Min: 0 (clamped) ✓
-  Neutral midpoint: (0.7 × 50) + (0.3 × 50) = 50 ✓
+  Neutral midpoint: (0.6 × 50) + (0.25 × 50) + (0.15 × 50) = 50 ✓
 ```
+
+### Competition Score (Competitive Landscape Rating)
+
+**Two-stage assessment:**
+1. **HHI (Herfindahl-Hirschman Index)** — computed in Step 2 from EDGAR revenue data grouped by SEC SIC industry. Measures market concentration. Mapped to 1-5 scale.
+2. **Claude adjustment** — per-stock Claude call in Step 6 receives the HHI score + article summaries and adjusts based on actual moat, niche dominance, switching costs, and recent competitive dynamics from news.
+
+**HHI → Score mapping:**
+| HHI Range | Score | Meaning |
+|-----------|-------|---------|
+| ≥ 4000 | 1 | Very concentrated (near monopoly) |
+| 2500-3999 | 2 | Concentrated (few players) |
+| 1500-2499 | 3 | Moderate concentration |
+| 750-1499 | 4 | Competitive |
+| < 750 | 5 | Highly competitive (fragmented) |
+
+**Claude adjustment prompt includes:**
+- Warning that SEC SIC categories are broad (company may dominate a niche within a broadly classified industry)
+- Warning that training data may not reflect recent market entries/exits — consider news
+- Request to assess moat, switching costs, brand, network effects, regulatory barriers
+
+**Stored in DynamoDB LATEST:** `hhi_score` (raw), `competition_score` (Claude-adjusted), `competition_reasoning`
+
+**Frontend display:** Shows both scores when they differ (e.g., "3→2"), color-coded green (1) to red (5), tooltip shows reasoning.
 
 ### Risk Flag System
 
@@ -456,6 +486,19 @@ Architecture:
 | Daily change in table (not 30d) | 30d already in detail panel sparkline; daily is more actionable |
 | yfinance blocked from Lambda | Yahoo blocks AWS data center IPs. Can't use from Lambda |
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
+| Competition score: HHI + Claude hybrid | HHI from EDGAR revenue is quantitative but SEC SIC too broad. Claude adjusts with moat/niche knowledge. Stores both for transparency |
+| Competition weight 15% of investability | Enough to differentiate but doesn't dominate. Fundamentals (60%) remain primary signal |
+| revenue_risk prompt tightened | Only flags concrete forward threats (guidance cuts, contract loss). Past declines or normalizations excluded |
+| EDGAR multi-tag merge (capex, OCF, opIncome, equity, revenue) | Single-tag coverage was 50-76%. Multi-tag adds fallbacks for companies using alternative XBRL taxonomy |
+| Monthly tag discovery Lambda | Queries EDGAR companyfacts for companies with missing data, discovers alternative tags. EventBridge 1st of month |
+| Companyfacts backfill for non-calendar FY | ~1,800 stocks with missing FCF get backfilled from individual companyfacts. Annual+YTD derivation handles fiscal years ending any month |
+| Foreign filer reference file (monthly) | 20-F/6-K filers (ATAT, TKC, etc.) fetched from companyfacts, stored as S3 reference. Step 3 loads in milliseconds vs 800 API calls/run |
+| IFRS namespace support | Foreign filer generator checks ifrs-full when us-gaap has no data. Tag mappings: ProfitLoss, Revenue, CashFlowsFromUsedInOperatingActivities, etc. |
+| 6-month data recency filter | Stocks with latest filing >180 days old are excluded. Can't invest on stale data. Applied across all stocks (GAAP and IFRS) |
+| P/E exemption when PEG < 1.0 | If PEG proves growth justifies valuation, P/E industry check is bypassed. Prevents blocking high-growth value stocks (e.g., WAY PEG=0.096) |
+| Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (yesterday's prices). Falls back to T-2 if Polygon returns error. Pipeline runs at 8PM UTC, well past 5AM publish time |
+| TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
+| News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
 
 ### Build Progress
 
@@ -482,6 +525,16 @@ Architecture:
 | Industry-relative P/E (lower quartile) | COMPLETE |
 | Soft Finnhub filters | COMPLETE |
 | Dynamic EDGAR dates (no hardcoded quarters) | COMPLETE |
+| Competition score (HHI + Claude hybrid) | COMPLETE |
+| EDGAR multi-tag coverage (capex, OCF, opIncome, equity, revenue) | COMPLETE |
+| Monthly tag discovery Lambda | COMPLETE |
+| Industry P/E median (50th pctile for all) | COMPLETE |
+| Companyfacts backfill (non-calendar FY stocks) | COMPLETE |
+| Foreign filer reference file (20-F/6-K + IFRS) | COMPLETE |
+| 6-month data recency filter | COMPLETE |
+| P/E exemption when PEG < 1.0 | COMPLETE |
+| Polygon T-1 pricing (fresher data) | COMPLETE |
+| Column sorting (click any header) | COMPLETE |
 | Custom domain for Amplify | NEXT (user to purchase domain) |
 | Retroactive analysis (Athena) | FUTURE |
 

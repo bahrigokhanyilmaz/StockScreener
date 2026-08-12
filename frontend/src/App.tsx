@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getStocks, getPipelineStatus, getStockPrices, untrackStock } from './api.ts';
-import type { Stock, PipelineStatus } from './api.ts';
+import { getStocks, getPipelineStatus, getStockPrices, getPortfolio, getIndustryAverages, untrackStock } from './api.ts';
+import type { Stock, PipelineStatus, IndustryAverages } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
 import Portfolio from './components/Portfolio.tsx';
@@ -30,18 +30,24 @@ function App() {
   const [filters, setFilters] = useState<FilterValues>(getDefaultFilters());
   const [buyingTicker, setBuyingTicker] = useState<string | null>(null);
   const [portfolioKey, setPortfolioKey] = useState(0); // increment to refresh portfolio
+  const [ownedSymbols, setOwnedSymbols] = useState<Set<string>>(new Set());
+  const [industryAverages, setIndustryAverages] = useState<IndustryAverages>({});
 
   // Fetch data on mount
   useEffect(() => {
     async function loadData() {
       try {
         setLoading(true);
-        const [stocksData, statusData] = await Promise.all([
+        const [stocksData, statusData, portfolioData, industryData] = await Promise.all([
           getStocks(),
           getPipelineStatus(),
+          getPortfolio().catch(() => ({ positions: [] })),
+          getIndustryAverages().catch(() => ({ industries: {}, count: 0 })),
         ]);
         setAllStocks(stocksData.stocks);
         setPipelineStatus(statusData);
+        setOwnedSymbols(new Set(portfolioData.positions.map(p => p.symbol)));
+        setIndustryAverages(industryData.industries);
         setError(null);
 
         // Fetch price trends for all stocks (batched to avoid API throttling)
@@ -71,9 +77,9 @@ function App() {
 
   // Apply filters client-side (instant, no API call), sort by score
   const filteredStocks = useMemo(() => {
-    const filtered = applyFilters(allStocks as unknown as Record<string, unknown>[], filters) as unknown as Stock[];
+    const filtered = applyFilters(allStocks as unknown as Record<string, unknown>[], filters, industryAverages) as unknown as Stock[];
     return filtered.sort((a, b) => (b.investability_score ?? 0) - (a.investability_score ?? 0));
-  }, [allStocks, filters]);
+  }, [allStocks, filters, industryAverages]);
 
   // Default to first stock when data loads or filters change
   useEffect(() => {
@@ -124,6 +130,8 @@ function App() {
                 <StockTable
                   stocks={filteredStocks}
                   trends={trends}
+                  ownedSymbols={ownedSymbols}
+                  industryAverages={industryAverages}
                   selectedTicker={selectedTicker}
                   onSelectStock={setSelectedTicker}
                   onBuy={(ticker) => setBuyingTicker(ticker)}
@@ -151,7 +159,10 @@ function App() {
             ticker={buyingTicker}
             currentPrice={allStocks.find(s => s.symbol === buyingTicker)?.price ?? null}
             onClose={() => setBuyingTicker(null)}
-            onSuccess={() => setPortfolioKey(k => k + 1)}
+            onSuccess={() => {
+              setPortfolioKey(k => k + 1);
+              getPortfolio().then(d => setOwnedSymbols(new Set(d.positions.map(p => p.symbol)))).catch(() => {});
+            }}
           />
         )}
       </main>
