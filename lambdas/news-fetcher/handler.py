@@ -243,6 +243,23 @@ def handler(event, context):
     # Get passing stocks (Step Functions only passes stocks that cleared the full screen)
     passing_stocks = data.get("passing_stocks", [])
 
+    # Investability gate: only stocks worth full analysis get news/sentiment/competition
+    # - Average daily volume > 100K (can enter/exit position)
+    # - At least 1 analyst covering (basic price discovery)
+    # Stocks failing this gate still passed fundamentals but aren't investable
+    qualified_stocks = []
+    for stock in passing_stocks:
+        avg_vol = stock.get("average_volume") or 0
+        has_analyst = stock.get("analyst_recommendation") is not None
+        if avg_vol >= 100_000 and has_analyst:
+            qualified_stocks.append(stock)
+
+    gated_count = len(passing_stocks) - len(qualified_stocks)
+    if gated_count > 0:
+        print(f"  Investability gate: {len(passing_stocks)} passed filters → {len(qualified_stocks)} qualify (volume>100K + analyst)")
+        print(f"  Excluded: {gated_count} stocks (low volume or no analyst coverage)")
+    passing_stocks = qualified_stocks
+
     # Also include ACTIVE and GRACE tracked stocks from DynamoDB
     # (they need fresh news/sentiment/competition even if they failed today's filters)
     tracked_stocks = []

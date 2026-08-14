@@ -597,6 +597,9 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         mc = profile.get("marketCap")
         if mc:
             stock["market_cap"] = mc
+        avg_vol = profile.get("averageVolume")
+        if avg_vol:
+            stock["average_volume"] = avg_vol
 
     return stock
 
