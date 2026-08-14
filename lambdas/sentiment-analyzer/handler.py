@@ -54,7 +54,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
 }}
 
 Scoring guide:
-- relevant: Is this article actually about {ticker}? If it mentions the company only in passing, or is about a different topic, mark false.
+- relevant: Is this article actually about {ticker} AND does it contain substantive information about the company's business, financials, or prospects? Mark FALSE for: scheduling announcements (conference attendance, earnings date notices), press release date notifications, articles that mention the company only in passing, or stub articles with no real content.
 - sentiment: -1.0 = very negative for stock (fraud, lawsuits, bankruptcy). 0.0 = neutral. +1.0 = very positive (strong earnings beat, major contract win).
 - confidence: How confident you are in the sentiment score. Low confidence for short/vague articles.
 - risk_flags: Only include if the article describes one of these SPECIFIC situations. Use ONLY these exact values — do not invent new ones:
