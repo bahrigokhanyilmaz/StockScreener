@@ -499,6 +499,7 @@ Architecture:
 | Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (yesterday's prices). Falls back to T-2 if Polygon returns error. Pipeline runs at 8PM UTC, well past 5AM publish time |
 | TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
+| FMP ICR=0 treated as null | FMP returns interestCoverageRatioTTM=0 for debt-free companies. We now skip 0 values to avoid overwriting valid null with misleading zero |
 
 ### Build Progress
 

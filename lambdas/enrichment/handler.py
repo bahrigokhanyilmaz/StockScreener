@@ -500,7 +500,7 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
 
     # --- ICR from FMP ratios ---
     icr_fmp = ratios.get("interestCoverageRatioTTM")
-    if icr_fmp is not None:
+    if icr_fmp is not None and icr_fmp != 0:
         stock["interest_coverage_ratio"] = round(icr_fmp, 2)
 
     # --- Quick Ratio from FMP ratios ---

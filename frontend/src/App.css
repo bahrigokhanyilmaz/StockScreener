@@ -52,6 +52,12 @@ body {
 .status-badge.grace { background: #713f12; color: #fde047; }
 .status-badge.total { background: #1e293b; color: #94a3b8; }
 
+.prices-date {
+  color: #64748b;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+}
+
 /* Layout */
 .top-filters {
   margin-bottom: 1rem;
@@ -63,6 +69,39 @@ body {
   gap: 1rem;
   max-width: 100vw;
   overflow: hidden;
+  position: relative;
+}
+
+.content-layout.detail-hidden {
+  grid-template-columns: 1fr;
+}
+
+.panel-toggle {
+  position: absolute;
+  top: 0.5rem;
+  right: 0;
+  width: 1.5rem;
+  height: 2.5rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px 0 0 4px;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  z-index: 5;
+}
+
+.panel-toggle:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
+.detail-hidden .panel-toggle {
+  right: 0;
+  border-radius: 4px 0 0 4px;
 }
 
 @media (max-width: 1000px) {
@@ -100,10 +139,11 @@ body {
 /* Stock Table */
 .stock-table-container {
   overflow-x: auto;
-  overflow-y: visible;
+  overflow-y: auto;
   border-radius: 0.5rem;
   border: 1px solid #1e293b;
   max-width: 100%;
+  max-height: calc(100vh - 220px);
 }
 
 .stock-table {

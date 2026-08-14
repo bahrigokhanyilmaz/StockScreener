@@ -32,6 +32,7 @@ function App() {
   const [portfolioKey, setPortfolioKey] = useState(0); // increment to refresh portfolio
   const [ownedSymbols, setOwnedSymbols] = useState<Set<string>>(new Set());
   const [industryAverages, setIndustryAverages] = useState<IndustryAverages>({});
+  const [detailCollapsed, setDetailCollapsed] = useState(false);
 
   // Fetch data on mount
   useEffect(() => {
@@ -103,6 +104,11 @@ function App() {
             <span className="status-badge total">
               {pipelineStatus.total_tracked} Tracked
             </span>
+            {allStocks.length > 0 && allStocks[0].last_updated && (
+              <span className="prices-date">
+                Prices as of: {allStocks[0].last_updated.slice(0, 10)}
+              </span>
+            )}
           </div>
         )}
       </header>
@@ -125,7 +131,7 @@ function App() {
 
             <Portfolio key={portfolioKey} />
 
-            <div className="content-layout">
+            <div className={`content-layout ${detailCollapsed ? 'detail-hidden' : ''}`}>
               <div className="table-section">
                 <StockTable
                   stocks={filteredStocks}
@@ -142,7 +148,7 @@ function App() {
                 />
               </div>
 
-              {selectedTicker && (
+              {selectedTicker && !detailCollapsed && (
                 <div className="detail-section">
                   <StockDetail
                     ticker={selectedTicker}
@@ -150,6 +156,14 @@ function App() {
                   />
                 </div>
               )}
+
+              <button
+                className="panel-toggle"
+                onClick={() => setDetailCollapsed(!detailCollapsed)}
+                title={detailCollapsed ? 'Show detail panel' : 'Hide detail panel'}
+              >
+                {detailCollapsed ? '◀' : '▶'}
+              </button>
             </div>
           </>
         )}
