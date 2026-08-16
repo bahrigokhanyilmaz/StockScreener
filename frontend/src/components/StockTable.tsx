@@ -192,29 +192,29 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     );
   }
 
-  const columns: { key: string; label: string; className?: string }[] = [
-    { key: 'symbol', label: 'Stock', className: 'sticky-col' },
-    { key: 'investability_score', label: 'Score', className: 'sticky-col-2' },
-    { key: 'risk_flags', label: 'Risk' },
-    { key: 'competition_score', label: 'Comp' },
-    { key: 'tracking_status', label: 'Status' },
-    { key: 'first_tracked', label: 'Days' },
-    { key: 'price', label: 'Price' },
-    { key: 'market_cap', label: 'Mkt Cap' },
-    { key: '_daily', label: 'Daily' },
-    { key: 'pe_ratio', label: 'P/E' },
-    { key: '_pe_50th', label: 'P/E 50th' },
-    { key: 'forward_pe', label: 'Fwd P/E' },
-    { key: 'peg_ratio', label: 'PEG' },
-    { key: 'price_to_fcf', label: 'P/FCF' },
-    { key: 'debt_to_equity', label: 'D/E' },
-    { key: 'interest_coverage_ratio', label: 'ICR' },
-    { key: 'quick_ratio', label: 'QR' },
-    { key: 'operating_margin', label: 'Op Margin' },
-    { key: 'revenue_growth_yoy', label: 'Rev Gr' },
-    { key: 'est_lt_growth', label: 'LT Gr' },
-    { key: 'target_price_upside', label: 'Target ↑' },
-    { key: '_signal', label: 'Signal' },
+  const columns: { key: string; label: string; className?: string; tooltip?: string }[] = [
+    { key: 'symbol', label: 'Stock', className: 'sticky-col', tooltip: 'Company ticker and name' },
+    { key: 'investability_score', label: 'Score', className: 'sticky-col-2', tooltip: 'Investability Score (0-100): 60% fundamentals + 25% sentiment + 15% competition + risk penalties' },
+    { key: 'risk_flags', label: 'Risk', tooltip: 'Active risk flags from news analysis (hover for details)' },
+    { key: 'competition_score', label: 'Comp', tooltip: 'Competition score (1=dominant, 5=fragmented). Shows HHI→Claude-adjusted. Lower is better.' },
+    { key: 'tracking_status', label: 'Status', tooltip: 'ACTIVE = passes current filters. GRACE = previously active, monitoring for 30 days.' },
+    { key: 'first_tracked', label: 'Days', tooltip: 'Days since the stock was first tracked by the pipeline' },
+    { key: 'price', label: 'Price', tooltip: 'Latest closing price from Polygon (T-1)' },
+    { key: 'market_cap', label: 'Mkt Cap', tooltip: 'Market capitalization from FMP' },
+    { key: '_daily', label: 'Daily', tooltip: 'Daily price change (last bar vs previous bar from 30-day history)' },
+    { key: 'pe_ratio', label: 'P/E', tooltip: 'Price / Trailing 12-month EPS. Lower = cheaper relative to earnings.' },
+    { key: '_pe_50th', label: 'P/E 50th', tooltip: 'Industry median P/E (50th percentile). Stock must be below this to pass the P/E filter.' },
+    { key: 'forward_pe', label: 'Fwd P/E', tooltip: 'Price / Forward EPS estimate. Lower = cheaper on projected earnings.' },
+    { key: 'peg_ratio', label: 'PEG', tooltip: 'P/E / EPS Growth Rate. Below 1.0 = growth at a reasonable price.' },
+    { key: 'price_to_fcf', label: 'P/FCF', tooltip: 'Price / Free Cash Flow per share. Lower = more cash generation per dollar invested. Must be < 20.' },
+    { key: 'debt_to_equity', label: 'D/E', tooltip: 'Non-current Liabilities / Equity. Below 1.0 = conservative. Override: passes if ICR > 3.0.' },
+    { key: 'interest_coverage_ratio', label: 'ICR', tooltip: 'Operating Income / Interest Expense. Above 3.0 = comfortably services debt.' },
+    { key: 'quick_ratio', label: 'QR', tooltip: '(Current Assets - Inventory) / Current Liabilities. Above 1.0 = can cover short-term obligations.' },
+    { key: 'operating_margin', label: 'Op Margin', tooltip: 'Operating Income / Revenue. Positive = profitable operations.' },
+    { key: 'revenue_growth_yoy', label: 'Rev Gr', tooltip: 'Revenue growth year-over-year (trailing, from filings). Positive = top line expanding.' },
+    { key: 'est_lt_growth', label: 'LT Gr', tooltip: 'Forward long-term EPS growth estimate from analysts (CAGR over 1-3 years). Positive = expected growth.' },
+    { key: 'target_price_upside', label: 'Target ↑', tooltip: 'Upside to analyst consensus price target. Green ≥20%, Yellow 0-20%, Red = above target.' },
+    { key: '_signal', label: 'Signal', tooltip: 'SELL/NEAR signal for owned stocks approaching analyst target price' },
     { key: '_buy', label: '' },
     { key: '_release', label: '' },
   ];
@@ -266,6 +266,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                 key={col.key}
                 className={`${col.className || ''} ${col.key.startsWith('_') ? '' : 'sortable-th'}`}
                 onClick={() => handleSort(col.key)}
+                title={col.tooltip || ''}
               >
                 {col.label}
                 {sortCol === col.key && <span className="sort-arrow">{sortDir === 'asc' ? ' ▲' : ' ▼'}</span>}
