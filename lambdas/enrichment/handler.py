@@ -601,6 +601,16 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if avg_vol:
             stock["average_volume"] = avg_vol
 
+    # Recompute PEG for consistency: if eps_growth_yoy was updated by FMP
+    # but PEG wasn't (FMP returned None for PEG), recalculate from current P/E + growth
+    pe = stock.get("pe_ratio")
+    growth_rate = stock.get("eps_growth_yoy")
+    if pe and pe > 0 and growth_rate and growth_rate > 0:
+        stock["peg_ratio"] = round(pe / (growth_rate * 100), 2)
+    elif growth_rate is not None and growth_rate <= 0:
+        # Negative or zero growth makes PEG meaningless — clear it
+        stock["peg_ratio"] = None
+
     return stock
 
 
