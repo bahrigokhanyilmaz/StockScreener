@@ -211,7 +211,8 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     { key: 'interest_coverage_ratio', label: 'ICR', tooltip: 'Operating Income / Interest Expense. Above 3.0 = comfortably services debt.' },
     { key: 'quick_ratio', label: 'QR', tooltip: '(Current Assets - Inventory) / Current Liabilities. Above 1.0 = can cover short-term obligations.' },
     { key: 'operating_margin', label: 'Op Margin', tooltip: 'Operating Income / Revenue. Positive = profitable operations.' },
-    { key: 'revenue_growth_yoy', label: 'Rev Gr', tooltip: 'Revenue growth year-over-year (trailing, from filings). Positive = top line expanding.' },
+    { key: 'revenue_growth_yoy', label: 'Rev ←', tooltip: 'Revenue growth YoY (trailing, from filings). Historical — what actually happened.' },
+    { key: 'est_lt_revenue_growth', label: 'Rev →', tooltip: 'Forward revenue growth CAGR from analyst estimates (1-3 years out). What analysts project.' },
     { key: 'est_lt_growth', label: 'LT Gr', tooltip: 'Forward long-term EPS growth estimate from analysts (CAGR over 1-3 years). Positive = expected growth.' },
     { key: 'target_price_upside', label: 'Target ↑', tooltip: 'Upside to analyst consensus price target. Green ≥20%, Yellow 0-20%, Red = above target.' },
     { key: '_signal', label: 'Signal', tooltip: 'SELL/NEAR signal for owned stocks approaching analyst target price' },
@@ -355,6 +356,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                 <td style={{ color: metricColor('quick_ratio', stock.quick_ratio) }}>{formatNum(stock.quick_ratio)}</td>
                 <td style={{ color: metricColor('operating_margin', stock.operating_margin) }}>{formatPct(stock.operating_margin)}</td>
                 <td style={{ color: metricColor('revenue_growth_yoy', stock.revenue_growth_yoy as number | null) }}>{formatPct(stock.revenue_growth_yoy as number | null)}</td>
+                <td style={{ color: metricColor('est_lt_growth', stock.est_lt_revenue_growth as number | null) }}>{formatPct(stock.est_lt_revenue_growth as number | null)}</td>
                 <td style={{ color: metricColor('est_lt_growth', stock.est_lt_growth as number | null) }}>{formatPct(stock.est_lt_growth as number | null)}</td>
                 <td style={{ color: targetUpsideColor(stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
                 <td>

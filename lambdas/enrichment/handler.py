@@ -549,6 +549,42 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if forward_eps and forward_eps > 0 and price:
             stock["forward_pe"] = round(price / forward_eps, 2)
 
+    # --- Forward LT Revenue Growth: CAGR from current revenue to furthest analyst estimate ---
+    if isinstance(estimates, list) and len(estimates) >= 1:
+        # Get current TTM revenue from FMP ratios or EDGAR
+        current_revenue = ratios.get("revenuePerShareTTM")
+        if current_revenue and stock.get("revenue_per_share"):
+            # ratios gives per-share, estimates gives total — use total
+            # Approximate total from per-share × shares (from market cap / price)
+            pass
+        # Better: use the total revenue directly. estimates[i]["revenueAvg"] is total revenue.
+        # We need current total revenue. Get from financial-growth or income statement.
+        # FMP ratios has revenuePerShareTTM; multiply by shares approximation.
+        # Simpler: compare estimate revenue to the nearest prior estimate or just use CAGR from year 1 to furthest.
+        # Most reliable: use year 0 (closest estimate) as proxy for current, compute CAGR to furthest.
+        # Actually, estimates are sorted newest-first. The first entry is the furthest year.
+        # Let's find the nearest and furthest estimates.
+        sorted_estimates = sorted(
+            [e for e in estimates if e.get("revenueAvg") and e.get("revenueAvg") > 0],
+            key=lambda e: e.get("date", ""),
+        )
+        if len(sorted_estimates) >= 2:
+            nearest = sorted_estimates[0]
+            furthest = sorted_estimates[-1]
+            nearest_rev = nearest.get("revenueAvg")
+            furthest_rev = furthest.get("revenueAvg")
+            try:
+                from datetime import datetime as _dt
+                nearest_date = _dt.strptime(nearest["date"][:10], "%Y-%m-%d")
+                furthest_date = _dt.strptime(furthest["date"][:10], "%Y-%m-%d")
+                years_between = (furthest_date - nearest_date).days / 365.25
+                if years_between >= 1 and nearest_rev > 0 and furthest_rev > 0:
+                    rev_cagr = (furthest_rev / nearest_rev) ** (1 / years_between) - 1
+                    if not isinstance(rev_cagr, complex):
+                        stock["est_lt_revenue_growth"] = round(rev_cagr, 4)
+            except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+                pass
+
     # --- EPS Growth from financial-growth ---
     eps_g = growth.get("epsgrowth")
     if eps_g is not None:
