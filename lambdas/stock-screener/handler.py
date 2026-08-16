@@ -558,6 +558,26 @@ def handler(event, context):
     passing.sort(key=lambda s: s["fundamental_score"], reverse=True)
     near_misses.sort(key=lambda s: s["fundamental_score"], reverse=True)
 
+    # Hollow growth exclusion: stocks where near-term earnings improve
+    # but long-term growth is flat/negative are value traps (cost-cutting, not real growth).
+    # Exclude if: Forward P/E < Trailing P/E AND LT Growth ≤ 0
+    # Only applies when both data points are present.
+    hollow_excluded = []
+    qualified_passing = []
+    for s in passing:
+        fwd_pe = s.get("forward_pe")
+        trail_pe = s.get("pe_ratio")
+        lt_gr = s.get("est_lt_growth")
+        if fwd_pe is not None and trail_pe is not None and lt_gr is not None:
+            if fwd_pe < trail_pe and lt_gr <= 0:
+                hollow_excluded.append(s.get("symbol", "?"))
+                continue
+        qualified_passing.append(s)
+
+    if hollow_excluded:
+        print(f"  Hollow growth excluded: {len(hollow_excluded)} stocks ({', '.join(hollow_excluded[:10])})")
+    passing = qualified_passing
+
     print(f"Results: {len(passing)} passing, {len(near_misses)} near-misses, "
           f"{len(stocks) - len(passing) - len(near_misses)} rejected")
 

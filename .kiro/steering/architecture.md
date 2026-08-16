@@ -500,6 +500,7 @@ Architecture:
 | TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
 | FMP ICR=0 treated as null | FMP returns interestCoverageRatioTTM=0 for debt-free companies. We now skip 0 values to avoid overwriting valid null with misleading zero |
+| Hollow growth exclusion | Exclude stocks where Forward P/E < Trailing P/E AND LT Growth ≤ 0. Near-term earnings improving but long-term outlook negative = value trap (cost-cutting, not real growth) |
 
 ### Build Progress
 
