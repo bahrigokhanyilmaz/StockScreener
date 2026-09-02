@@ -74,15 +74,15 @@
       "override": "revenue_growth_gt_20",
       "description": "Percentage of revenue kept after operating costs. Override: passes if Revenue Growth > 20% (investing heavily for growth)."
     },
-    "revenue_growth_yoy": {
-      "label": "Revenue Growth YoY (%)",
+    "est_lt_revenue_growth": {
+      "label": "Forward Revenue Growth (%)",
       "type": "min",
       "default": 0,
       "min": -50,
       "max": 100,
       "step": 1,
       "data_format": "percent_as_decimal",
-      "description": "Revenue growth year-over-year. Positive = growing revenue."
+      "description": "Forward revenue growth CAGR from analyst estimates. Positive = analysts expect top-line growth. Missing = fail."
     }
   },
   "toggle_filters": {

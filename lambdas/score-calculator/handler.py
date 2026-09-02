@@ -612,6 +612,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "SK": "TRACKING",
                 "symbol": symbol,
                 "tracking_status": "ACTIVE" if stock.get("passes_screen") else "GRACE",
+                "first_tracked": first_tracked,
                 "last_passed": today if stock.get("passes_screen") else None,
                 "last_updated": now_iso,
                 # GSI attributes

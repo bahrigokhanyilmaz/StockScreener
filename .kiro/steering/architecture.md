@@ -284,7 +284,9 @@ Source of truth: `shared/config/screener-filters.json`
 | quick_ratio | min | 1.0 | ratio | EDGAR |
 | operating_margin | min | 0% | percent_as_decimal | EDGAR: OperatingIncomeLoss / Revenue |
 | eps_growth_yoy | min | 0% | percent_as_decimal | EDGAR TTM vs prior TTM |
-| revenue_growth_yoy | min | 0% | percent_as_decimal | EDGAR TTM vs prior TTM |
+| est_lt_revenue_growth | min | 0% | percent_as_decimal | FMP analyst-estimates (forward revenue CAGR). Enrichment-dependent: skipped in Step 2 pre-screen (no FMP data yet), applied strictly in Step 4 (missing = FAIL) |
+
+**Note on revenue growth:** As of the forward-revenue-growth swap, the hard filter is `est_lt_revenue_growth` (forward-looking analyst revenue CAGR), NOT trailing `revenue_growth_yoy`. Trailing `revenue_growth_yoy` is still computed from EDGAR and stored on the stock (used for the operating-margin override "rev growth > 20%" and displayed on the dashboard), but it is no longer a pass/fail filter. Rationale: a value investor cares whether the business is expected to keep growing, not just whether it grew last year. Missing forward estimate = FAIL (can't invest on absent forward data).
 
 **Soft Filters (applied if data exists, skipped if Finnhub has no coverage):**
 | Filter | Type | Threshold | Source |
@@ -441,6 +443,7 @@ Architecture:
 
 | Decision | Rationale |
 |----------|-----------|
+| Forward revenue growth filter (swap) | Replaced trailing `revenue_growth_yoy` hard filter with `est_lt_revenue_growth` (forward analyst revenue CAGR). Value investing cares about expected future growth, not just last year. Removed from Step 2 (no FMP data yet), applied strictly in Step 4 (missing = FAIL). Trailing rev growth still computed/stored for op-margin override + display |
 | EDGAR over FMP/yfinance for bulk | EDGAR Frames API: ~10 calls for 5,097 companies. FMP bandwidth-limited, yfinance blocked from Lambda |
 | Polygon Grouped Daily for prices | 1 call = 12,000+ stock prices. Replaced Twelve Data (8/min too slow) |
 | Finnhub for analyst data | Forward P/E, LT Growth, Analyst Recommendation. 60/min free tier |

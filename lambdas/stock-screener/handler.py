@@ -207,7 +207,7 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
             is_prescreen = is_prescreen  # Use the explicit flag, not data inference
             # Filters that require enrichment data (not available during pre-screen)
             enrichment_dependent_filters = {"pe_ratio", "forward_pe", "peg_ratio", "price_to_fcf",
-                                            "est_lt_growth", "target_price_upside",
+                                            "est_lt_growth", "est_lt_revenue_growth", "target_price_upside",
                                             "institutional_transactions", "analyst_recommendation"}
 
             # Soft filters: skip without penalty if data is unavailable.
