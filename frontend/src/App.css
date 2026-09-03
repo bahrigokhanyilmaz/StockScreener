@@ -1632,3 +1632,47 @@ th.sticky-col-2 {
 
 .track-history-table .positive { color: #4ade80; }
 .track-history-table .negative { color: #f87171; }
+
+/* Tracking History — grouped by stock */
+.track-history-table .th-group-row {
+  cursor: pointer;
+}
+
+.track-history-table .th-group-row:hover td {
+  background: #14202f;
+}
+
+.track-history-table .th-caret {
+  width: 1.5rem;
+  color: #94a3b8;
+}
+
+.track-history-nested {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  margin: 0.25rem 0 0.5rem 0;
+}
+
+.track-history-nested th {
+  text-align: left;
+  color: #64748b;
+  font-weight: 600;
+  padding: 3px 12px 3px 0;
+  border-bottom: 1px solid #1e293b;
+}
+
+.track-history-nested td {
+  padding: 3px 12px 3px 0;
+  color: #cbd5e1;
+  border-bottom: 1px solid #14202f;
+}
+
+.track-history-nested .positive { color: #4ade80; }
+.track-history-nested .negative { color: #f87171; }
+
+.track-history-table .th-nested-row > td {
+  padding-top: 0;
+  padding-bottom: 0;
+  background: #0b1220;
+}

@@ -264,7 +264,8 @@ Layout: Filters (collapsible top bar) → 2-column (table + detail panel)
 
 Components:
 - `App.tsx` — Layout, filter sliders at top, fetches trends for all stocks on load
-- `StockTable.tsx` — All metrics + 30d trend column + risk badges + ICR override badge
+- `StockTable.tsx` — All metrics + 30d trend column + risk badges + ICR override badge. One row per stock. Extra columns: "Since Mark" (live % since manual mark), "Track" (☆/★ mark toggle), "Trade" (Buy / ✕ remove). NEW stocks (first tracked today) float to top.
+- `TrackHistory.tsx` — Closed manual-tracking stints, grouped by stock. Top row per stock (stint count + avg % change), expandable to a nested table of individual mark→unmark stints. Hidden when no history exists.
 - `StockDetail.tsx` — Two tabs:
   - Overview: Company profile, score cards, sparkline chart, risk flags (with ledger metadata), news
   - Metrics Guide: Industry comparison (real medians from SEC SIC data), scoring methodology, metric definitions with interpretation

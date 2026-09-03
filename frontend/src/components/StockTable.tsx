@@ -218,8 +218,8 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     { key: 'est_lt_growth', label: 'EPS →', tooltip: 'Forward long-term EPS (earnings) growth estimate from analysts (CAGR over 1-3 years). Positive = expected earnings growth.' },
     { key: 'target_price_upside', label: 'Target ↑', tooltip: 'Upside to analyst consensus price target. Green ≥20%, Yellow 0-20%, Red = above target.' },
     { key: '_signal', label: 'Signal', tooltip: 'SELL/NEAR signal for owned stocks approaching analyst target price' },
-    { key: '_mark', label: '', tooltip: 'Mark / unmark this stock to track its price change over time' },
-    { key: '_buy', label: '' },
+    { key: '_mark', label: 'Track', tooltip: 'Mark / unmark this stock to track its price change over time' },
+    { key: '_buy', label: 'Trade', tooltip: 'Record a purchase (Buy) or remove a position (✕)' },
     { key: '_release', label: '' },
   ];
 
