@@ -51,7 +51,14 @@ export default function StockDetail({ ticker, onClose }: Props) {
         ]);
         setStock(detailData.stock);
         setHistory(historyData.history);
-        setNews(newsData.articles || []);
+        // Order news newest-first by publication date. Articles without a
+        // published_at fall to the bottom.
+        const sortedNews = [...(newsData.articles || [])].sort((a, b) => {
+          const ta = a.published_at ? new Date(a.published_at).getTime() : 0;
+          const tb = b.published_at ? new Date(b.published_at).getTime() : 0;
+          return tb - ta;
+        });
+        setNews(sortedNews);
         setPriceBars(priceData.bars || []);
         setTrend(calculateTrend(priceData.bars || []));
       } catch (err) {

@@ -230,8 +230,9 @@ Total: ~12-15 minutes per run.
 |----|----|---------| 
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
 | STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day, never overwritten) |
-| STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL) |
+| STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). For MANUAL marks also holds mark_price + mark_date (price snapshot at mark time) |
 | STOCK#{ticker} | ARTICLES | Analyzed articles with per-article risk flags (overwritten daily) |
+| STOCK#{ticker} | TRACK_HIST#{unmark_ts} | Closed manual-tracking stint: mark_date, mark_price, unmark_date, unmark_price, change_pct. record_type=TRACK_HIST. Persisted on unmark, never overwritten |
 | PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV price bars (overwritten daily) |
 | INDUSTRY_AVG#{industry} | METRICS | Industry median benchmarks (overwritten each pipeline run) |
 
@@ -248,8 +249,9 @@ Total: ~12-15 minutes per run.
 | GET | /stocks/{ticker}/history | Score history time series (for trend charts) |
 | GET | /stocks/{ticker}/prices | 30-day OHLCV price bars (for sparkline + trend) |
 | GET | /stocks/{ticker}/news | Live news from TickerTick |
-| POST | /stocks/{ticker}/track | Manually track a stock |
-| DELETE | /stocks/{ticker}/track | Stop tracking |
+| POST | /stocks/{ticker}/track | Mark a stock to track. Snapshots current closing price (mark_price) + mark_date |
+| DELETE | /stocks/{ticker}/track | Unmark a stock. Persists a TRACK_HIST# record with % change (mark → unmark) and returns it |
+| GET | /track-history | All closed manual-tracking stints with their % change (newest first) |
 | GET | /industries | Industry median benchmarks (from SEC SIC data) |
 | GET | /pipeline/status | Pipeline summary (active/grace counts) |
 
@@ -443,6 +445,9 @@ Architecture:
 
 | Decision | Rationale |
 |----------|-----------|
+| Manual price-tracking on the track mechanism | Reused MANUAL track (not the portfolio buy/sell) for "mark to watch price change." Mark snapshots the pipeline closing price; unmark persists a TRACK_HIST# record + returns % change. Persisted history (not display-once) so the user can review how each idea performed. Closing price (Polygon T-1), consistent with the rest of the dashboard |
+| NEW stocks sort to top | Table comparator floats first-tracked-today stocks above all others regardless of sort column; Days column shows "NEW" instead of "<1" |
+| News ordered newest-first | Right panel sorts articles by published_at desc; undated fall to bottom |
 | Forward revenue growth filter (swap) | Replaced trailing `revenue_growth_yoy` hard filter with `est_lt_revenue_growth` (forward analyst revenue CAGR). Value investing cares about expected future growth, not just last year. Removed from Step 2 (no FMP data yet), applied strictly in Step 4 (missing = FAIL). Trailing rev growth still computed/stored for op-margin override + display |
 | EDGAR over FMP/yfinance for bulk | EDGAR Frames API: ~10 calls for 5,097 companies. FMP bandwidth-limited, yfinance blocked from Lambda |
 | Polygon Grouped Daily for prices | 1 call = 12,000+ stock prices. Replaced Twelve Data (8/min too slow) |

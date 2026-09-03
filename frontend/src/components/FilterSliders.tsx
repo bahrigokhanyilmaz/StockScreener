@@ -14,7 +14,7 @@ const SLIDER_CONFIG = [
   { key: 'price_to_fcf', label: 'P/FCF', type: 'max', default: 20, min: 5, max: 20, step: 1, format: 'ratio' },
   { key: 'debt_to_equity', label: 'D/E', type: 'max', default: 1.0, min: 0.0, max: 1.0, step: 0.1, format: 'ratio' },
   { key: 'quick_ratio', label: 'QR', type: 'min', default: 1.0, min: 1.0, max: 5.0, step: 0.1, format: 'ratio' },
-  { key: 'revenue_growth_yoy', label: 'Rev Growth', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
+  { key: 'est_lt_revenue_growth', label: 'Fwd Rev Growth', type: 'min', default: 0, min: 0, max: 100, step: 1, format: 'percent' },
 ];
 
 const TOGGLE_CONFIG = [

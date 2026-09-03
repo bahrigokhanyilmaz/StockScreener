@@ -18,6 +18,7 @@ interface Props {
   onSelectStock: (ticker: string) => void;
   onBuy: (ticker: string) => void;
   onRelease: (ticker: string) => void;
+  onToggleMark: (ticker: string, isMarked: boolean) => void;
 }
 
 // Filter thresholds (same as pipeline) for color-coding
@@ -100,7 +101,7 @@ function getDaysTracked(firstTracked: string | null | undefined): string {
   const start = new Date(firstTracked);
   const now = new Date();
   const days = Math.floor((now.getTime() - start.getTime()) / 86400000);
-  return days <= 0 ? '<1' : String(days);
+  return days <= 0 ? 'NEW' : String(days);
 }
 
 function formatRiskFlag(flag: string | Record<string, unknown>): { label: string; status: string; tooltip: string } {
@@ -180,7 +181,7 @@ function renderTrendCell(trend: TrendData | undefined) {
   );
 }
 
-export default function StockTable({ stocks, trends, ownedSymbols, industryAverages, selectedTicker, onSelectStock, onBuy, onRelease }: Props) {
+export default function StockTable({ stocks, trends, ownedSymbols, industryAverages, selectedTicker, onSelectStock, onBuy, onRelease, onToggleMark }: Props) {
   const [sortCol, setSortCol] = useState<string>('investability_score');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -199,6 +200,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     { key: 'competition_score', label: 'Comp', tooltip: 'Competition score (1=dominant, 5=fragmented). Shows HHI→Claude-adjusted. Lower is better.' },
     { key: 'tracking_status', label: 'Status', tooltip: 'ACTIVE = passes current filters. GRACE = previously active, monitoring for 30 days.' },
     { key: 'first_tracked', label: 'Days', tooltip: 'Days since the stock was first tracked by the pipeline' },
+    { key: 'mark_change_pct', label: 'Since Mark', tooltip: '% change in closing price since you marked this stock to track. Baseline is the price on the mark date.' },
     { key: 'price', label: 'Price', tooltip: 'Latest closing price from Polygon (T-1)' },
     { key: 'market_cap', label: 'Mkt Cap', tooltip: 'Market capitalization from FMP' },
     { key: '_daily', label: 'Daily', tooltip: 'Daily price change (last bar vs previous bar from 30-day history)' },
@@ -213,9 +215,10 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     { key: 'operating_margin', label: 'Op Margin', tooltip: 'Operating Income / Revenue. Positive = profitable operations.' },
     { key: 'revenue_growth_yoy', label: 'Rev ←', tooltip: 'Revenue growth YoY (trailing, from filings). Historical — what actually happened.' },
     { key: 'est_lt_revenue_growth', label: 'Rev →', tooltip: 'Forward revenue growth CAGR from analyst estimates (1-3 years out). What analysts project.' },
-    { key: 'est_lt_growth', label: 'LT Gr', tooltip: 'Forward long-term EPS growth estimate from analysts (CAGR over 1-3 years). Positive = expected growth.' },
+    { key: 'est_lt_growth', label: 'EPS →', tooltip: 'Forward long-term EPS (earnings) growth estimate from analysts (CAGR over 1-3 years). Positive = expected earnings growth.' },
     { key: 'target_price_upside', label: 'Target ↑', tooltip: 'Upside to analyst consensus price target. Green ≥20%, Yellow 0-20%, Red = above target.' },
     { key: '_signal', label: 'Signal', tooltip: 'SELL/NEAR signal for owned stocks approaching analyst target price' },
+    { key: '_mark', label: '', tooltip: 'Mark / unmark this stock to track its price change over time' },
     { key: '_buy', label: '' },
     { key: '_release', label: '' },
   ];
@@ -231,6 +234,11 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
   }
 
   const sortedStocks = [...stocks].sort((a, b) => {
+    // NEW stocks (first tracked today) always float to the top, regardless of sort column.
+    const aNew = getDaysTracked(a.first_tracked) === 'NEW';
+    const bNew = getDaysTracked(b.first_tracked) === 'NEW';
+    if (aNew !== bNew) return aNew ? -1 : 1;
+
     let aVal: unknown = (a as unknown as Record<string, unknown>)[sortCol];
     let bVal: unknown = (b as unknown as Record<string, unknown>)[sortCol];
 
@@ -338,6 +346,11 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                   </span>
                 </td>
                 <td className="days-cell">{getDaysTracked(stock.first_tracked)}</td>
+                <td style={{ color: stock.mark_change_pct == null ? '#64748b' : stock.mark_change_pct >= 0 ? '#16a34a' : '#dc2626' }}>
+                  {stock.is_marked && stock.mark_change_pct != null
+                    ? `${stock.mark_change_pct >= 0 ? '+' : ''}${stock.mark_change_pct.toFixed(1)}%`
+                    : '—'}
+                </td>
                 <td>${formatNum(stock.price)}</td>
                 <td>{formatMarketCap(stock.market_cap)}</td>
                 <td>{renderTrendCell(trends[stock.symbol])}</td>
@@ -361,6 +374,13 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                 <td style={{ color: targetUpsideColor(stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
                 <td>
                   {signal && <span className={`sell-indicator ${signal === 'SELL' ? 'sell-now' : ''}`}>{signal}</span>}
+                </td>
+                <td>
+                  <button
+                    className={`btn-mark ${stock.is_marked ? 'marked' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); onToggleMark(stock.symbol, !!stock.is_marked); }}
+                    title={stock.is_marked ? 'Unmark (stop tracking price change)' : 'Mark to track price change from today'}
+                  >{stock.is_marked ? '★ Tracked' : '☆ Track'}</button>
                 </td>
                 <td>
                   <button

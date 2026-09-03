@@ -44,6 +44,11 @@ export interface Stock {
   risk_flags: (string | Record<string, unknown>)[];
   first_tracked: string;
   last_updated: string;
+  // Manual-tracking snapshot (present when the user has marked this stock)
+  is_marked?: boolean;
+  mark_price?: number | null;
+  mark_date?: string | null;
+  mark_change_pct?: number | null;
 }
 
 export interface ScoreHistoryPoint {
@@ -111,12 +116,41 @@ export async function getStockPrices(ticker: string): Promise<{ bars: PriceBar[]
   return fetchJson(`/stocks/${ticker}/prices`);
 }
 
-export async function trackStock(ticker: string): Promise<{ message: string }> {
+export interface TrackResult {
+  message: string;
+  status?: string;
+  mark_price?: number | null;
+  mark_date?: string | null;
+}
+
+export interface UntrackResult {
+  message: string;
+  mark_price?: number | null;
+  mark_date?: string | null;
+  unmark_price?: number | null;
+  unmark_date?: string | null;
+  change_pct?: number | null;
+}
+
+export async function trackStock(ticker: string): Promise<TrackResult> {
   return fetchJson(`/stocks/${ticker}/track`, { method: 'POST' });
 }
 
-export async function untrackStock(ticker: string): Promise<{ message: string }> {
+export async function untrackStock(ticker: string): Promise<UntrackResult> {
   return fetchJson(`/stocks/${ticker}/track`, { method: 'DELETE' });
+}
+
+export interface TrackHistoryRecord {
+  symbol: string;
+  mark_date: string | null;
+  mark_price: number | null;
+  unmark_date: string | null;
+  unmark_price: number | null;
+  change_pct: number | null;
+}
+
+export async function getTrackHistory(): Promise<{ history: TrackHistoryRecord[]; count: number }> {
+  return fetchJson('/track-history');
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {

@@ -95,6 +95,8 @@ def get_stocks():
 
     all_stocks = []
     seen_symbols = set()
+    # Manual-track snapshots keyed by symbol: {symbol: {mark_price, mark_date}}
+    mark_snapshots = {}
 
     for status in ["ACTIVE", "GRACE", "MANUAL"]:
         result = table.query(
@@ -102,9 +104,16 @@ def get_stocks():
             KeyConditionExpression=Key("tracking_status").eq(status),
         )
         for item in result.get("Items", []):
+            symbol = item.get("symbol", "")
+            # Capture the manual-track snapshot from the TRACKING item so we can
+            # attach it to the stock's LATEST row below (for "since mark" %change).
+            if status == "MANUAL" and item.get("SK") == "TRACKING":
+                mark_snapshots[symbol] = {
+                    "mark_price": decimal_to_float(item.get("mark_price")),
+                    "mark_date": item.get("mark_date") or item.get("first_tracked"),
+                }
             # Only take LATEST items (which have investability_score)
             # Skip TRACKING items to avoid duplicates
-            symbol = item.get("symbol", "")
             if symbol in seen_symbols:
                 continue
             if item.get("SK") != "LATEST":
@@ -112,6 +121,33 @@ def get_stocks():
             seen_symbols.add(symbol)
             item["_tracking_status"] = status
             all_stocks.append(decimal_to_float(item))
+
+    # A manually-tracked stock may not have surfaced a LATEST row above (e.g. it
+    # doesn't pass the screen and its LATEST isn't tagged MANUAL on the GSI).
+    # Pull those LATEST rows in directly so the mark still shows on the dashboard.
+    for symbol in mark_snapshots:
+        if symbol in seen_symbols:
+            continue
+        latest = table.get_item(
+            Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"}
+        ).get("Item")
+        if latest:
+            seen_symbols.add(symbol)
+            latest["_tracking_status"] = "MANUAL"
+            all_stocks.append(decimal_to_float(latest))
+
+    # Attach the mark snapshot + live "since mark" %change to marked stocks.
+    for s in all_stocks:
+        snap = mark_snapshots.get(s.get("symbol"))
+        if not snap:
+            continue
+        s["is_marked"] = True
+        s["mark_price"] = snap["mark_price"]
+        s["mark_date"] = snap["mark_date"]
+        mp = snap["mark_price"]
+        cur = s.get("price")
+        if mp and cur is not None and mp > 0:
+            s["mark_change_pct"] = round((cur - mp) / mp * 100, 2)
 
     # Sort by investability score (highest first)
     all_stocks.sort(key=lambda s: s.get("investability_score") or 0, reverse=True)
@@ -235,26 +271,40 @@ def track_stock(ticker: str):
     """
     POST /stocks/{ticker}/track — Manually track a stock.
 
-    Adds a TRACKING item with status=MANUAL.
-    This stock will get news/sentiment analysis on future pipeline runs
-    even if it doesn't pass the value screen.
+    Adds a TRACKING item with status=MANUAL and snapshots the current
+    closing price (mark_price) + mark_date. The snapshot is the baseline
+    for the "since mark" % change reported while tracked and persisted to
+    the tracking-history record when the stock is later untracked.
+
+    This stock will also get news/sentiment analysis on future pipeline
+    runs even if it doesn't pass the value screen.
     """
     table = get_table()
+    sym = ticker.upper()
     now = datetime.now(timezone.utc).isoformat()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    table.put_item(Item={
-        "PK": f"STOCK#{ticker.upper()}",
+    mark_price = _get_current_price(sym)
+
+    item = {
+        "PK": f"STOCK#{sym}",
         "SK": "TRACKING",
-        "symbol": ticker.upper(),
+        "symbol": sym,
         "tracking_status": "MANUAL",
         "first_tracked": today,
+        "mark_date": today,
         "last_updated": now,
-    })
+    }
+    if mark_price is not None:
+        item["mark_price"] = Decimal(str(mark_price))
+
+    table.put_item(Item=item)
 
     return response(200, {
-        "message": f"{ticker.upper()} is now manually tracked",
+        "message": f"{sym} is now manually tracked",
         "status": "MANUAL",
+        "mark_price": mark_price,
+        "mark_date": today,
     })
 
 
@@ -262,18 +312,107 @@ def untrack_stock(ticker: str):
     """
     DELETE /stocks/{ticker}/track — Stop tracking a stock.
 
-    Removes the TRACKING item. The stock will no longer get
-    news/sentiment analysis unless it passes the screen again.
+    Before removing the TRACKING item, we persist a tracking-history
+    record (SK=TRACK_HIST#{unmark_timestamp}) capturing the mark price/date,
+    the unmark price/date, and the % change over the tracked stint. This
+    lets the user review how each tracked idea performed over time.
+
+    Returns the final % change so the UI can report it immediately.
     """
     table = get_table()
+    sym = ticker.upper()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Read the existing TRACKING item to recover the mark snapshot.
+    existing = table.get_item(
+        Key={"PK": f"STOCK#{sym}", "SK": "TRACKING"}
+    ).get("Item", {})
+
+    mark_price = existing.get("mark_price")
+    mark_date = existing.get("mark_date") or existing.get("first_tracked")
+    unmark_price = _get_current_price(sym)
+
+    change_pct = None
+    if mark_price is not None and unmark_price is not None:
+        mp = float(mark_price)
+        if mp > 0:
+            change_pct = round((unmark_price - mp) / mp * 100, 2)
+
+    # Persist the closed tracking stint (only if it was actually marked).
+    if existing:
+        hist = {
+            "PK": f"STOCK#{sym}",
+            "SK": f"TRACK_HIST#{now_iso}",
+            "record_type": "TRACK_HIST",
+            "symbol": sym,
+            "mark_date": mark_date,
+            "unmark_date": today,
+            "last_updated": now_iso,
+        }
+        if mark_price is not None:
+            hist["mark_price"] = Decimal(str(mark_price))
+        if unmark_price is not None:
+            hist["unmark_price"] = Decimal(str(unmark_price))
+        if change_pct is not None:
+            hist["change_pct"] = Decimal(str(change_pct))
+        table.put_item(Item=hist)
 
     table.delete_item(
-        Key={"PK": f"STOCK#{ticker.upper()}", "SK": "TRACKING"}
+        Key={"PK": f"STOCK#{sym}", "SK": "TRACKING"}
     )
 
     return response(200, {
-        "message": f"{ticker.upper()} removed from tracking",
+        "message": f"{sym} removed from tracking",
+        "mark_price": float(mark_price) if mark_price is not None else None,
+        "mark_date": mark_date,
+        "unmark_price": unmark_price,
+        "unmark_date": today,
+        "change_pct": change_pct,
     })
+
+
+def _get_current_price(symbol: str):
+    """Return the latest closing price for a symbol from its LATEST item, or None."""
+    table = get_table()
+    item = table.get_item(
+        Key={"PK": f"STOCK#{symbol.upper()}", "SK": "LATEST"},
+        ProjectionExpression="price",
+    ).get("Item")
+    if item and item.get("price") is not None:
+        try:
+            return float(item["price"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def get_track_history():
+    """
+    GET /track-history — All closed manual-tracking stints.
+
+    Scans for TRACK_HIST# records (persisted when a stock is untracked) and
+    returns them sorted newest-first. Each record captures the mark/unmark
+    price + date and the % change over the tracked period.
+    """
+    table = get_table()
+    records = []
+
+    resp = table.scan(
+        FilterExpression=Attr("record_type").eq("TRACK_HIST"),
+    )
+    records.extend(resp.get("Items", []))
+    while resp.get("LastEvaluatedKey"):
+        resp = table.scan(
+            FilterExpression=Attr("record_type").eq("TRACK_HIST"),
+            ExclusiveStartKey=resp["LastEvaluatedKey"],
+        )
+        records.extend(resp.get("Items", []))
+
+    records = [decimal_to_float(r) for r in records]
+    records.sort(key=lambda r: r.get("unmark_date", ""), reverse=True)
+
+    return response(200, {"history": records, "count": len(records)})
 
 
 def get_pipeline_status():
@@ -601,6 +740,10 @@ def handler(event, context):
         # Route: GET /industries
         elif path == "/industries" and method == "GET":
             return get_industry_averages()
+
+        # Route: GET /track-history
+        elif path == "/track-history" and method == "GET":
+            return get_track_history()
 
         # Route: GET /portfolio
         elif path == "/portfolio" and method == "GET":

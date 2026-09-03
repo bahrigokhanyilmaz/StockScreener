@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getStocks, getPipelineStatus, getStockPrices, getPortfolio, getIndustryAverages, untrackStock } from './api.ts';
+import { getStocks, getPipelineStatus, getStockPrices, getPortfolio, getIndustryAverages, untrackStock, trackStock } from './api.ts';
 import type { Stock, PipelineStatus, IndustryAverages } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
 import Portfolio from './components/Portfolio.tsx';
+import TrackHistory from './components/TrackHistory.tsx';
 import BuyModal from './components/BuyModal.tsx';
 import FilterSliders, { getDefaultFilters, applyFilters } from './components/FilterSliders.tsx';
 import type { FilterValues } from './components/FilterSliders.tsx';
@@ -33,6 +34,35 @@ function App() {
   const [ownedSymbols, setOwnedSymbols] = useState<Set<string>>(new Set());
   const [industryAverages, setIndustryAverages] = useState<IndustryAverages>({});
   const [detailCollapsed, setDetailCollapsed] = useState(false);
+  const [trackHistoryKey, setTrackHistoryKey] = useState(0); // increment to refresh track history
+
+  // Mark / unmark a stock for price-change tracking. Mark snapshots today's
+  // closing price; unmark persists the stint to tracking history and reports
+  // the final % change. The row stays on the dashboard either way.
+  async function handleToggleMark(ticker: string, isMarked: boolean) {
+    try {
+      if (isMarked) {
+        const res = await untrackStock(ticker);
+        if (res.change_pct != null) {
+          const sign = res.change_pct >= 0 ? '+' : '';
+          alert(`${ticker} unmarked. Change while tracked: ${sign}${res.change_pct.toFixed(2)}% ` +
+                `(${res.mark_date} → ${res.unmark_date})`);
+        }
+        setAllStocks(prev => prev.map(s => s.symbol === ticker
+          ? { ...s, is_marked: false, mark_price: null, mark_date: null, mark_change_pct: null }
+          : s));
+        setTrackHistoryKey(k => k + 1);
+      } else {
+        const res = await trackStock(ticker);
+        setAllStocks(prev => prev.map(s => s.symbol === ticker
+          ? { ...s, is_marked: true, mark_price: res.mark_price ?? s.price, mark_date: res.mark_date ?? null, mark_change_pct: 0 }
+          : s));
+      }
+    } catch (err) {
+      console.error('Failed to toggle mark:', err);
+      alert(`Failed to update tracking for ${ticker}.`);
+    }
+  }
 
   // Fetch data on mount
   useEffect(() => {
@@ -131,6 +161,8 @@ function App() {
 
             <Portfolio key={portfolioKey} />
 
+            <TrackHistory refreshKey={trackHistoryKey} />
+
             <div className={`content-layout ${detailCollapsed ? 'detail-hidden' : ''}`}>
               <div className="table-section">
                 <StockTable
@@ -144,7 +176,9 @@ function App() {
                   onRelease={async (ticker) => {
                     await untrackStock(ticker);
                     setAllStocks(allStocks.filter(s => s.symbol !== ticker));
+                    setTrackHistoryKey(k => k + 1);
                   }}
+                  onToggleMark={handleToggleMark}
                 />
               </div>
 
