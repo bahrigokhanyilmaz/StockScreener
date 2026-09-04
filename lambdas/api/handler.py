@@ -105,9 +105,12 @@ def get_stocks():
         )
         for item in result.get("Items", []):
             symbol = item.get("symbol", "")
-            # Capture the manual-track snapshot from the TRACKING item so we can
+            # Capture the manual-mark snapshot from the TRACKING item so we can
             # attach it to the stock's LATEST row below (for "since mark" %change).
-            if status == "MANUAL" and item.get("SK") == "TRACKING":
+            # A mark is independent of screen status: a marked stock may show up
+            # under ACTIVE/GRACE (if it also passes the screen) or MANUAL. We key
+            # off the presence of mark_price, not the tracking_status.
+            if item.get("SK") == "TRACKING" and item.get("mark_price") is not None:
                 mark_snapshots[symbol] = {
                     "mark_price": decimal_to_float(item.get("mark_price")),
                     "mark_date": item.get("mark_date") or item.get("first_tracked"),

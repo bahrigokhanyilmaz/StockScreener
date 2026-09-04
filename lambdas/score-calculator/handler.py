@@ -513,17 +513,28 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
     table = dynamodb.Table(table_name)
     written = 0
 
-    # Load existing first_tracked dates from TRACKING items
+    # Load existing first_tracked dates + manual-mark snapshots from TRACKING items.
+    # These must be preserved across pipeline runs, otherwise the daily overwrite
+    # would wipe the user's manual "mark to track price change" snapshot.
     first_tracked_dates = {}
+    mark_snapshots = {}  # symbol -> {"mark_price", "mark_date"}
     for stock in scored_stocks:
         symbol = stock.get("symbol", "")
         if symbol:
             try:
-                resp = table.get_item(Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
-                                      ProjectionExpression="first_tracked")
-                ft = resp.get("Item", {}).get("first_tracked")
+                resp = table.get_item(
+                    Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
+                    ProjectionExpression="first_tracked, mark_price, mark_date",
+                )
+                existing_tracking = resp.get("Item", {})
+                ft = existing_tracking.get("first_tracked")
                 if ft:
                     first_tracked_dates[symbol] = ft
+                if existing_tracking.get("mark_price") is not None or existing_tracking.get("mark_date"):
+                    mark_snapshots[symbol] = {
+                        "mark_price": existing_tracking.get("mark_price"),
+                        "mark_date": existing_tracking.get("mark_date"),
+                    }
             except Exception:
                 pass
 
@@ -617,6 +628,15 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "last_updated": now_iso,
                 # GSI attributes
             }
+            # Preserve the user's manual-mark snapshot (mark_price/mark_date) across
+            # the daily overwrite. Without this, the pipeline would wipe the mark and
+            # "Since Mark" would reset every run.
+            snap = mark_snapshots.get(symbol)
+            if snap:
+                if snap.get("mark_price") is not None:
+                    tracking_item["mark_price"] = snap["mark_price"]
+                if snap.get("mark_date"):
+                    tracking_item["mark_date"] = snap["mark_date"]
             batch.put_item(Item=_to_decimal(
                 {k: v for k, v in tracking_item.items() if v is not None}
             ))
