@@ -350,11 +350,12 @@ Range verification:
 | < 750 | 5 | Highly competitive (fragmented) |
 
 **Claude adjustment prompt includes:**
+- **AI disruption threat** — how easily the company's core offerings can be replicated/replaced by others using AI. Easily-copied software/content/routine digital services push the score toward commoditization (higher = more competitive); proprietary data, regulatory barriers, physical assets, network effects, and high switching costs are treated as AI-resilient. Instructed to weigh both erosion and resilience, not blindly penalize AI exposure. Returns an `ai_threat` field (low/moderate/high) and must explain in reasoning how AI threat factored in.
 - Warning that SEC SIC categories are broad (company may dominate a niche within a broadly classified industry)
 - Warning that training data may not reflect recent market entries/exits — consider news
 - Request to assess moat, switching costs, brand, network effects, regulatory barriers
 
-**Stored in DynamoDB LATEST:** `hhi_score` (raw), `competition_score` (Claude-adjusted), `competition_reasoning`
+**Stored in DynamoDB LATEST:** `hhi_score` (raw), `competition_score` (Claude-adjusted), `competition_reasoning`, `ai_threat` (low/moderate/high)
 
 **Frontend display:** Shows both scores when they differ (e.g., "3→2"), color-coded green (1) to red (5), tooltip shows reasoning.
 
@@ -497,6 +498,7 @@ Architecture:
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 | Competition score: HHI + Claude hybrid | HHI from EDGAR revenue is quantitative but SEC SIC too broad. Claude adjusts with moat/niche knowledge. Stores both for transparency |
 | Competition weight 15% of investability | Enough to differentiate but doesn't dominate. Fundamentals (60%) remain primary signal |
+| AI disruption threat in competition score | Competition prompt now explicitly weighs how easily offerings can be replicated/replaced by AI. Easily-copied digital offerings → commoditized (higher score); proprietary data / regulatory / physical / network-effect moats → AI-resilient. Adds `ai_threat` field. Verified with contrasting test cases (generic content SaaS → high/5; regulated utility → low/2) |
 | revenue_risk prompt tightened | Only flags concrete forward threats (guidance cuts, contract loss). Past declines or normalizations excluded |
 | EDGAR multi-tag merge (capex, OCF, opIncome, equity, revenue) | Single-tag coverage was 50-76%. Multi-tag adds fallbacks for companies using alternative XBRL taxonomy |
 | Monthly tag discovery Lambda | Queries EDGAR companyfacts for companies with missing data, discovers alternative tags. EventBridge 1st of month |

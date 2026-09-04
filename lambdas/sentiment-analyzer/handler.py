@@ -179,11 +179,13 @@ Consider:
 - How many direct competitors operate in its specific niche (not just the broad SIC category)?
 - Is competition increasing or decreasing based on recent news?
 - Does the company have pricing power?
+- AI disruption threat: How easily can this company's core products/services be replicated, automated, or replaced by others using modern AI? Offerings that are largely software, content, generic analysis, routine services, or easily-copied digital products face LOW barriers to entry in the AI era — AI lets new entrants replicate them cheaply and fast, eroding moats and pushing the market toward commoditization (higher score). Conversely, companies are AI-RESILIENT (and may even benefit from AI) when they are protected by proprietary/hard-to-obtain data, deep regulatory barriers, physical assets or infrastructure, entrenched network effects, high switching costs, or trusted brand/distribution that AI cannot easily replicate. Weigh both erosion and resilience — do not blindly penalize AI exposure.
 
 Return ONLY valid JSON (no markdown):
 {{
   "competition_score": <integer 1-5: 1=dominant/near-monopoly, 2=strong position/few competitors, 3=moderate competition, 4=competitive market, 5=highly competitive/commoditized>,
-  "reasoning": "<2-3 sentences explaining your adjustment from the HHI score, or why you agree with it>"
+  "ai_threat": "<one of: low | moderate | high — how easily AI enables competitors to replicate/replace this company's offerings>",
+  "reasoning": "<2-3 sentences explaining your adjustment from the HHI score (or why you agree with it), and explicitly noting how AI disruption threat factored into the score>"
 }}
 """
 
@@ -237,6 +239,7 @@ def assess_competition(stock: dict, analyzed_articles: list, model_id: str) -> d
         return {
             "hhi_score": hhi_score,
             "competition_score": int(analysis.get("competition_score", hhi_score)),
+            "ai_threat": analysis.get("ai_threat", ""),
             "competition_reasoning": analysis.get("reasoning", ""),
         }
     except Exception as e:
@@ -244,6 +247,7 @@ def assess_competition(stock: dict, analyzed_articles: list, model_id: str) -> d
         return {
             "hhi_score": hhi_score,
             "competition_score": hhi_score,  # Fall back to HHI
+            "ai_threat": "",
             "competition_reasoning": f"Assessment failed, using HHI default: {e}",
         }
 

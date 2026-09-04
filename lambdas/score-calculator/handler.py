@@ -589,6 +589,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "hhi_score": stock.get("competition", {}).get("hhi_score"),
                 "competition_score": stock.get("competition", {}).get("competition_score"),
                 "competition_reasoning": stock.get("competition", {}).get("competition_reasoning", ""),
+                "ai_threat": stock.get("competition", {}).get("ai_threat", ""),
                 "first_tracked": first_tracked,
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status

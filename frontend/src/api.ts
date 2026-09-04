@@ -41,6 +41,7 @@ export interface Stock {
   hhi_score: number | null;
   competition_score: number | null;
   competition_reasoning: string | null;
+  ai_threat: string | null;
   risk_flags: (string | Record<string, unknown>)[];
   first_tracked: string;
   last_updated: string;
