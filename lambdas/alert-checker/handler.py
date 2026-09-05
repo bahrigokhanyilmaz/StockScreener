@@ -169,26 +169,36 @@ def check_tracking_changes(scored_stocks: list, previous_status: dict, today: st
     return alerts, tracking_updates
 
 
-def _read_mark_snapshot(table, symbol: str) -> dict:
+def _read_preserved_tracking_fields(table, symbol: str) -> dict:
     """
-    Read the user's manual-mark snapshot (mark_price/mark_date) off the existing
-    TRACKING item so it can be preserved across this rewrite. Without this, the
-    alert-checker's TRACKING overwrite (which runs after the score-calculator)
-    would wipe the mark and reset "Since Mark".
+    Read persistent fields off the existing TRACKING item so they survive this
+    rewrite. The alert-checker rebuilds the TRACKING item every run (after the
+    score-calculator), so any field it doesn't explicitly carry forward gets
+    wiped. Two fields must persist for the lifetime of the tracked stock:
+
+      - mark_price / mark_date : the user's manual "mark to track" snapshot
+        (wiping it resets the "Since Mark" %change)
+      - first_tracked          : the original date the stock entered tracking
+        (wiping it resets the "Days" column to 1)
+
+    Reads the durable stored value directly rather than trusting the in-memory
+    `prev` snapshot, which has occasionally been partial and caused resets.
     """
     try:
         existing = table.get_item(
             Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
-            ProjectionExpression="mark_price, mark_date",
+            ProjectionExpression="mark_price, mark_date, first_tracked",
         ).get("Item", {})
     except Exception:
         return {}
-    snap = {}
+    preserved = {}
     if existing.get("mark_price") is not None:
-        snap["mark_price"] = existing["mark_price"]
+        preserved["mark_price"] = existing["mark_price"]
     if existing.get("mark_date"):
-        snap["mark_date"] = existing["mark_date"]
-    return snap
+        preserved["mark_date"] = existing["mark_date"]
+    if existing.get("first_tracked"):
+        preserved["first_tracked"] = existing["first_tracked"]
+    return preserved
 
 
 def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
@@ -217,7 +227,8 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
                             "tracking_status": "GRACE",
                             "last_updated": now_iso,
                         }
-                        item.update(_read_mark_snapshot(table, symbol))
+                        # Preserve mark snapshot + first_tracked across this rewrite.
+                        item.update(_read_preserved_tracking_fields(table, symbol))
                         batch.put_item(Item=item)
                         continue
                 except Exception:
@@ -241,8 +252,10 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
             }
             if "grace_start" in update:
                 item["grace_start"] = update["grace_start"]
-            # Preserve the user's manual-mark snapshot across this rewrite.
-            item.update(_read_mark_snapshot(table, symbol))
+            # Preserve mark snapshot + the original first_tracked across this rewrite.
+            # The durable stored value wins over update.get(..., today) so a partial
+            # `prev` can never regress the tracking-start date to today.
+            item.update(_read_preserved_tracking_fields(table, symbol))
 
             batch.put_item(Item=item)
 

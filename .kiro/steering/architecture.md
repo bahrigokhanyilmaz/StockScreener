@@ -33,6 +33,7 @@ Always keep README and steering docs updated without being asked.
 ```
 EventBridge (Mon-Fri 4PM ET / 8PM UTC)
     → Step Functions (stock-screener-pipeline)
+        → Step 0: Market Gate (is US market open today? skip weekends/holidays → Choice, instant)
         → Step 1: EDGAR Bulk Fundamentals (~10 calls → 5,097 companies, ~3 min)
         → Step 2: Pre-Screen (non-price EDGAR filters → ~500 pass, instant)
         → Step 3: Enrichment (Polygon 1 call + FMP 6 calls/candidate → ~2 min)
@@ -46,6 +47,15 @@ Total: ~12-15 minutes per run.
 ```
 
 ### Pipeline Step Details & Reasoning
+
+**Step 0 — Market Gate** (instant)
+- Lambda `stock-screener-market-gate`. First state in the machine (`StartAt: MarketGateCheck`).
+- Determines if the US equity market is OPEN today:
+  - Weekend check (Sat/Sun always closed)
+  - Polygon `/v1/marketstatus/upcoming` holiday calendar — if today is listed as `closed` for NYSE/NASDAQ, the market is closed. Data-driven, self-maintaining (no hardcoded holiday list).
+- Returns `{"market_open": bool, "reason", "today"}`. A Step Functions `Choice` (`MarketOpen?`) routes: closed → `MarketClosed` (Succeed, pipeline skipped, zero cost); open → full pipeline.
+- Fail-open: if the Polygon call errors, it proceeds (never skips a real trading day over a transient API error). Weekend check runs regardless.
+- **Reasoning:** EventBridge fires Mon-Fri but has no holiday awareness. On holidays (e.g. Labor Day) prices don't advance, so a run adds no new market data yet still incurs Bedrock/API cost. This gate stops the no-op spend. Consistent with "be frugal" + "data-driven, no hardcoded lists".
 
 **Step 1 — EDGAR Bulk Fetch** (~3 minutes)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
@@ -498,6 +508,8 @@ Architecture:
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 | Competition score: HHI + Claude hybrid | HHI from EDGAR revenue is quantitative but SEC SIC too broad. Claude adjusts with moat/niche knowledge. Stores both for transparency |
 | Competition weight 15% of investability | Enough to differentiate but doesn't dominate. Fundamentals (60%) remain primary signal |
+| Market gate (Step 0) skips weekends/holidays | EventBridge Mon-Fri has no holiday awareness; holiday runs re-process stale prices at full Bedrock/API cost. Step 0 Lambda checks weekend + Polygon holiday calendar (data-driven, self-maintaining), Choice state skips to Succeed when closed. Fail-open on API error |
+| first_tracked preserved in alert-checker too | Same class of bug as the mark wipe: Step 8 rebuilds TRACKING every run and reset first_tracked to today when the in-memory `prev` was partial (Days column reset to 1). Fix reads the durable stored first_tracked and never regresses it. Also fixed the portfolio-protected GRACE path which wrote no first_tracked at all |
 | Manual mark preserved in BOTH Step 7 and Step 8 | The TRACKING item is rewritten every run by score-calculator (Step 7) AND alert-checker (Step 8, even for still-ACTIVE stocks). Both must carry mark_price/mark_date forward or the mark is wiped overnight. First fix only covered Step 7; Step 8 was silently clobbering it. Verified end-to-end that the mark survives the full pipeline |
 | AI disruption threat in competition score | Competition prompt now explicitly weighs how easily offerings can be replicated/replaced by AI. Easily-copied digital offerings → commoditized (higher score); proprietary data / regulatory / physical / network-effect moats → AI-resilient. Adds `ai_threat` field. Verified with contrasting test cases (generic content SaaS → high/5; regulated utility → low/2) |
 | revenue_risk prompt tightened | Only flags concrete forward threats (guidance cuts, contract loss). Past declines or normalizations excluded |

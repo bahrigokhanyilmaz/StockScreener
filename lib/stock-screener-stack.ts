@@ -84,6 +84,19 @@ export class StockScreenerStack extends cdk.Stack {
     // LAMBDAS
     // ==========================================
 
+    // Step 0: Market Gate — is the US market open today? (skips holidays/weekends)
+    const marketGate = new PythonFunction(this, 'MarketGate', {
+      functionName: 'stock-screener-market-gate',
+      entry: path.join(__dirname, '../lambdas/market-gate'),
+      index: 'handler.py',
+      handler: 'handler',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 128,
+      description: 'Step 0: Skip the pipeline on weekends/market holidays (data-driven via Polygon)',
+    });
+
     // Step 1: EDGAR Bulk Fundamentals (pure data fetch, no filtering)
     const fundamentalsFetcher = new PythonFunction(this, 'FundamentalsFetcher', {
       functionName: 'stock-screener-fundamentals-fetcher',
@@ -306,6 +319,19 @@ export class StockScreenerStack extends cdk.Stack {
     // PERMISSIONS
     // ==========================================
 
+    // Step 0: SSM read (Polygon key for holiday calendar)
+    marketGate.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/stock-screener/*`],
+    }));
+    marketGate.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:Decrypt'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` } },
+    }));
+
     // Step 1: S3 write
     rawDataBucket.grantWrite(fundamentalsFetcher);
 
@@ -385,6 +411,13 @@ export class StockScreenerStack extends cdk.Stack {
     // STEP FUNCTIONS — 8-Step Pipeline
     // ==========================================
 
+    const step0_marketGate = new tasks.LambdaInvoke(this, 'MarketGateCheck', {
+      lambdaFunction: marketGate,
+      comment: 'Step 0: Is the US market open today?',
+      payloadResponseOnly: true,
+      retryOnServiceExceptions: true,
+    });
+
     const step1_fetchFundamentals = new tasks.LambdaInvoke(this, 'FetchFundamentals', {
       lambdaFunction: fundamentalsFetcher,
       comment: 'Step 1: EDGAR bulk fundamentals',
@@ -441,8 +474,8 @@ export class StockScreenerStack extends cdk.Stack {
       retryOnServiceExceptions: true,
     });
 
-    // Chain: EDGAR → PreScreen → Enrich → FullScreen → News → Sentiment → Score → Alerts
-    const definition = step1_fetchFundamentals
+    // Full pipeline: EDGAR → PreScreen → Enrich → FullScreen → News → Sentiment → Score → Alerts
+    const fullPipeline = step1_fetchFundamentals
       .next(step2_preScreen)
       .next(step3_enrichPrices)
       .next(step4_fullScreen)
@@ -451,11 +484,24 @@ export class StockScreenerStack extends cdk.Stack {
       .next(step7_calculateScores)
       .next(step8_checkAlerts);
 
+    // Skip terminal state for market-closed days (weekend/holiday).
+    const marketClosed = new sfn.Succeed(this, 'MarketClosed', {
+      comment: 'Market closed today (weekend/holiday) — pipeline skipped, no cost incurred',
+    });
+
+    // Step 0 gate → branch on market_open. Closed → skip; open → run full pipeline.
+    const marketOpenChoice = new sfn.Choice(this, 'MarketOpen?')
+      .when(sfn.Condition.booleanEquals('$.market_open', false), marketClosed)
+      .otherwise(fullPipeline);
+
+    // Chain: Gate → (Choice) → full pipeline OR skip
+    const definition = step0_marketGate.next(marketOpenChoice);
+
     const stateMachine = new sfn.StateMachine(this, 'PipelineStateMachine', {
       stateMachineName: 'stock-screener-pipeline',
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.minutes(60),
-      comment: 'Daily: EDGAR → PreScreen → Enrich → FullScreen → News → Sentiment → Score → Alerts',
+      comment: 'Daily: MarketGate → EDGAR → PreScreen → Enrich → FullScreen → News → Sentiment → Score → Alerts',
     });
 
     // ==========================================
