@@ -169,6 +169,28 @@ def check_tracking_changes(scored_stocks: list, previous_status: dict, today: st
     return alerts, tracking_updates
 
 
+def _read_mark_snapshot(table, symbol: str) -> dict:
+    """
+    Read the user's manual-mark snapshot (mark_price/mark_date) off the existing
+    TRACKING item so it can be preserved across this rewrite. Without this, the
+    alert-checker's TRACKING overwrite (which runs after the score-calculator)
+    would wipe the mark and reset "Since Mark".
+    """
+    try:
+        existing = table.get_item(
+            Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
+            ProjectionExpression="mark_price, mark_date",
+        ).get("Item", {})
+    except Exception:
+        return {}
+    snap = {}
+    if existing.get("mark_price") is not None:
+        snap["mark_price"] = existing["mark_price"]
+    if existing.get("mark_date"):
+        snap["mark_date"] = existing["mark_date"]
+    return snap
+
+
 def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
     """Write tracking status updates to DynamoDB."""
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -195,6 +217,7 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
                             "tracking_status": "GRACE",
                             "last_updated": now_iso,
                         }
+                        item.update(_read_mark_snapshot(table, symbol))
                         batch.put_item(Item=item)
                         continue
                 except Exception:
@@ -218,6 +241,8 @@ def update_tracking_in_dynamodb(table, tracking_updates: list, today: str):
             }
             if "grace_start" in update:
                 item["grace_start"] = update["grace_start"]
+            # Preserve the user's manual-mark snapshot across this rewrite.
+            item.update(_read_mark_snapshot(table, symbol))
 
             batch.put_item(Item=item)
 

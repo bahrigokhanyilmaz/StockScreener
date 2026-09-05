@@ -230,7 +230,7 @@ Total: ~12-15 minutes per run.
 |----|----|---------| 
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
 | STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day, never overwritten) |
-| STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). For MANUAL marks also holds mark_price + mark_date (price snapshot at mark time) |
+| STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). For manual marks also holds mark_price + mark_date (price snapshot at mark time). NOTE: BOTH Step 7 (score-calculator) and Step 8 (alert-checker) rewrite this item every run and MUST preserve mark_price/mark_date — otherwise "Since Mark" resets |
 | STOCK#{ticker} | ARTICLES | Analyzed articles with per-article risk flags (overwritten daily) |
 | STOCK#{ticker} | TRACK_HIST#{unmark_ts} | Closed manual-tracking stint: mark_date, mark_price, unmark_date, unmark_price, change_pct. record_type=TRACK_HIST. Persisted on unmark, never overwritten |
 | PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV price bars (overwritten daily) |
@@ -498,6 +498,7 @@ Architecture:
 | finvizfinance blocked from Lambda | 403 Forbidden from AWS IPs |
 | Competition score: HHI + Claude hybrid | HHI from EDGAR revenue is quantitative but SEC SIC too broad. Claude adjusts with moat/niche knowledge. Stores both for transparency |
 | Competition weight 15% of investability | Enough to differentiate but doesn't dominate. Fundamentals (60%) remain primary signal |
+| Manual mark preserved in BOTH Step 7 and Step 8 | The TRACKING item is rewritten every run by score-calculator (Step 7) AND alert-checker (Step 8, even for still-ACTIVE stocks). Both must carry mark_price/mark_date forward or the mark is wiped overnight. First fix only covered Step 7; Step 8 was silently clobbering it. Verified end-to-end that the mark survives the full pipeline |
 | AI disruption threat in competition score | Competition prompt now explicitly weighs how easily offerings can be replicated/replaced by AI. Easily-copied digital offerings → commoditized (higher score); proprietary data / regulatory / physical / network-effect moats → AI-resilient. Adds `ai_threat` field. Verified with contrasting test cases (generic content SaaS → high/5; regulated utility → low/2) |
 | revenue_risk prompt tightened | Only flags concrete forward threats (guidance cuts, contract loss). Past declines or normalizations excluded |
 | EDGAR multi-tag merge (capex, OCF, opIncome, equity, revenue) | Single-tag coverage was 50-76%. Multi-tag adds fallbacks for companies using alternative XBRL taxonomy |
