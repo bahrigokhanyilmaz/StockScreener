@@ -16,3 +16,4 @@ __pycache__/
 # Local test artifacts
 lambdas/**/test_local.py
 .venv/
+.pytest_cache/

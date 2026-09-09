@@ -25,6 +25,13 @@ Always keep README and steering docs updated without being asked.
 11. **Keep Docs Updated** — Steering file and README always reflect current state
 12. **Missing Data = FAIL** — Stocks missing any filter metric are rejected (no skipping)
 13. **Be Frugal** — Plan before deploying, minimize wasted API calls
+14. **Tests Are Mandatory (NON-NEGOTIABLE)** — Every change or addition MUST be covered by automated tests. Before writing code, identify the blast radius (which steps/functions/DynamoDB items/UI fields the change touches) and ensure tests exist or are added for each affected area. Rules:
+    - **Unit tests** for every Lambda's core logic (screening filters, scoring math, date/trading-day resolution, tracking-field preservation, sentiment/competition parsing, market-gate decisions).
+    - **Integration tests** for cross-step invariants: TRACKING item survives Step 7 → Step 8 rewrites (mark_price, mark_date, first_tracked must persist); enrichment resolves a real trading day (never a holiday); a full-pipeline dry run over fixture data lands the expected DynamoDB shape.
+    - **Regression tests** — every production bug gets a test that reproduces it BEFORE the fix, so it can never silently return (e.g. holiday→0 prices→all GRACE, mark wipe, Days reset).
+    - Run the full suite (`pytest`) and confirm green BEFORE every deploy. A deploy without passing tests is not allowed.
+    - No "wipe and rerun to see what happens" as a substitute for tests. We must understand impact ahead of time, not discover it in production.
+    - When a change breaks a test, fix the code (or the test if the contract legitimately changed) — never delete a test to make the suite pass.
 
 ## Current Architecture (Deployed & Working)
 
@@ -577,3 +584,20 @@ Architecture:
 - Remove dead code immediately
 - Commit and push after every meaningful change
 - GitHub: https://github.com/bahrigokhanyilmaz/StockScreener
+
+### Testing (see Design Principle #14 + tests/README.md)
+
+- Suite lives in `tests/` (pytest). Dev deps in `requirements-dev.txt`
+  (`pytest`, `moto`, `requests-mock`) — install once with
+  `.venv/bin/python3 -m pip install -r requirements-dev.txt`.
+- Run: `./scripts/run_tests.sh` (all) / `-m unit|integration|regression`.
+- MUST be green before every deploy. Ad-hoc `scripts/test_*.py` (live-API
+  probes) are NOT the suite and are excluded from pytest collection.
+- Mocking: `moto` for DynamoDB (single-table + tracking-status-index GSI),
+  `requests-mock` for Polygon/FMP, `monkeypatch` to freeze time.
+- Coverage today: enrichment trading-day (holiday regression), TRACKING field
+  preservation across Step 7/8 (mark + first_tracked regressions), market-gate
+  decisions, screening filter logic. Every new change adds/extends tests for its
+  blast radius; every fixed bug gets a regression test that fails on old code.
+- A `PostFileSave` hook (`.kiro/hooks/test-on-handler-save.json`) runs the suite
+  automatically when any `lambdas/**/handler.py` is saved.

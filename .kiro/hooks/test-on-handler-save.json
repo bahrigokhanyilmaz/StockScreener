@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Run tests on Lambda handler save",
+      "trigger": "PostFileSave",
+      "description": "Runs the pytest suite whenever a Lambda handler.py is saved, so regressions surface immediately.",
+      "matcher": "lambdas/.*handler\\.py$",
+      "action": {
+        "type": "command",
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && AWS_DEFAULT_REGION=us-east-2 .venv/bin/python3 -m pytest -q 2>&1 | tail -15",
+        "timeout": 120
+      }
+    }
+  ]
+}
