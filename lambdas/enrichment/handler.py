@@ -77,36 +77,52 @@ def get_fmp_key() -> str:
 
 def get_last_trading_day(polygon_key: str = None) -> str:
     """
-    Get the most recent COMPLETED trading day for Polygon data.
+    Get the most recent COMPLETED trading day that ACTUALLY HAS price data.
 
-    Strategy: Try T-1 first (yesterday, skipping weekends). If Polygon
-    returns an error (data not yet published), fall back to T-2.
+    Strategy: Walk backward day-by-day from T-1, and for each candidate ask
+    Polygon's grouped-daily endpoint whether it has real prices. Return the
+    first day with a non-empty result set.
 
-    Polygon free tier publishes previous day's data by ~5 AM UTC.
-    Since our pipeline runs at 8 PM UTC (well past that), T-1 should
-    always work. The fallback exists as a safety net.
+    Why check the result COUNT, not just the HTTP status: on a market holiday
+    (e.g. Labor Day) Polygon returns HTTP 200 with `resultsCount: 0` and an
+    empty `results` array — NOT an error. The old code only checked the status
+    code, so it accepted the holiday date, matched 0 prices, and cascaded into
+    every stock failing the screen. Walking back until resultsCount > 0 is
+    data-driven and correctly skips weekends AND holidays without a hardcoded
+    calendar.
+
+    Polygon free tier publishes the previous day's data by ~5 AM UTC and our
+    pipeline runs at 8 PM UTC, so T-1 normally has data — unless T-1 was a
+    holiday/weekend, in which case we step further back.
     """
-    # Try T-1 first (skip weekends)
     target = datetime.now(timezone.utc).date() - timedelta(days=1)
-    while target.weekday() >= 5:
-        target = target - timedelta(days=1)
 
-    # If we have the API key, verify T-1 is available
-    if polygon_key:
-        test_url = f"{POLYGON_GROUPED_URL}/{target.strftime('%Y-%m-%d')}"
-        try:
-            resp = http_requests.get(test_url, params={"apiKey": polygon_key}, timeout=10)
-            if resp.status_code == 200:
-                return target.strftime("%Y-%m-%d")
-            print(f"  T-1 ({target}) not available (HTTP {resp.status_code}), falling back to T-2")
-        except Exception as e:
-            print(f"  T-1 check failed ({e}), falling back to T-2")
-
-        # Fallback: T-2 (guaranteed available)
-        target = datetime.now(timezone.utc).date() - timedelta(days=2)
+    # Without an API key we can't verify data presence; fall back to the old
+    # weekend-only heuristic (best effort).
+    if not polygon_key:
         while target.weekday() >= 5:
             target = target - timedelta(days=1)
+        return target.strftime("%Y-%m-%d")
 
+    # Walk back up to ~10 days to clear long weekends / holiday stretches.
+    for _ in range(10):
+        # Cheap skip for weekends before spending an API call.
+        if target.weekday() >= 5:
+            target = target - timedelta(days=1)
+            continue
+        date_str = target.strftime("%Y-%m-%d")
+        url = f"{POLYGON_GROUPED_URL}/{date_str}"
+        try:
+            resp = http_requests.get(url, params={"apiKey": polygon_key}, timeout=15)
+            if resp.status_code == 200 and (resp.json().get("resultsCount") or 0) > 0:
+                return date_str
+            print(f"  {date_str} has no price data (holiday/unpublished) — stepping back")
+        except Exception as e:
+            print(f"  {date_str} check failed ({e}) — stepping back")
+        target = target - timedelta(days=1)
+
+    # Exhausted the window — return best-effort weekday date.
+    print("  WARNING: no trading day with data found in last 10 days; using fallback")
     return target.strftime("%Y-%m-%d")
 
 
