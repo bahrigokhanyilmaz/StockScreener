@@ -353,6 +353,7 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
     from datetime import datetime, timezone
     from decimal import Decimal
     from collections import defaultdict
+    from et_date import eastern_today
 
     bucket = os.environ.get("RAW_DATA_BUCKET", "")
     table_name = os.environ.get("DATA_TABLE_NAME", "")
@@ -470,7 +471,7 @@ def compute_and_persist_industry_medians(stocks: list[dict]):
     # Step 4: Persist to DynamoDB
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(table_name)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = eastern_today()  # US market calendar date (not UTC)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     def to_decimal(val):

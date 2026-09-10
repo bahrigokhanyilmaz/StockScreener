@@ -33,6 +33,10 @@ from datetime import datetime, timezone
 import boto3
 import requests
 
+# US-Eastern business-date helpers (dependency-free). Market holidays/weekends
+# are defined on the US market (ET) calendar, not UTC.
+from et_date import eastern_date
+
 ssm_client = boto3.client("ssm")
 
 POLYGON_UPCOMING_URL = "https://api.polygon.io/v1/marketstatus/upcoming"
@@ -77,8 +81,9 @@ def is_market_holiday(today: str, polygon_key: str) -> tuple[bool, str]:
 
 def handler(event, context):
     now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-    weekday = now.weekday()  # Mon=0 ... Sun=6
+    today = eastern_date(now)  # US market (ET) calendar date
+    # ET weekday derived from the ET date string (Mon=0 ... Sun=6).
+    weekday = datetime.strptime(today, "%Y-%m-%d").weekday()
 
     # 1) Weekend — market always closed.
     if weekday >= 5:

@@ -35,6 +35,10 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 
+# US-Eastern business-date helper (dependency-free). Tracking lifecycle dates
+# are keyed on the US market day, consistent with score-calculator.
+from et_date import eastern_today
+
 # AWS clients
 sns_client = boto3.client("sns")
 dynamodb = boto3.resource("dynamodb")
@@ -376,8 +380,8 @@ def handler(event, context):
     from pipeline_io import read_pipeline_input, write_pipeline_output
 
     start_time = datetime.now(timezone.utc)
-    today = start_time.strftime("%Y-%m-%d")
-    print(f"Starting alert check at {start_time.isoformat()}")
+    today = eastern_today()  # US market calendar date (not UTC)
+    print(f"Starting alert check at {start_time.isoformat()} (ET date {today})")
 
     # Read input from S3 if needed (Step Functions payload limit workaround)
     data = read_pipeline_input(event)

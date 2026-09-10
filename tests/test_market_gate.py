@@ -25,9 +25,10 @@ HOLIDAYS = [
 def _freeze_now(monkeypatch, y, m, d):
     fixed = real_datetime.datetime(y, m, d, 20, 0, 0, tzinfo=real_datetime.timezone.utc)
 
-    class _StubDateTime:
-        @staticmethod
-        def now(tz=None):
+    class _StubDateTime(real_datetime.datetime):
+        # Subclass real datetime so strptime/etc. still work; only override now().
+        @classmethod
+        def now(cls, tz=None):
             return fixed
 
     monkeypatch.setattr(market_gate, "datetime", _StubDateTime)

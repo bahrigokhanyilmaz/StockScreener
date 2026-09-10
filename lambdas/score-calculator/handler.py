@@ -32,6 +32,10 @@ from decimal import Decimal
 
 import boto3
 
+# US-Eastern business-date helpers (dependency-free). Business dates
+# (first_tracked, SCORE#{date}, last_passed) are keyed on the US market day.
+from et_date import eastern_date, eastern_today, days_tracked
+
 # DynamoDB client
 dynamodb = boto3.resource("dynamodb")
 
@@ -800,8 +804,8 @@ def handler(event, context):
     from pipeline_io import read_pipeline_input, write_pipeline_output
 
     start_time = datetime.now(timezone.utc)
-    today = start_time.strftime("%Y-%m-%d")
-    print(f"Starting score calculation at {start_time.isoformat()}")
+    today = eastern_today()  # US market calendar date (not UTC)
+    print(f"Starting score calculation at {start_time.isoformat()} (ET date {today})")
 
     # Read input from S3 if needed (Step Functions payload limit workaround)
     data = read_pipeline_input(event)

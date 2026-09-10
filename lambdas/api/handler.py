@@ -33,6 +33,10 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 
+# US-Eastern business-date helper (dependency-free). Mark/track dates are keyed
+# on the US market day, consistent with the pipeline.
+from et_date import eastern_today
+
 # DynamoDB
 dynamodb = boto3.resource("dynamodb")
 TABLE_NAME = os.environ.get("DATA_TABLE_NAME", "stock-screener-data")
@@ -285,7 +289,7 @@ def track_stock(ticker: str):
     table = get_table()
     sym = ticker.upper()
     now = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = eastern_today()  # US market calendar date (not UTC)
 
     mark_price = _get_current_price(sym)
 
@@ -325,7 +329,7 @@ def untrack_stock(ticker: str):
     table = get_table()
     sym = ticker.upper()
     now_iso = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = eastern_today()  # US market calendar date (not UTC)
 
     # Read the existing TRACKING item to recover the mark snapshot.
     existing = table.get_item(

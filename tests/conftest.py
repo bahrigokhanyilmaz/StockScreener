@@ -22,7 +22,13 @@ def load_handler(lambda_folder: str):
 
     Example: load_handler("enrichment") -> module for lambdas/enrichment/handler.py
     """
-    path = os.path.join(LAMBDAS_DIR, lambda_folder, "handler.py")
+    folder = os.path.join(LAMBDAS_DIR, lambda_folder)
+    path = os.path.join(folder, "handler.py")
+    # Put the Lambda's own folder on sys.path so sibling modules it imports
+    # (pipeline_io, et_date, screener-filters, etc.) resolve exactly as they do
+    # in the real Lambda runtime.
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
     mod_name = f"handler_{lambda_folder.replace('-', '_')}"
     spec = importlib.util.spec_from_file_location(mod_name, path)
     module = importlib.util.module_from_spec(spec)
