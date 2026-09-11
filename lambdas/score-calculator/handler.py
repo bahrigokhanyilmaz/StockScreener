@@ -442,6 +442,31 @@ def _to_decimal(obj):
     return obj
 
 
+def _earliest_score_date(table, symbol: str):
+    """
+    Return the earliest SCORE#{date} for a stock, or None if it has no history.
+
+    SCORE# items are immutable (one per run, never overwritten), so the earliest
+    one is the true date the stock first entered tracking. Used as a self-healing
+    fallback for first_tracked when the TRACKING item's value is missing — so a
+    transient read gap can never reset a continuously-tracked stock to "today".
+    """
+    from boto3.dynamodb.conditions import Key
+    try:
+        resp = table.query(
+            KeyConditionExpression=Key("PK").eq(f"STOCK#{symbol}") & Key("SK").begins_with("SCORE#"),
+            ProjectionExpression="SK",
+            ScanIndexForward=True,   # ascending -> earliest first
+            Limit=1,
+        )
+        items = resp.get("Items", [])
+        if items:
+            return items[0]["SK"].replace("SCORE#", "")
+    except Exception:
+        pass
+    return None
+
+
 def load_existing_risk_ledgers(symbols: list) -> dict:
     """
     Load existing risk_flags (ledger) from DynamoDB for each stock.
@@ -519,28 +544,38 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
 
     # Load existing first_tracked dates + manual-mark snapshots from TRACKING items.
     # These must be preserved across pipeline runs, otherwise the daily overwrite
-    # would wipe the user's manual "mark to track price change" snapshot.
+    # would wipe the user's manual mark or reset the "Days" column.
+    #
+    # first_tracked resolution is HARDENED so a transient/missing TRACKING read
+    # can never reset the date to today: if the TRACKING item lacks first_tracked,
+    # we fall back to the stock's EARLIEST immutable SCORE#{date} snapshot (the
+    # true first-tracked date, written every run and never overwritten). Only if
+    # there is genuinely no history do we treat the stock as new (today).
     first_tracked_dates = {}
     mark_snapshots = {}  # symbol -> {"mark_price", "mark_date"}
     for stock in scored_stocks:
         symbol = stock.get("symbol", "")
-        if symbol:
-            try:
-                resp = table.get_item(
-                    Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
-                    ProjectionExpression="first_tracked, mark_price, mark_date",
-                )
-                existing_tracking = resp.get("Item", {})
-                ft = existing_tracking.get("first_tracked")
-                if ft:
-                    first_tracked_dates[symbol] = ft
-                if existing_tracking.get("mark_price") is not None or existing_tracking.get("mark_date"):
-                    mark_snapshots[symbol] = {
-                        "mark_price": existing_tracking.get("mark_price"),
-                        "mark_date": existing_tracking.get("mark_date"),
-                    }
-            except Exception:
-                pass
+        if not symbol:
+            continue
+        try:
+            resp = table.get_item(
+                Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
+                ProjectionExpression="first_tracked, mark_price, mark_date",
+            )
+            existing_tracking = resp.get("Item", {})
+            ft = existing_tracking.get("first_tracked")
+            if not ft:
+                # Fallback: earliest immutable SCORE# snapshot = true first-tracked.
+                ft = _earliest_score_date(table, symbol)
+            if ft:
+                first_tracked_dates[symbol] = ft
+            if existing_tracking.get("mark_price") is not None or existing_tracking.get("mark_date"):
+                mark_snapshots[symbol] = {
+                    "mark_price": existing_tracking.get("mark_price"),
+                    "mark_date": existing_tracking.get("mark_date"),
+                }
+        except Exception:
+            pass
 
     with table.batch_writer() as batch:
         for stock in scored_stocks:
