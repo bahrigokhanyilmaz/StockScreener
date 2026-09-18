@@ -199,6 +199,8 @@ function renderTrendCell(trend: TrendData | undefined) {
 export default function StockTable({ stocks, trends, ownedSymbols, industryAverages, selectedTicker, onSelectStock, onBuy, onRelease, onToggleMark }: Props) {
   const [sortCol, setSortCol] = useState<string>('investability_score');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  // Once the user clicks any header, respect their sort exactly (don't float NEW).
+  const [userSorted, setUserSorted] = useState(false);
 
   if (stocks.length === 0) {
     return (
@@ -240,6 +242,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
 
   function handleSort(key: string) {
     if (key.startsWith('_')) return; // Non-sortable columns
+    setUserSorted(true);
     if (sortCol === key) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
     } else {
@@ -249,10 +252,13 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
   }
 
   const sortedStocks = [...stocks].sort((a, b) => {
-    // NEW stocks (first tracked today) always float to the top, regardless of sort column.
-    const aNew = getDaysTracked(a.first_tracked) === 'NEW';
-    const bNew = getDaysTracked(b.first_tracked) === 'NEW';
-    if (aNew !== bNew) return aNew ? -1 : 1;
+    // NEW stocks float to the top ONLY in the default view. Once the user picks
+    // a column to sort by, honor that sort exactly.
+    if (!userSorted) {
+      const aNew = getDaysTracked(a.first_tracked) === 'NEW';
+      const bNew = getDaysTracked(b.first_tracked) === 'NEW';
+      if (aNew !== bNew) return aNew ? -1 : 1;
+    }
 
     let aVal: unknown = (a as unknown as Record<string, unknown>)[sortCol];
     let bVal: unknown = (b as unknown as Record<string, unknown>)[sortCol];
