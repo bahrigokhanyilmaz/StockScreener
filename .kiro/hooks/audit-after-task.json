@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Data integrity audit after pipeline task",
+      "trigger": "PostTaskExec",
+      "description": "Runs the live data-integrity audit; surfaces any tracked stock violating a documented invariant.",
+      "action": {
+        "type": "command",
+        "command": "cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && .venv/bin/python3 scripts/audit_data_integrity.py 2>&1 | tail -20",
+        "timeout": 120
+      }
+    }
+  ]
+}

@@ -601,3 +601,10 @@ Architecture:
   blast radius; every fixed bug gets a regression test that fails on old code.
 - A `PostFileSave` hook (`.kiro/hooks/test-on-handler-save.json`) runs the suite
   automatically when any `lambdas/**/handler.py` is saved.
+- **Data-integrity audit** (`scripts/audit_data_integrity.py`): checks every
+  tracked stock in the LIVE table against documented invariants (hard filters +
+  overrides, sanity ranges, PEG↔forward-PE consistency, market-cap floor, data
+  recency, orphan items). Run manually (`--json` for machine output) or via the
+  `audit-after-task` hook. Logic is unit-tested in `tests/test_data_integrity.py`.
+  Scope limit: validates data IN DynamoDB against the rules — it cannot catch bad
+  data from sources (FMP/EDGAR) or logic with no checkable DB trace.
