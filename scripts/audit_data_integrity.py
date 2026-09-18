@@ -27,14 +27,24 @@ def _f(v):
     return float(v) if v is not None else None
 
 
-def audit_tracked_stocks(latest_items, today=None):
+def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
     """
     Pure function: given the list of LATEST items, return a list of issues.
     Each issue is a dict: {severity, symbol, message}. No AWS calls here so it's
     unit-testable.
+
+    Severities:
+      HIGH/MED/LOW — invariant violations (gate the audit, exit 1).
+      ODD          — advisory plausibility warnings (internally-consistent but
+                     suspicious values, e.g. divergent P/E, price outside its
+                     30-day range). These NEVER gate; they just surface oddities
+                     that may indicate bad source data.
+
+    price_bars_by_symbol: optional {symbol: [bar,...]} for range checks.
     """
     if today is None:
         today = datetime.now(timezone.utc).date()
+    price_bars_by_symbol = price_bars_by_symbol or {}
     issues = []
 
     def flag(sym, sev, msg):
@@ -105,6 +115,32 @@ def audit_tracked_stocks(latest_items, today=None):
         if not ft:
             flag(sym, "MED", "first_tracked missing")
 
+        # --- ODD: advisory plausibility (never gates) ---
+        # Trailing vs forward P/E wildly divergent — usually a data error on one.
+        if pe is not None and fpe is not None and pe > 0 and fpe > 0:
+            ratio = max(pe, fpe) / min(pe, fpe)
+            if ratio >= 3.0:
+                flag(sym, "ODD", f"trailing P/E ({pe}) and forward P/E ({fpe}) differ {ratio:.1f}x")
+        # Market cap should be roughly price * shares; if price is tiny but mc huge
+        # (or vice versa) it hints at a stale/mismatched field. Loose bounds only.
+        if price is not None and mc is not None and price > 0:
+            if price < 1 and mc > 10_000_000_000:
+                flag(sym, "ODD", f"sub-$1 price ({price}) with >$10B market cap ({mc:.0f})")
+            if price > 1000 and mc < 300_000_000:
+                flag(sym, "ODD", f">$1000 price ({price}) with <$300M market cap ({mc:.0f})")
+        # Current price outside its own 30-day OHLCV range — price vs history mismatch.
+        bars = price_bars_by_symbol.get(sym) or []
+        closes = [_f(b.get("c")) for b in bars if b.get("c") is not None]
+        closes = [c for c in closes if c is not None]
+        if price is not None and price > 0 and len(closes) >= 5:
+            lo, hi = min(closes), max(closes)
+            # Allow 15% slack beyond the observed range (a fresh close can exceed it).
+            if price < lo * 0.85 or price > hi * 1.15:
+                flag(sym, "ODD", f"price {price} outside 30d range [{lo:.2f}, {hi:.2f}] (+/-15% slack)")
+        # PEG present but its inputs (forward P/E or growth) missing — shouldn't happen.
+        if peg is not None and (fpe is None or lt is None):
+            flag(sym, "ODD", f"PEG={peg} present but forward_pe={fpe} / est_lt_growth={lt} missing")
+
     return issues
 
 
@@ -139,24 +175,33 @@ def main():
     table = boto3.Session(profile_name="stock-screener", region_name="us-east-2") \
         .resource("dynamodb").Table("stock-screener-data")
     latest = _scan(table, FilterExpression=Attr("SK").eq("LATEST"))
-    issues = audit_tracked_stocks(latest)
+    # Pull price-history bars for the range plausibility check.
+    price_bars = {}
+    for s in latest:
+        sym = s.get("symbol")
+        ph = table.get_item(Key={"PK": f"PRICE_HISTORY#{sym}", "SK": "DAILY"}).get("Item")
+        if ph and ph.get("bars"):
+            price_bars[sym] = ph["bars"]
+    issues = audit_tracked_stocks(latest, price_bars_by_symbol=price_bars)
     orphans = find_orphans(table)
 
     if as_json:
         print(json.dumps({"audited": len(latest), "issues": issues, "orphans": orphans}, default=str))
     else:
         print(f"Audited {len(latest)} tracked stocks.\n")
-        for sev in ["HIGH", "MED", "LOW"]:
+        for sev in ["HIGH", "MED", "LOW", "ODD"]:
             rows = [i for i in issues if i["severity"] == sev]
-            print(f"=== {sev} ({len(rows)}) ===")
+            label = f"{sev} (advisory)" if sev == "ODD" else sev
+            print(f"=== {label} ({len(rows)}) ===")
             for i in sorted(rows, key=lambda x: x["symbol"]):
                 print(f"  {i['symbol']}: {i['message']}")
             print()
         print("=== ORPHANS ===")
         print("  none" if not orphans else "\n".join(f"  {k}: {v} leftover items" for k, v in sorted(orphans.items())))
 
-    high_med = [i for i in issues if i["severity"] in ("HIGH", "MED")]
-    return 1 if (high_med or orphans) else 0
+    # ODD is advisory and never gates — only real violations + orphans set exit 1.
+    gating = [i for i in issues if i["severity"] in ("HIGH", "MED")]
+    return 1 if (gating or orphans) else 0
 
 
 if __name__ == "__main__":

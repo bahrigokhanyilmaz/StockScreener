@@ -86,3 +86,53 @@ def test_peg_inconsistent_with_forward_inputs_flagged():
     s = _valid_stock(); s["peg_ratio"] = 0.5; s["forward_pe"] = 30.0; s["est_lt_growth"] = 0.10
     # real = 30/(0.10*100)=3.0, stored 0.5 -> inconsistent
     assert any("inconsistent" in i["message"] for i in audit.audit_tracked_stocks([s], today=TODAY))
+
+
+# --- ODD (advisory plausibility) checks ---
+
+def _odd(issues):
+    return [i for i in issues if i["severity"] == "ODD"]
+
+
+@pytest.mark.unit
+def test_odd_never_makes_valid_stock_dirty():
+    # A valid stock with sane price history produces no issues at all.
+    s = _valid_stock()
+    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}]
+    issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
+    assert issues == []
+
+
+@pytest.mark.unit
+def test_odd_divergent_trailing_vs_forward_pe():
+    # 5x apart; keep PEG consistent (fpe 12 / lt 0.30 = 0.4) so only ODD fires.
+    s = _valid_stock(); s["pe_ratio"] = 60.0; s["forward_pe"] = 12.0; s["peg_ratio"] = 0.4
+    issues = audit.audit_tracked_stocks([s], today=TODAY)
+    assert any("differ" in i["message"] for i in _odd(issues))
+
+
+@pytest.mark.unit
+def test_odd_price_outside_30d_range():
+    s = _valid_stock(); s["price"] = 80.0  # way above the ~40 range
+    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}]
+    issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
+    assert any("outside 30d range" in i["message"] for i in _odd(issues))
+
+
+@pytest.mark.unit
+def test_odd_price_within_range_ok():
+    s = _valid_stock(); s["price"] = 40.5
+    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}]
+    assert _odd(audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})) == []
+
+
+@pytest.mark.unit
+def test_odd_does_not_gate_exit_semantics():
+    # An ODD-only issue list should not be treated as gating. Keep PEG consistent
+    # with forward_pe/(lt*100) so only the divergent-P/E ODD fires.
+    # forward_pe=12, lt=0.30 -> PEG should be 0.4.
+    s = _valid_stock(); s["pe_ratio"] = 60.0; s["forward_pe"] = 12.0; s["peg_ratio"] = 0.4
+    issues = audit.audit_tracked_stocks([s], today=TODAY)
+    assert any("differ" in i["message"] for i in issues if i["severity"] == "ODD")
+    gating = [i for i in issues if i["severity"] in ("HIGH", "MED")]
+    assert gating == []
