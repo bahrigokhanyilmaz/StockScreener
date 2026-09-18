@@ -298,7 +298,7 @@ Source of truth: `shared/config/screener-filters.json`
 | Filter | Type | Threshold | Data Format | Source |
 |--------|------|---------|-------------|--------|
 | pe_ratio | max | Industry lower quartile (25th pctile) | ratio | Local (Polygon ÷ EDGAR TTM EPS) |
-| peg_ratio | max | 1.0 | ratio | Local (P/E ÷ EDGAR TTM EPS growth) |
+| peg_ratio | max | 1.0 | ratio | FORWARD PEG = forward_pe ÷ (est_lt_growth × 100). Both sides forward-looking. None (fails) if no positive forward P/E or forward growth |
 | price_to_fcf | max | 20 | ratio | Local (Polygon ÷ EDGAR TTM FCF) |
 | debt_to_equity | max | 1.0 (or ICR > 3.0) | ratio | EDGAR: (Liabilities - LiabilitiesCurrent) / Equity |
 | quick_ratio | min | 1.0 | ratio | EDGAR |
@@ -528,6 +528,7 @@ Architecture:
 | IFRS namespace support | Foreign filer generator checks ifrs-full when us-gaap has no data. Tag mappings: ProfitLoss, Revenue, CashFlowsFromUsedInOperatingActivities, etc. |
 | 6-month data recency filter | Stocks with latest filing >180 days old are excluded. Can't invest on stale data. Applied across all stocks (GAAP and IFRS) |
 | P/E exemption when PEG < 1.0 | If PEG proves growth justifies valuation, P/E industry check is bypassed. Prevents blocking high-growth value stocks (e.g., WAY PEG=0.096) |
+| Forward PEG (both numerator + denominator) | PEG = forward_pe ÷ (forward est_lt_growth × 100). Replaced trailing PEG (P/E ÷ trailing eps_growth_yoy), which for low-base/recovery stocks produced a huge growth ratio that crushed PEG to ~0.00 (e.g. RAMP). Trailing PEG kept ONLY as a private pre-filter key (_prefilter_peg) to gate FMP calls cheaply before forward data exists; the displayed/filtered PEG is forward. No positive forward growth → PEG=None → fails screen (missing=FAIL). compute_forward_peg() covered by tests/test_forward_peg.py |
 | Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (yesterday's prices). Falls back to T-2 if Polygon returns error. Pipeline runs at 8PM UTC, well past 5AM publish time |
 | TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |

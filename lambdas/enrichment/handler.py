@@ -175,11 +175,13 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
             if eps and eps > 0:
                 stock["pe_ratio"] = round(price / eps, 2)
 
-            # Calculate PEG locally: P/E ÷ EPS Growth (from EDGAR TTM)
+            # Pre-filter PEG (trailing) — ONLY used to gate which candidates get
+            # FMP calls. Stored under a private key so it never becomes the
+            # displayed PEG; the real forward PEG is computed after FMP enrichment.
             pe = stock.get("pe_ratio")
             eps_growth = stock.get("eps_growth_yoy")
             if pe and eps_growth and eps_growth > 0:
-                stock["peg_ratio"] = round(pe / (eps_growth * 100), 2)
+                stock["_prefilter_peg"] = round(pe / (eps_growth * 100), 2)
 
             # Calculate Price/FCF locally: Price ÷ FCF per share (from EDGAR)
             fcf_ps = stock.get("fcf_per_share")
@@ -273,7 +275,10 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
     for stock in all_enriched:
         price = stock.get("price")
         pe = stock.get("pe_ratio")
-        peg = stock.get("peg_ratio")
+        # Pre-filter uses the trailing pre-filter PEG (forward PEG isn't available
+        # until after FMP enrichment). This only gates which candidates get FMP
+        # calls; the strict forward-PEG check happens later in the full screen.
+        peg = stock.get("_prefilter_peg")
         pfcf = stock.get("price_to_fcf")
 
         if price is None:
@@ -485,6 +490,28 @@ def fetch_fmp_grades(symbol: str, api_key: str) -> float:
     return None
 
 
+def compute_forward_peg(forward_pe, est_lt_growth):
+    """
+    Forward PEG — forward-looking on BOTH sides:
+        PEG = forward_pe / (est_lt_growth * 100)
+    where est_lt_growth is a decimal ratio (0.30 = 30%).
+
+    Returns None (blank) when PEG is not meaningful:
+      - forward_pe missing or <= 0 (no positive forward earnings)
+      - est_lt_growth missing or <= 0 (flat/declining forward growth)
+
+    Rationale: the previous PEG used TRAILING eps_growth_yoy, which for
+    recovery/low-base stocks is a huge ratio that crushed PEG toward 0.00
+    (e.g. RAMP). A forward P/E over forward growth is the textbook definition
+    and gives comparable, sensible values.
+    """
+    if forward_pe is None or forward_pe <= 0:
+        return None
+    if est_lt_growth is None or est_lt_growth <= 0:
+        return None
+    return round(forward_pe / (est_lt_growth * 100), 2)
+
+
 def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
                     estimates: dict, targets: dict, profile: dict,
                     grades_score: float) -> dict:
@@ -499,10 +526,9 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
     if pe_fmp and pe_fmp > 0:
         stock["pe_ratio"] = round(pe_fmp, 2)
 
-    # --- PEG from FMP ratios ---
-    peg_fmp = ratios.get("priceToEarningsGrowthRatioTTM")
-    if peg_fmp is not None:
-        stock["peg_ratio"] = round(peg_fmp, 3)
+    # NOTE: PEG is computed as a FORWARD PEG (forward_pe / forward growth) at the
+    # end of this function — see compute_forward_peg. We intentionally do NOT use
+    # FMP's TTM priceToEarningsGrowthRatioTTM (trailing) here.
 
     # --- P/FCF from FMP ratios ---
     pfcf_fmp = ratios.get("priceToFreeCashFlowRatioTTM")
@@ -653,15 +679,11 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if avg_vol:
             stock["average_volume"] = avg_vol
 
-    # Recompute PEG for consistency: if eps_growth_yoy was updated by FMP
-    # but PEG wasn't (FMP returned None for PEG), recalculate from current P/E + growth
-    pe = stock.get("pe_ratio")
-    growth_rate = stock.get("eps_growth_yoy")
-    if pe and pe > 0 and growth_rate and growth_rate > 0:
-        stock["peg_ratio"] = round(pe / (growth_rate * 100), 2)
-    elif growth_rate is not None and growth_rate <= 0:
-        # Negative or zero growth makes PEG meaningless — clear it
-        stock["peg_ratio"] = None
+    # Forward PEG: forward_pe / (est_lt_growth * 100). Both sides forward-looking.
+    # Set to None (blank) when forward P/E or forward growth aren't positive.
+    stock["peg_ratio"] = compute_forward_peg(
+        stock.get("forward_pe"), stock.get("est_lt_growth")
+    )
 
     return stock
 
