@@ -122,13 +122,5 @@
       "description": "Only show stocks with positive operating margin. Excludes companies currently investing heavily at a loss."
     }
   },
-  "soft_filters": {
-    "forward_pe": {
-      "label": "Forward P/E",
-      "type": "max",
-      "default": 20,
-      "data_format": "ratio",
-      "description": "Skip if absent. Fail if present and > 20."
-    }
-  }
+  "soft_filters": {}
 }

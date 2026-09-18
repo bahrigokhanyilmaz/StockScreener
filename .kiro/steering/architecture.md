@@ -104,7 +104,6 @@ Total: ~12-15 minutes per run.
 **Step 4 — Full Screen + Scoring** (instant)
 - Receives ~30 fully enriched stocks from Step 3
 - Re-evaluates ALL hard filters using FMP-enriched data (catches values FMP updated that differ from EDGAR)
-- Applies soft filters: Forward P/E < 20 (skip if absent, fail if present and bad)
 - Computes `fundamental_score` (0-100): for each filter, scores 0-1 based on how far beyond threshold. Average × 100.
 - Missing data = FAIL (full screen is strict — stock must prove it qualifies with complete data)
 - ~30 → ~20-30 pass with scores
@@ -311,7 +310,6 @@ Source of truth: `shared/config/screener-filters.json`
 **Soft Filters (applied if data exists, skipped if Finnhub has no coverage):**
 | Filter | Type | Threshold | Source |
 |--------|------|---------|--------|
-| forward_pe | max | 20 | Finnhub |
 | est_lt_growth | min | 0% | Finnhub |
 | analyst_recommendation | max | 3.0 | Finnhub |
 

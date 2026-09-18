@@ -213,7 +213,7 @@ def screen_stock(stock: dict, filters: dict, thresholds: Optional[dict] = None, 
             # Soft filters: skip without penalty if data is unavailable.
             # These depend on analyst coverage (Finnhub) which varies by stock.
             # When present, they must pass. When absent, they don't block.
-            soft_filters = {"forward_pe", "est_lt_growth", "analyst_recommendation"}
+            soft_filters = {"est_lt_growth", "analyst_recommendation"}
 
             if filter_name == "sentiment_score":
                 # Always skip sentiment — calculated in Step 6
