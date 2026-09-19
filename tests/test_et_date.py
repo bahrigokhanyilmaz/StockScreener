@@ -1,13 +1,13 @@
 """
-Unit tests for the shared US-Eastern business-date helper.
+Unit tests for the shared US-Pacific business-date helper.
 
 The app keys business dates (first_tracked, SCORE#{date}, mark_date, Days column,
-market-gate holiday check) on the US market timezone (America/New_York), NOT UTC.
-Keying on UTC collapsed two same-UTC-day runs into one SCORE# snapshot and made
-"NEW" stocks read "1" once UTC midnight passed.
+market-gate holiday check) on the USER's timezone (America/Los_Angeles), NOT UTC
+and NOT Eastern. Function names remain eastern_date/eastern_today for backwards
+compat but return PACIFIC dates.
 
-The helper must be dependency-free (works in Lambdas that don't bundle tzdata)
-and DST-correct: EDT = UTC-4 (2nd Sun Mar .. 1st Sun Nov), EST = UTC-5 otherwise.
+Must be dependency-free (works in Lambdas without tzdata) and DST-correct:
+PDT = UTC-7 (2nd Sun Mar .. 1st Sun Nov), PST = UTC-8 otherwise.
 """
 import datetime as dt
 
@@ -15,8 +15,7 @@ import pytest
 
 from conftest import load_handler
 
-# The helper lives in a shared module copied into each Lambda folder.
-et = load_handler("score-calculator")  # score-calculator vendors et_date
+et = load_handler("score-calculator")  # vendors et_date
 
 
 def _utc(y, m, d, h, mi=0):
@@ -24,48 +23,45 @@ def _utc(y, m, d, h, mi=0):
 
 
 @pytest.mark.unit
-class TestEasternDate:
-    def test_edt_summer_afternoon(self):
-        # 2026-07-01 18:00 UTC = 14:00 EDT -> 2026-07-01
-        assert et.eastern_date(_utc(2026, 7, 1, 18)) == "2026-07-01"
+class TestPacificDate:
+    def test_pdt_summer_afternoon(self):
+        # 2026-07-01 20:00 UTC = 13:00 PDT -> 2026-07-01
+        assert et.eastern_date(_utc(2026, 7, 1, 20)) == "2026-07-01"
 
-    def test_edt_late_evening_still_same_et_day(self):
-        # 2026-09-09 20:25 UTC = 16:25 EDT -> 2026-09-09 (today's scheduled run)
-        assert et.eastern_date(_utc(2026, 9, 9, 20, 25)) == "2026-09-09"
+    def test_scheduled_run_1pm_pt(self):
+        # Scheduled run 20:00 UTC = 13:00 PDT -> 2026-09-18
+        assert et.eastern_date(_utc(2026, 9, 18, 20)) == "2026-09-18"
 
-    def test_edt_after_utc_midnight_is_previous_et_day(self):
-        # 2026-09-09 01:40 UTC = 2026-09-08 21:40 EDT -> 2026-09-08
-        # (this is the wipe+rerun; under ET it's a DIFFERENT day than the 20:25 run)
-        assert et.eastern_date(_utc(2026, 9, 9, 1, 40)) == "2026-09-08"
+    def test_9pm_pt_is_still_same_pt_day(self):
+        # THE BUG FIX: 2026-09-18 04:20 UTC = 2026-09-17 21:20 PDT -> 2026-09-17
+        # (under ET this was 09-18; under PT it's correctly 09-17, matching what
+        # the Pacific user saw that evening)
+        assert et.eastern_date(_utc(2026, 9, 18, 4, 20)) == "2026-09-17"
 
-    def test_est_winter(self):
-        # 2026-01-15 02:00 UTC = 2026-01-14 21:00 EST -> 2026-01-14
-        assert et.eastern_date(_utc(2026, 1, 15, 2)) == "2026-01-14"
+    def test_pst_winter(self):
+        # 2026-01-15 03:00 UTC = 2026-01-14 19:00 PST -> 2026-01-14
+        assert et.eastern_date(_utc(2026, 1, 15, 3)) == "2026-01-14"
 
     def test_dst_spring_forward_boundary(self):
-        # DST begins 2026-03-08 (2nd Sunday of March). 03-08 07:00 UTC:
-        # before 2am local it's still EST(-5) -> 02:00 -> but at 2am clocks jump.
-        # At 07:00 UTC we're past the switch -> EDT(-4) -> 03:00 EDT -> 2026-03-08
-        assert et.eastern_date(_utc(2026, 3, 8, 7)) == "2026-03-08"
+        # DST begins 2026-03-08. At 10:00 UTC we're past 2am local switch ->
+        # PDT(-7) -> 03:00 PDT -> 2026-03-08
+        assert et.eastern_date(_utc(2026, 3, 8, 10)) == "2026-03-08"
 
     def test_dst_fall_back_boundary(self):
-        # DST ends 2026-11-01 (1st Sunday of November).
-        # 2026-11-01 05:00 UTC: after fall-back it's EST(-5) -> 00:00 -> 2026-11-01
-        assert et.eastern_date(_utc(2026, 11, 1, 5)) == "2026-11-01"
+        # DST ends 2026-11-01. 09:00 UTC after fall-back = PST(-8) -> 01:00 -> 2026-11-01
+        assert et.eastern_date(_utc(2026, 11, 1, 9)) == "2026-11-01"
 
 
 @pytest.mark.unit
-class TestEasternToday:
-    def test_eastern_today_returns_iso_date(self):
-        s = et.eastern_today()
-        # Format YYYY-MM-DD
-        dt.datetime.strptime(s, "%Y-%m-%d")
+class TestPacificToday:
+    def test_today_returns_iso_date(self):
+        dt.datetime.strptime(et.eastern_today(), "%Y-%m-%d")
 
-    def test_days_tracked_boundary_uses_et(self):
-        # first_tracked ET 2026-09-09, "now" = 2026-09-09 23:00 UTC (19:00 EDT,
-        # still 09-09 ET) -> 0 days -> NEW
-        now = _utc(2026, 9, 9, 23)
-        assert et.days_tracked("2026-09-09", now) == 0
-        # next ET day
-        now2 = _utc(2026, 9, 11, 3)  # 2026-09-10 23:00 EDT
-        assert et.days_tracked("2026-09-09", now2) == 1
+    def test_days_tracked_boundary_uses_pt(self):
+        # first_tracked PT 2026-09-18, now = 2026-09-19 04:00 UTC (21:00 PDT 09-18,
+        # still 09-18 PT) -> 0 days -> NEW
+        now = _utc(2026, 9, 19, 4)
+        assert et.days_tracked("2026-09-18", now) == 0
+        # next PT day: 2026-09-19 20:00 UTC = 13:00 PDT 09-19 -> 1 day
+        now2 = _utc(2026, 9, 19, 20)
+        assert et.days_tracked("2026-09-18", now2) == 1

@@ -96,21 +96,21 @@ function getScoreColor(score: number | null): string {
   return '#ef4444';
 }
 
-// Today's date in US market time (America/New_York), as YYYY-MM-DD.
-// The backend stores first_tracked as an ET calendar date, so we must compare
-// against "today in ET" — not the browser's local/UTC day — or the Days count
-// drifts by one for users outside ET and around midnight.
+// Today's date in US Pacific time (America/Los_Angeles), as YYYY-MM-DD.
+// The backend stores first_tracked as a Pacific calendar date, so we compare
+// against "today in PT" — not the browser's local/UTC day — or the Days count
+// drifts by one around midnight.
 function easternTodayISO(): string {
   // en-CA formats as YYYY-MM-DD.
   return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/New_York',
+    timeZone: 'America/Los_Angeles',
     year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date());
 }
 
 function getDaysTracked(firstTracked: string | null | undefined): string {
   if (!firstTracked) return '—';
-  // Both dates are ET calendar dates (YYYY-MM-DD). Diff by whole days using
+  // Both dates are Pacific calendar dates (YYYY-MM-DD). Diff by whole days using
   // UTC-anchored parsing so no timezone shifts the arithmetic.
   const start = Date.parse(`${firstTracked}T00:00:00Z`);
   const today = Date.parse(`${easternTodayISO()}T00:00:00Z`);
