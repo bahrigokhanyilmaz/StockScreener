@@ -168,6 +168,17 @@ function getSellSignal(price: number | null, targetPrice: number | null): string
   return '';
 }
 
+// Daily change (last close vs previous close) as a fraction, or null if unknown.
+function dailyChangeOf(trend: TrendData | undefined): number | null {
+  if (!trend) return null;
+  const closes = trend.closes;
+  if (!closes || closes.length < 2) return null;
+  const today = closes[closes.length - 1];
+  const yesterday = closes[closes.length - 2];
+  if (!yesterday) return null;
+  return (today - yesterday) / yesterday;
+}
+
 function renderTrendCell(trend: TrendData | undefined) {
   if (!trend) return <span style={{ color: '#64748b' }}>—</span>;
 
@@ -241,7 +252,8 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
   ];
 
   function handleSort(key: string) {
-    if (key.startsWith('_')) return; // Non-sortable columns
+    // '_daily' is computed from trends but IS sortable; other '_' cols are not.
+    if (key.startsWith('_') && key !== '_daily') return;
     setUserSorted(true);
     if (sortCol === key) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -270,6 +282,9 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     } else if (sortCol === 'first_tracked') {
       aVal = a.first_tracked ? new Date(a.first_tracked).getTime() : 0;
       bVal = b.first_tracked ? new Date(b.first_tracked).getTime() : 0;
+    } else if (sortCol === '_daily') {
+      aVal = dailyChangeOf(trends[a.symbol]);
+      bVal = dailyChangeOf(trends[b.symbol]);
     }
 
     // Nulls always sort last
@@ -294,7 +309,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
             {columns.map(col => (
               <th
                 key={col.key}
-                className={`${col.className || ''} ${col.key.startsWith('_') ? '' : 'sortable-th'}`}
+                className={`${col.className || ''} ${(col.key.startsWith('_') && col.key !== '_daily') ? '' : 'sortable-th'}`}
                 onClick={() => handleSort(col.key)}
                 title={col.tooltip || ''}
               >
