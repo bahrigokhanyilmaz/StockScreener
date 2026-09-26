@@ -21,7 +21,6 @@ const TOGGLE_CONFIG = [
   { key: 'toggle_pe_q1', field: 'pe_ratio', type: 'industry_q1', threshold: 0, label: 'P/E < Q1' },
   { key: 'toggle_analyst_rec', field: 'analyst_recommendation', type: 'max', threshold: 3.0, label: 'Hold+' },
   { key: 'toggle_target_upside', field: 'target_price_upside', type: 'min', threshold: 0.20, label: 'Target ≥20%' },
-  { key: 'toggle_lt_growth', field: 'est_lt_growth', type: 'min', threshold: 0.0, label: 'EPS 5Y ↑' },
   { key: 'toggle_eps_growth', field: 'eps_growth_yoy', type: 'min', threshold: 0.0, label: 'EPS YoY ↑' },
   { key: 'toggle_pos_margin', field: 'operating_margin', type: 'min', threshold: 0.0, label: 'Op Margin +' },
 ];
