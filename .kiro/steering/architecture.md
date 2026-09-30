@@ -32,6 +32,7 @@ Always keep README and steering docs updated without being asked.
     - Run the full suite (`pytest`) and confirm green BEFORE every deploy. A deploy without passing tests is not allowed.
     - No "wipe and rerun to see what happens" as a substitute for tests. We must understand impact ahead of time, not discover it in production.
     - When a change breaks a test, fix the code (or the test if the contract legitimately changed) — never delete a test to make the suite pass.
+15. **Be Concise (NON-NEGOTIABLE)** — Say something once. No restating the same point in different words, no recap sections, no re-explaining what was already said. Lead with the answer. Trust the user to ask follow-ups. Verbosity and repetition waste tokens and the user's time. User is in Pacific time.
 
 ## Current Architecture (Deployed & Working)
 
@@ -87,7 +88,7 @@ Total: ~12-15 minutes per run.
 
 **Step 3 — Enrichment** (~2-3 minutes)
 - **Stage A — Bulk prices:** Polygon.io Grouped Daily (1 free API call → 12,000+ US stock prices)
-- **Stage B — Industry P/E quartiles:** Loads full ~5,000 stock universe from Step 1 S3 output. Computes P/E for each using Polygon price ÷ EDGAR EPS. Groups by SEC SIC industry. Calculates 25th percentile (non-tech) or 50th percentile (tech SIC codes 35xx, 36xx, 737x). Persists to DynamoDB.
+- **Stage B — Industry P/E quartiles:** Loads full ~5,000 stock universe from Step 1 S3 output. Computes P/E for each using Polygon price ÷ EDGAR EPS. Groups by 4-digit SEC SIC. Calculates median (50th) + 25th percentile per industry (min 5 valid-P/E peers). **3-digit fallback:** if a 4-digit SIC has <5 valid-P/E peers, uses its 3-digit SIC group median instead (stops at 3 digits — never 2-digit). Persists pe_median/pe_lower_quartile/pe_source (4-digit|3-digit) to DynamoDB. `compute_industry_pe_thresholds` is unit-tested.
 - **Stage C — Price-dependent filter on the ~500 passers:** Computes their P/E, PEG, P/FCF locally (Polygon price + EDGAR EPS/FCF). Applies: P/E < industry quartile, PEG < 1.0, P/FCF < 20. ~500 → ~30 pass.
 - **Stage D — FMP enrichment (only ~30 survivors):** For each:
   - `/stable/profile` → if stock doesn't exist in FMP: exclude (OTC ghost). If market cap < $150M: exclude (no analyst coverage).
@@ -493,6 +494,7 @@ Architecture:
 | TTM = 4 actual quarters (not annualized) | Sum of Q1+Q4+Q3+Q2 with annual derivation fallback. No shortcuts |
 | Prior TTM = same derivation shifted 1 year | Gives proper rolling YoY growth |
 | P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). Tech SIC (35xx, 36xx, 737x) uses 50th percentile; non-tech uses 25th |
+| P/E quartile 3-digit SIC fallback | Thin 4-digit SIC industries (<5 valid-P/E peers, e.g. QCOM's 3663) fall back to the 3-digit group median (366). Stops at 3 digits — 2-digit is too broad to be a real peer set. Blank if 3-digit still thin. pe_source field records which level was used |
 | Soft filters for Finnhub-dependent metrics | forward_pe, est_lt_growth, analyst_recommendation: skip if absent, apply if present |
 | Polygon T-2 for price date | Free tier requires completed trading day; always go back 2 days |
 | Finnhub peNormalizedAnnual for P/E | epsTTM still includes one-time items; peNormalized strips them. Prevents VISN/RIGL-type artifacts |

@@ -145,7 +145,7 @@ def fetch_all_prices(polygon_key: str, date: str) -> dict[str, float]:
 # STAGE 2: Local compute & pre-filter
 # ==========================================
 
-def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]:
+def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict, dict]:
     """
     Calculate P/E locally, compute industry P/E quartiles, and apply filters.
     
@@ -195,6 +195,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
     # not just the 70 pre-screen passers.
     industry_pe_quartiles = {}
     industry_pe_q1 = {}
+    pe_source_by_industry = {}
     try:
         bucket = os.environ.get("RAW_DATA_BUCKET", "")
         if bucket:
@@ -214,8 +215,10 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
                 step1_data = json.loads(step1_resp["Body"].read().decode("utf-8"))
                 all_universe_stocks = step1_data.get("stocks", [])
 
-            # Compute P/E for the full universe using Polygon prices
-            industry_pe_values: dict[str, list] = defaultdict(list)
+            # Compute P/E for the full universe using Polygon prices, grouped by
+            # 4-digit SIC (so we can fall back to the 3-digit group when thin).
+            pe_by_sic: dict[str, list] = defaultdict(list)
+            sic_to_industry: dict[str, str] = {}  # 4-digit SIC -> industry name
             for stock in all_universe_stocks:
                 symbol = stock.get("symbol", "")
                 eps = stock.get("eps")
@@ -233,40 +236,34 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
                     if pe > 500:  # Nonsensically high
                         continue
                     entry = industry_map.get(symbol)
-                    if entry:
-                        industry_pe_values[entry["industry"]].append(pe)
+                    if entry and entry.get("sic"):
+                        sic4 = str(entry["sic"])
+                        pe_by_sic[sic4].append(pe)
+                        sic_to_industry.setdefault(sic4, entry.get("industry", ""))
 
-            # Compute P/E percentile threshold per industry
-            # Tech industries (SEC SIC 35xx, 36xx, 737x) use 50th percentile (median)
-            # because they structurally trade at higher valuations.
-            # Non-tech uses 25th percentile (lower quartile).
-            # SIC code ranges are the SEC's own standardized classification:
-            #   35xx = Industrial Machinery & Equipment (includes computers)
-            #   36xx = Electronic & Electrical Equipment
-            #   737x = Computer & Data Processing Services (includes software)
-            TECH_SIC_PREFIXES = ("35", "36", "737")
+            # Median (+ Q1) per SIC, with 3-digit fallback for thin 4-digit industries.
+            thresholds = compute_industry_pe_thresholds(pe_by_sic)
+            # Map SIC-keyed thresholds back to industry-name keyed dicts (used by the
+            # rest of the pipeline + DynamoDB persistence, which key on industry name).
+            for sic4, med in thresholds["median"].items():
+                industry = sic_to_industry.get(sic4)
+                if industry:
+                    industry_pe_quartiles[industry] = med
+                    industry_pe_q1[industry] = thresholds["q1"].get(sic4, med)
+                    pe_source_by_industry[industry] = thresholds["source"].get(sic4, "4-digit")
 
-            for industry, values in industry_pe_values.items():
-                if len(values) >= 5:
-                    sorted_vals = sorted(values)
-                    # Pipeline threshold: 50th percentile (median) for ALL industries
-                    # Stock must be cheaper than half its industry peers to pass
-                    median_idx = len(sorted_vals) // 2
-                    industry_pe_quartiles[industry] = round(sorted_vals[median_idx], 2)
-                    # Also compute 25th percentile for frontend "strict" toggle
-                    q1_idx = len(sorted_vals) // 4
-                    industry_pe_q1[industry] = round(sorted_vals[q1_idx], 2)
+            fb = sum(1 for v in thresholds["source"].values() if v == "3-digit")
+            print(f"  Computed P/E median for {len(industry_pe_quartiles)} industries "
+                  f"({fb} via 3-digit fallback) from {len(all_universe_stocks)} stocks")
 
-            print(f"  Computed P/E median (50th pctile) for {len(industry_pe_quartiles)} industries "
-                  f"(from {len(all_universe_stocks)} stocks)")
-
-            # Tag each pre-screen passer with its industry P/E threshold
+            # Tag each pre-screen passer with its industry P/E threshold + source.
             for stock in all_enriched:
                 symbol = stock.get("symbol", "")
                 entry = industry_map.get(symbol)
                 if entry:
                     stock["_sic_industry"] = entry["industry"]
                     stock["_pe_industry_q1"] = industry_pe_quartiles.get(entry["industry"])
+                    stock["_pe_threshold_source"] = pe_source_by_industry.get(entry["industry"])
     except Exception as e:
         print(f"  Warning: Could not compute industry P/E quartiles: {e}")
 
@@ -302,7 +299,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict]
         if passes:
             candidates.append(stock)
 
-    return candidates, all_enriched, industry_pe_quartiles, industry_pe_q1
+    return candidates, all_enriched, industry_pe_quartiles, industry_pe_q1, pe_source_by_industry
 
 
 # ==========================================
@@ -488,6 +485,49 @@ def fetch_fmp_grades(symbol: str, api_key: str) -> float:
     if scores:
         return round(sum(scores) / len(scores), 2)
     return None
+
+
+def compute_industry_pe_thresholds(pe_by_sic: dict):
+    """
+    Compute per-SIC P/E median + 25th-percentile thresholds, with a 3-digit
+    fallback for thin 4-digit industries.
+
+    pe_by_sic: {sic4 (str): [pe, pe, ...]} — valid P/Es grouped by 4-digit SIC.
+
+    Rules:
+      - A 4-digit SIC with >= 5 valid P/Es uses its own median/Q1 (source="4-digit").
+      - A 4-digit SIC with < 5 falls back to its 3-digit group (first 3 chars),
+        IF that group (all 4-digit siblings combined) has >= 5 (source="3-digit").
+      - Otherwise no threshold (blank). Never rolls up to 2-digit.
+
+    Returns {"median": {sic4: v}, "q1": {sic4: v}, "source": {sic4: "4-digit"|"3-digit"}}.
+    """
+    def pctile(sorted_vals, which):
+        idx = len(sorted_vals) // 2 if which == "median" else len(sorted_vals) // 4
+        return round(sorted_vals[idx], 2)
+
+    # Build 3-digit group pools by combining 4-digit siblings.
+    group3 = {}
+    for sic4, vals in pe_by_sic.items():
+        g = sic4[:3]
+        group3.setdefault(g, []).extend(vals)
+
+    median, q1, source = {}, {}, {}
+    for sic4, vals in pe_by_sic.items():
+        if len(vals) >= 5:
+            sv = sorted(vals)
+            median[sic4] = pctile(sv, "median")
+            q1[sic4] = pctile(sv, "q1")
+            source[sic4] = "4-digit"
+        else:
+            gvals = group3.get(sic4[:3], [])
+            if len(gvals) >= 5:
+                sv = sorted(gvals)
+                median[sic4] = pctile(sv, "median")
+                q1[sic4] = pctile(sv, "q1")
+                source[sic4] = "3-digit"
+            # else: leave blank
+    return {"median": median, "q1": q1, "source": source}
 
 
 def compute_forward_peg(forward_pe, est_lt_growth):
@@ -742,7 +782,7 @@ def handler(event, context):
 
     # STAGE 2: Local P/E calculation + pre-filter (zero API calls)
     print(f"  Stage 2: Local P/E + industry-relative pre-filter...")
-    candidates, all_enriched, industry_pe_quartiles, industry_pe_q1 = local_prefilter(passing, all_prices)
+    candidates, all_enriched, industry_pe_quartiles, industry_pe_q1, pe_source_by_industry = local_prefilter(passing, all_prices)
     print(f"  Pre-filter: {len(candidates)} candidates for FMP (from {len(passing)})")
 
     # STAGE 3: FMP enrichment for candidates (6 calls per stock)
@@ -818,14 +858,17 @@ def handler(event, context):
                 with _table.batch_writer() as batch:
                     for industry, median_pe in industry_pe_quartiles.items():
                         q1_pe = industry_pe_q1.get(industry, median_pe)
+                        source = pe_source_by_industry.get(industry, "4-digit")
                         # Update existing INDUSTRY_AVG item with both pe thresholds
+                        # + which SIC level produced them (4-digit or 3-digit fallback).
                         _table.update_item(
                             Key={"PK": f"INDUSTRY_AVG#{industry}", "SK": "METRICS"},
-                            UpdateExpression="SET pe_median = :med, pe_lower_quartile = :q1, pe_updated = :d",
+                            UpdateExpression="SET pe_median = :med, pe_lower_quartile = :q1, pe_updated = :d, pe_source = :src",
                             ExpressionAttributeValues={
                                 ":med": Decimal(str(median_pe)),
                                 ":q1": Decimal(str(q1_pe)),
                                 ":d": today,
+                                ":src": source,
                             },
                         )
                 print(f"  Persisted P/E median + Q1 for {len(industry_pe_quartiles)} industries")
