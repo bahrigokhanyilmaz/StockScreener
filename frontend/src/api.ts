@@ -154,6 +154,18 @@ export async function getTrackHistory(): Promise<{ history: TrackHistoryRecord[]
   return fetchJson('/track-history');
 }
 
+export interface TrackSummary {
+  cumulative_pct: number | null;
+  total_cost: number;
+  total_value: number;
+  open_count: number;
+  closed_count: number;
+}
+
+export async function getTrackSummary(): Promise<TrackSummary> {
+  return fetchJson('/track-summary');
+}
+
 export async function getPipelineStatus(): Promise<PipelineStatus> {
   return fetchJson('/pipeline/status');
 }

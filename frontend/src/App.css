@@ -1676,3 +1676,10 @@ th.sticky-col-2 {
   padding-bottom: 0;
   background: #0b1220;
 }
+
+/* Cumulative tracked P/L badge in header */
+.status-badge.cumulative {
+  font-weight: 700;
+}
+.status-badge.cumulative.positive { background: #14532d; color: #4ade80; }
+.status-badge.cumulative.negative { background: #4c1d1d; color: #f87171; }

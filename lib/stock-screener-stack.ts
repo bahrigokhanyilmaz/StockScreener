@@ -303,6 +303,9 @@ export class StockScreenerStack extends cdk.Stack {
     const trackHistoryResource = api.root.addResource('track-history');
     trackHistoryResource.addMethod('GET', lambdaIntegration);
 
+    const trackSummaryResource = api.root.addResource('track-summary');
+    trackSummaryResource.addMethod('GET', lambdaIntegration);
+
     const portfolioResource = api.root.addResource('portfolio');
     portfolioResource.addMethod('GET', lambdaIntegration);
 

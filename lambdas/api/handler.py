@@ -422,6 +422,89 @@ def get_track_history():
     return response(200, {"history": records, "count": len(records)})
 
 
+def compute_cumulative_tracking(open_marks, closed_stints):
+    """
+    Cumulative gain/loss across ALL tracked ideas, on a share-dollar basis:
+
+        cumulative % = Σ(end_price − mark_price) / Σ(mark_price) × 100
+
+    where end_price is the current price (still marked) or unmark_price (closed).
+    Each stint counts as one share. Open and closed stints both contribute; a
+    re-marked ticker contributes once per stint.
+
+    open_marks:    list of {mark_price, current_price}
+    closed_stints: list of {mark_price, unmark_price}
+    Returns {cumulative_pct, total_cost, total_value, open_count, closed_count}.
+    Pure function — no AWS, unit-testable.
+    """
+    total_cost = 0.0
+    total_value = 0.0
+    open_count = closed_count = 0
+
+    for m in open_marks:
+        mp, cur = m.get("mark_price"), m.get("current_price")
+        if mp is not None and mp > 0 and cur is not None:
+            total_cost += mp
+            total_value += cur
+            open_count += 1
+    for s in closed_stints:
+        mp, up = s.get("mark_price"), s.get("unmark_price")
+        if mp is not None and mp > 0 and up is not None:
+            total_cost += mp
+            total_value += up
+            closed_count += 1
+
+    cumulative_pct = round((total_value - total_cost) / total_cost * 100, 2) if total_cost > 0 else None
+    return {
+        "cumulative_pct": cumulative_pct,
+        "total_cost": round(total_cost, 2),
+        "total_value": round(total_value, 2),
+        "open_count": open_count,
+        "closed_count": closed_count,
+    }
+
+
+def get_track_summary():
+    """
+    GET /track-summary — Cumulative gain/loss across all tracked ideas.
+
+    Combines currently-marked stocks (mark_price -> current price) with closed
+    stints from TRACK_HIST (mark_price -> unmark_price). Share-dollar weighted.
+    """
+    table = get_table()
+
+    # Open marks: TRACKING items with a mark_price, paired with current price.
+    open_marks = []
+    resp = table.scan(FilterExpression=Attr("SK").eq("TRACKING") & Attr("mark_price").exists())
+    items = resp.get("Items", [])
+    while resp.get("LastEvaluatedKey"):
+        resp = table.scan(FilterExpression=Attr("SK").eq("TRACKING") & Attr("mark_price").exists(),
+                          ExclusiveStartKey=resp["LastEvaluatedKey"])
+        items.extend(resp.get("Items", []))
+    for it in items:
+        sym = it.get("symbol", "")
+        mp = decimal_to_float(it.get("mark_price"))
+        cur = _get_current_price(sym)
+        open_marks.append({"symbol": sym, "mark_price": mp, "current_price": cur})
+
+    # Closed stints: TRACK_HIST records.
+    closed = []
+    resp = table.scan(FilterExpression=Attr("record_type").eq("TRACK_HIST"))
+    recs = resp.get("Items", [])
+    while resp.get("LastEvaluatedKey"):
+        resp = table.scan(FilterExpression=Attr("record_type").eq("TRACK_HIST"),
+                          ExclusiveStartKey=resp["LastEvaluatedKey"])
+        recs.extend(resp.get("Items", []))
+    for r in recs:
+        closed.append({
+            "mark_price": decimal_to_float(r.get("mark_price")),
+            "unmark_price": decimal_to_float(r.get("unmark_price")),
+        })
+
+    summary = compute_cumulative_tracking(open_marks, closed)
+    return response(200, summary)
+
+
 def get_pipeline_status():
     """
     GET /pipeline/status — Latest pipeline run information.
@@ -751,6 +834,10 @@ def handler(event, context):
         # Route: GET /track-history
         elif path == "/track-history" and method == "GET":
             return get_track_history()
+
+        # Route: GET /track-summary
+        elif path == "/track-summary" and method == "GET":
+            return get_track_summary()
 
         # Route: GET /portfolio
         elif path == "/portfolio" and method == "GET":

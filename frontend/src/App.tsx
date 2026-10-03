@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getStocks, getPipelineStatus, getStockPrices, getPortfolio, getIndustryAverages, untrackStock, trackStock } from './api.ts';
-import type { Stock, PipelineStatus, IndustryAverages } from './api.ts';
+import { getStocks, getPipelineStatus, getStockPrices, getPortfolio, getIndustryAverages, untrackStock, trackStock, getTrackSummary } from './api.ts';
+import type { Stock, PipelineStatus, IndustryAverages, TrackSummary } from './api.ts';
 import StockTable from './components/StockTable.tsx';
 import StockDetail from './components/StockDetail.tsx';
 import Portfolio from './components/Portfolio.tsx';
@@ -35,6 +35,12 @@ function App() {
   const [industryAverages, setIndustryAverages] = useState<IndustryAverages>({});
   const [detailCollapsed, setDetailCollapsed] = useState(false);
   const [trackHistoryKey, setTrackHistoryKey] = useState(0); // increment to refresh track history
+  const [trackSummary, setTrackSummary] = useState<TrackSummary | null>(null);
+
+  // Load the cumulative tracking gain/loss on mount and after any mark/unmark.
+  useEffect(() => {
+    getTrackSummary().then(setTrackSummary).catch(() => setTrackSummary(null));
+  }, [trackHistoryKey]);
 
   // Mark / unmark a stock for price-change tracking. Mark snapshots today's
   // closing price; unmark persists the stint to tracking history and reports
@@ -134,6 +140,14 @@ function App() {
             <span className="status-badge total">
               {pipelineStatus.total_tracked} Tracked
             </span>
+            {trackSummary && trackSummary.cumulative_pct != null && (
+              <span
+                className={`status-badge cumulative ${trackSummary.cumulative_pct >= 0 ? 'positive' : 'negative'}`}
+                title={`Cumulative gain/loss across all tracked ideas (${trackSummary.open_count} open + ${trackSummary.closed_count} closed), share-dollar weighted from mark price to current/unmark price.`}
+              >
+                Tracked P/L: {trackSummary.cumulative_pct >= 0 ? '+' : ''}{trackSummary.cumulative_pct.toFixed(2)}%
+              </span>
+            )}
             {allStocks.length > 0 && allStocks[0].last_updated && (
               <span className="prices-date">
                 Prices as of: {allStocks[0].last_updated.slice(0, 10)}
