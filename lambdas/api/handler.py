@@ -424,41 +424,37 @@ def get_track_history():
 
 def compute_cumulative_tracking(open_marks, closed_stints):
     """
-    Cumulative gain/loss across ALL tracked ideas, on a share-dollar basis:
+    Cumulative gain/loss across ALL tracked ideas, EQUAL-WEIGHTED:
 
-        cumulative % = Σ(end_price − mark_price) / Σ(mark_price) × 100
+        cumulative % = average( (end_price − mark_price) / mark_price × 100 )
 
-    where end_price is the current price (still marked) or unmark_price (closed).
-    Each stint counts as one share. Open and closed stints both contribute; a
-    re-marked ticker contributes once per stint.
+    Every idea weighs the same regardless of share price (equal-dollar basis),
+    so a $500 stock and a $10 stock count equally. end_price is the current
+    price (still marked) or unmark_price (closed). Open and closed stints both
+    contribute; a re-marked ticker contributes once per stint.
 
     open_marks:    list of {mark_price, current_price}
     closed_stints: list of {mark_price, unmark_price}
-    Returns {cumulative_pct, total_cost, total_value, open_count, closed_count}.
+    Returns {cumulative_pct, open_count, closed_count}.
     Pure function — no AWS, unit-testable.
     """
-    total_cost = 0.0
-    total_value = 0.0
+    pcts = []
     open_count = closed_count = 0
 
     for m in open_marks:
         mp, cur = m.get("mark_price"), m.get("current_price")
         if mp is not None and mp > 0 and cur is not None:
-            total_cost += mp
-            total_value += cur
+            pcts.append((cur - mp) / mp * 100)
             open_count += 1
     for s in closed_stints:
         mp, up = s.get("mark_price"), s.get("unmark_price")
         if mp is not None and mp > 0 and up is not None:
-            total_cost += mp
-            total_value += up
+            pcts.append((up - mp) / mp * 100)
             closed_count += 1
 
-    cumulative_pct = round((total_value - total_cost) / total_cost * 100, 2) if total_cost > 0 else None
+    cumulative_pct = round(sum(pcts) / len(pcts), 2) if pcts else None
     return {
         "cumulative_pct": cumulative_pct,
-        "total_cost": round(total_cost, 2),
-        "total_value": round(total_value, 2),
         "open_count": open_count,
         "closed_count": closed_count,
     }

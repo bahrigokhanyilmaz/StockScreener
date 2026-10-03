@@ -156,8 +156,6 @@ export async function getTrackHistory(): Promise<{ history: TrackHistoryRecord[]
 
 export interface TrackSummary {
   cumulative_pct: number | null;
-  total_cost: number;
-  total_value: number;
   open_count: number;
   closed_count: number;
 }

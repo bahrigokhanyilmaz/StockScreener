@@ -143,7 +143,7 @@ function App() {
             {trackSummary && trackSummary.cumulative_pct != null && (
               <span
                 className={`status-badge cumulative ${trackSummary.cumulative_pct >= 0 ? 'positive' : 'negative'}`}
-                title={`Cumulative gain/loss across all tracked ideas (${trackSummary.open_count} open + ${trackSummary.closed_count} closed), share-dollar weighted from mark price to current/unmark price.`}
+                title={`Equal-weighted average % change across all tracked ideas (${trackSummary.open_count} open + ${trackSummary.closed_count} closed), from mark price to current/unmark price. Every idea weighs the same regardless of share price.`}
               >
                 Tracked P/L: {trackSummary.cumulative_pct >= 0 ? '+' : ''}{trackSummary.cumulative_pct.toFixed(2)}%
               </span>
