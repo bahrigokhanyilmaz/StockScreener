@@ -495,6 +495,7 @@ Architecture:
 | Prior TTM = same derivation shifted 1 year | Gives proper rolling YoY growth |
 | P/E is industry-relative (lower quartile) | Computed from full universe (98 industries). Tech SIC (35xx, 36xx, 737x) uses 50th percentile; non-tech uses 25th |
 | P/E quartile 3-digit SIC fallback | Thin 4-digit SIC industries (<5 valid-P/E peers, e.g. QCOM's 3663) fall back to the 3-digit group median (366). Stops at 3 digits — 2-digit is too broad to be a real peer set. Blank if 3-digit still thin. pe_source field records which level was used |
+| Revenue-acceleration-underpriced flag (▲REV) | Advisory badge (display-only, never gates). Flags when forward revenue growth > trailing revenue growth AND P/S < industry-median P/S — accelerating top line not yet priced in. Uses P/S not EV/Sales because EV components (debt/cash) aren't available universe-wide; the debt blind-spot is bounded by the D/E<1 filter. P/S computed in the same universe loop as P/E (price ÷ revenue_per_share); industry-median P/S reuses the SIC + 3-digit-fallback machinery. Earnings-free by design (revenue less distorted by one-time items). Fields: price_to_sales, revenue_accel_underpriced |
 | Soft filters for Finnhub-dependent metrics | forward_pe, est_lt_growth, analyst_recommendation: skip if absent, apply if present |
 | Polygon T-2 for price date | Free tier requires completed trading day; always go back 2 days |
 | Finnhub peNormalizedAnnual for P/E | epsTTM still includes one-time items; peNormalized strips them. Prevents VISN/RIGL-type artifacts |

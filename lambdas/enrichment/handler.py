@@ -196,6 +196,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
     industry_pe_quartiles = {}
     industry_pe_q1 = {}
     pe_source_by_industry = {}
+    industry_ps_median = {}  # industry name -> median P/S (for revenue-accel flag)
     try:
         bucket = os.environ.get("RAW_DATA_BUCKET", "")
         if bucket:
@@ -218,12 +219,25 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
             # Compute P/E for the full universe using Polygon prices, grouped by
             # 4-digit SIC (so we can fall back to the 3-digit group when thin).
             pe_by_sic: dict[str, list] = defaultdict(list)
+            ps_by_sic: dict[str, list] = defaultdict(list)  # P/S for revenue-accel flag
             sic_to_industry: dict[str, str] = {}  # 4-digit SIC -> industry name
             for stock in all_universe_stocks:
                 symbol = stock.get("symbol", "")
                 eps = stock.get("eps")
                 revenue_ps = stock.get("revenue_per_share")
                 price = prices.get(symbol)
+                entry = industry_map.get(symbol)
+                sic4 = str(entry["sic"]) if entry and entry.get("sic") else None
+                if sic4:
+                    sic_to_industry.setdefault(sic4, entry.get("industry", ""))
+
+                # P/S for the universe (price / revenue per share), same source as P/E.
+                # Sanity: positive, and cap absurd values to match the P/E guard.
+                if price and revenue_ps and revenue_ps > 0 and sic4:
+                    ps = price / revenue_ps
+                    if 0 < ps < 100:
+                        ps_by_sic[sic4].append(ps)
+
                 if price and eps and eps > 0:
                     pe = price / eps
                     # Sanity checks: exclude data artifacts from quartile computation
@@ -235,11 +249,8 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
                         continue
                     if pe > 500:  # Nonsensically high
                         continue
-                    entry = industry_map.get(symbol)
-                    if entry and entry.get("sic"):
-                        sic4 = str(entry["sic"])
+                    if sic4:
                         pe_by_sic[sic4].append(pe)
-                        sic_to_industry.setdefault(sic4, entry.get("industry", ""))
 
             # Median (+ Q1) per SIC, with 3-digit fallback for thin 4-digit industries.
             thresholds = compute_industry_pe_thresholds(pe_by_sic)
@@ -256,7 +267,16 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
             print(f"  Computed P/E median for {len(industry_pe_quartiles)} industries "
                   f"({fb} via 3-digit fallback) from {len(all_universe_stocks)} stocks")
 
-            # Tag each pre-screen passer with its industry P/E threshold + source.
+            # Industry-median P/S (same SIC + 3-digit fallback), mapped to names.
+            ps_res = compute_industry_ps_medians(ps_by_sic)
+            for sic4, med in ps_res["median"].items():
+                industry = sic_to_industry.get(sic4)
+                if industry:
+                    industry_ps_median[industry] = med
+            print(f"  Computed P/S median for {len(industry_ps_median)} industries")
+
+            # Tag each pre-screen passer with its industry P/E threshold + source,
+            # plus its own P/S and industry-median P/S (for the revenue-accel flag).
             for stock in all_enriched:
                 symbol = stock.get("symbol", "")
                 entry = industry_map.get(symbol)
@@ -264,6 +284,7 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
                     stock["_sic_industry"] = entry["industry"]
                     stock["_pe_industry_q1"] = industry_pe_quartiles.get(entry["industry"])
                     stock["_pe_threshold_source"] = pe_source_by_industry.get(entry["industry"])
+                    stock["_industry_ps_median"] = industry_ps_median.get(entry["industry"])
     except Exception as e:
         print(f"  Warning: Could not compute industry P/E quartiles: {e}")
 
@@ -530,6 +551,54 @@ def compute_industry_pe_thresholds(pe_by_sic: dict):
     return {"median": median, "q1": q1, "source": source}
 
 
+def is_revenue_accel_underpriced(fwd_rev, trailing_rev, ps, industry_median_ps):
+    """
+    Advisory flag: revenue is accelerating but not reflected in the sales multiple.
+
+    True when BOTH:
+      - fwd_rev > trailing_rev (forward revenue growth exceeds trailing), AND
+      - 0 < ps < industry_median_ps (cheaper on P/S than its industry peers).
+
+    Display-only (badge); never gates the screen. All comparisons are relative —
+    no arbitrary magnitude thresholds. P/S (not EV/Sales) because EV components
+    aren't available universe-wide; the debt blind-spot is bounded by D/E<1.
+    """
+    if fwd_rev is None or trailing_rev is None or ps is None or industry_median_ps is None:
+        return False
+    if ps <= 0 or industry_median_ps <= 0:
+        return False
+    return fwd_rev > trailing_rev and ps < industry_median_ps
+
+
+def compute_industry_ps_medians(ps_by_sic: dict):
+    """
+    Per-SIC P/S median with 3-digit fallback for thin 4-digit industries.
+    Same structure as compute_industry_pe_thresholds, median only.
+
+    ps_by_sic: {sic4 (str): [ps, ...]}
+    Returns {"median": {sic4: v}, "source": {sic4: "4-digit"|"3-digit"}}.
+    """
+    def med(vals):
+        sv = sorted(vals)
+        return round(sv[len(sv) // 2], 2)
+
+    group3 = {}
+    for sic4, vals in ps_by_sic.items():
+        group3.setdefault(sic4[:3], []).extend(vals)
+
+    median, source = {}, {}
+    for sic4, vals in ps_by_sic.items():
+        if len(vals) >= 5:
+            median[sic4] = med(vals)
+            source[sic4] = "4-digit"
+        else:
+            gvals = group3.get(sic4[:3], [])
+            if len(gvals) >= 5:
+                median[sic4] = med(gvals)
+                source[sic4] = "3-digit"
+    return {"median": median, "source": source}
+
+
 def compute_forward_peg(forward_pe, est_lt_growth):
     """
     Forward PEG — forward-looking on BOTH sides:
@@ -723,6 +792,19 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
     # Set to None (blank) when forward P/E or forward growth aren't positive.
     stock["peg_ratio"] = compute_forward_peg(
         stock.get("forward_pe"), stock.get("est_lt_growth")
+    )
+
+    # Price/Sales from FMP ratios (TTM). Used for the revenue-acceleration flag.
+    ps_fmp = ratios.get("priceToSalesRatioTTM")
+    if ps_fmp is not None and ps_fmp > 0:
+        stock["price_to_sales"] = round(ps_fmp, 2)
+
+    # Advisory flag (display-only): revenue accelerating + cheap on P/S vs peers.
+    stock["revenue_accel_underpriced"] = is_revenue_accel_underpriced(
+        fwd_rev=stock.get("est_lt_revenue_growth"),
+        trailing_rev=stock.get("revenue_growth_yoy"),
+        ps=stock.get("price_to_sales"),
+        industry_median_ps=stock.get("_industry_ps_median"),
     )
 
     return stock

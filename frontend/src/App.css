@@ -1683,3 +1683,17 @@ th.sticky-col-2 {
 }
 .status-badge.cumulative.positive { background: #14532d; color: #4ade80; }
 .status-badge.cumulative.negative { background: #4c1d1d; color: #f87171; }
+
+/* Revenue-acceleration-underpriced advisory badge */
+.accel-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #0b1220;
+  background: #38bdf8;
+  border-radius: 3px;
+  vertical-align: middle;
+  cursor: help;
+}

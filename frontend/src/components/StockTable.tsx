@@ -331,7 +331,15 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
               >
                 <td className="sticky-col">
                   <div className="stock-name-cell">
-                    <span className="stock-symbol">{stock.symbol}</span>
+                    <span className="stock-symbol">
+                      {stock.symbol}
+                      {stock.revenue_accel_underpriced && (
+                        <span
+                          className="accel-badge"
+                          title="Revenue accelerating (forward > trailing growth) but priced below its industry's median P/S — potential mispricing. Advisory only."
+                        >▲REV</span>
+                      )}
+                    </span>
                     <span className="stock-company">{stock.company_name}</span>
                   </div>
                 </td>

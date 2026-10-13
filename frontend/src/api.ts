@@ -35,6 +35,8 @@ export interface Stock {
   revenue_growth_yoy: number | null;
   est_lt_growth: number | null;
   est_lt_revenue_growth: number | null;
+  price_to_sales: number | null;
+  revenue_accel_underpriced: boolean | null;
   target_price_upside: number | null;
   analyst_target_price: number | null;
   interest_coverage_ratio: number | null;

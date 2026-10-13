@@ -619,6 +619,8 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "revenue_growth_yoy": stock.get("revenue_growth_yoy"),
                 "est_lt_growth": stock.get("est_lt_growth"),
                 "est_lt_revenue_growth": stock.get("est_lt_revenue_growth"),
+                "price_to_sales": stock.get("price_to_sales"),
+                "revenue_accel_underpriced": stock.get("revenue_accel_underpriced", False),
                 "analyst_recommendation": stock.get("analyst_recommendation"),
                 "target_price_upside": stock.get("target_price_upside"),
                 "analyst_target_price": stock.get("analyst_target_price"),
