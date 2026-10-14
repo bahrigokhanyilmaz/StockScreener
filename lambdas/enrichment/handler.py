@@ -319,8 +319,45 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
 
         if passes:
             candidates.append(stock)
+        else:
+            # Stock dropped at the pre-filter won't reach FMP/score-calculator, so
+            # its LATEST valuation metrics would otherwise stay stale (showing an
+            # old passing value while the stock sits in GRACE). Refresh them with
+            # this run's recomputed values so the dashboard matches reality.
+            _refresh_latest_valuation(stock)
 
     return candidates, all_enriched, industry_pe_quartiles, industry_pe_q1, pe_source_by_industry
+
+
+def _refresh_latest_valuation(stock: dict):
+    """Update a dropped stock's LATEST item with freshly-recomputed valuation
+    metrics (price, pe_ratio, price_to_fcf). Only if a LATEST item already exists
+    (i.e. the stock is currently tracked)."""
+    symbol = stock.get("symbol", "")
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if not symbol or not table_name:
+        return
+    try:
+        from decimal import Decimal
+        table = boto3.resource("dynamodb").Table(table_name)
+        existing = table.get_item(Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                                  ProjectionExpression="symbol").get("Item")
+        if not existing:
+            return
+        sets, vals = [], {}
+        for field in ("price", "pe_ratio", "price_to_fcf"):
+            v = stock.get(field)
+            if v is not None:
+                sets.append(f"{field} = :{field}")
+                vals[f":{field}"] = Decimal(str(v))
+        if sets:
+            table.update_item(
+                Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                UpdateExpression="SET " + ", ".join(sets),
+                ExpressionAttributeValues=vals,
+            )
+    except Exception as e:
+        print(f"    {symbol}: could not refresh LATEST valuation ({e})")
 
 
 # ==========================================
