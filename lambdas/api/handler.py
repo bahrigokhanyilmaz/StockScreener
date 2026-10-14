@@ -770,14 +770,24 @@ def get_industry_averages():
     """
     table = get_table()
 
-    # Scan for all INDUSTRY_AVG# items
-    result = table.scan(
-        FilterExpression=Attr("PK").begins_with("INDUSTRY_AVG#"),
-    )
+    # Scan for all INDUSTRY_AVG# items (paginate — >1MB of items would otherwise
+    # be silently truncated).
+    items = []
+    result = table.scan(FilterExpression=Attr("PK").begins_with("INDUSTRY_AVG#"))
+    items.extend(result.get("Items", []))
+    while result.get("LastEvaluatedKey"):
+        result = table.scan(
+            FilterExpression=Attr("PK").begins_with("INDUSTRY_AVG#"),
+            ExclusiveStartKey=result["LastEvaluatedKey"],
+        )
+        items.extend(result.get("Items", []))
 
     industries = {}
-    for item in result.get("Items", []):
-        industry_name = item.get("industry", "")
+    for item in items:
+        # Prefer the stored industry name; fall back to deriving it from the PK
+        # (INDUSTRY_AVG#<name>) for items that only ever got a P/E fallback write
+        # and never a base record with the `industry` field.
+        industry_name = item.get("industry") or item.get("PK", "").replace("INDUSTRY_AVG#", "")
         if not industry_name:
             continue
         industries[industry_name] = decimal_to_float(item)

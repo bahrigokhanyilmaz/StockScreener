@@ -943,14 +943,19 @@ def handler(event, context):
                         source = pe_source_by_industry.get(industry, "4-digit")
                         # Update existing INDUSTRY_AVG item with both pe thresholds
                         # + which SIC level produced them (4-digit or 3-digit fallback).
+                        # Set `industry` too: for thin industries that got only a
+                        # 3-digit-fallback P/E, no base item was created in Step 2,
+                        # so this update_item would otherwise create a bare item
+                        # with no `industry` field — which /industries skips.
                         _table.update_item(
                             Key={"PK": f"INDUSTRY_AVG#{industry}", "SK": "METRICS"},
-                            UpdateExpression="SET pe_median = :med, pe_lower_quartile = :q1, pe_updated = :d, pe_source = :src",
+                            UpdateExpression="SET pe_median = :med, pe_lower_quartile = :q1, pe_updated = :d, pe_source = :src, industry = if_not_exists(industry, :ind)",
                             ExpressionAttributeValues={
                                 ":med": Decimal(str(median_pe)),
                                 ":q1": Decimal(str(q1_pe)),
                                 ":d": today,
                                 ":src": source,
+                                ":ind": industry,
                             },
                         )
                 print(f"  Persisted P/E median + Q1 for {len(industry_pe_quartiles)} industries")
