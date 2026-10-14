@@ -58,7 +58,10 @@ export function applyFilters(stocks: Record<string, unknown>[], filters: FilterV
       const effectiveThreshold = config.format === 'percent' ? threshold / 100 : threshold;
 
       if (config.type === 'max' && value > effectiveThreshold) {
-        if (config.key === 'debt_to_equity') {
+        // ICR override mirrors the pipeline: a stock is only rescued when its
+        // D/E exceeds the FIXED 1.0 rule (not the slider position) and ICR > 3.0.
+        // So dragging the slider below 1.0 gives strict D/E with no override.
+        if (config.key === 'debt_to_equity' && value > 1.0) {
           const icr = stock['interest_coverage_ratio'] as number | null | undefined;
           if (icr !== null && icr !== undefined && icr > 3.0) continue;
         }
