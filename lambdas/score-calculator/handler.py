@@ -405,7 +405,12 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     # Calculate penalty from ledger (with time-decay)
     total_penalty, applied_penalties = calculate_penalty_from_ledger(risk_ledger, today)
 
-    final_score = max(0.0, min(100.0, base_score + total_penalty))
+    # Revenue-acceleration-underpriced bonus: forward rev growth > trailing AND
+    # cheap vs industry on P/S. A flat +5 reward (mirrors how risk flags apply a
+    # flat penalty).
+    rev_accel_bonus = 5.0 if stock.get("revenue_accel_underpriced") else 0.0
+
+    final_score = max(0.0, min(100.0, base_score + total_penalty + rev_accel_bonus))
 
     return {
         **stock,
@@ -423,6 +428,7 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
             "competition_weighted": round(w_competition * competition_normalized, 1),
             "risk_penalties": applied_penalties,
             "total_penalty": total_penalty,
+            "rev_accel_bonus": rev_accel_bonus,
             "base_score_before_penalty": round(base_score, 1),
         },
     }

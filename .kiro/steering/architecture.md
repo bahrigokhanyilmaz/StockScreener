@@ -324,7 +324,9 @@ Source of truth: `shared/config/screener-filters.json`
 ### Investability Score Formula
 
 ```
-investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties
+investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties + rev_accel_bonus
+
+rev_accel_bonus: +5 flat when revenue_accel_underpriced flag is set (fwd rev growth > trailing AND P/S < industry median). Clamped into [0,100].
 
 fundamental_score: 0-100
   Per filter: 0 = at threshold (barely passed), 1.0 = best possible
