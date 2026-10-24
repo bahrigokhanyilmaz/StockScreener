@@ -69,6 +69,7 @@ def get_previous_tracking_status(table, symbols: list[str]) -> dict[str, dict]:
                     "tracking_status": item.get("tracking_status", ""),
                     "last_passed": item.get("last_passed", ""),
                     "first_tracked": item.get("first_tracked", ""),
+                    "grace_start": item.get("grace_start", ""),
                 }
         except Exception:
             continue
@@ -148,8 +149,9 @@ def check_tracking_changes(scored_stocks: list, previous_status: dict, today: st
             })
 
         elif not passes and prev and prev["tracking_status"] == "GRACE":
-            # Already in grace — check if expired
-            grace_start = prev.get("last_passed", today)
+            # Already in grace — check if expired. Anchor on grace_start (the day
+            # it entered GRACE); fall back to last_passed, then today.
+            grace_start = prev.get("grace_start") or prev.get("last_passed") or today
             try:
                 grace_start_date = datetime.strptime(grace_start, "%Y-%m-%d")
                 today_date = datetime.strptime(today, "%Y-%m-%d")
@@ -191,7 +193,7 @@ def _read_preserved_tracking_fields(table, symbol: str) -> dict:
     try:
         existing = table.get_item(
             Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
-            ProjectionExpression="mark_price, mark_date, first_tracked",
+            ProjectionExpression="mark_price, mark_date, first_tracked, grace_start, last_passed",
         ).get("Item", {})
     except Exception:
         return {}
@@ -202,6 +204,12 @@ def _read_preserved_tracking_fields(table, symbol: str) -> dict:
         preserved["mark_date"] = existing["mark_date"]
     if existing.get("first_tracked"):
         preserved["first_tracked"] = existing["first_tracked"]
+    # grace_start is the 30-day removal anchor — must survive the rewrite, or
+    # GRACE stocks become immortal. last_passed preserved for the same reason.
+    if existing.get("grace_start"):
+        preserved["grace_start"] = existing["grace_start"]
+    if existing.get("last_passed"):
+        preserved["last_passed"] = existing["last_passed"]
     return preserved
 
 
@@ -460,10 +468,11 @@ def handler(event, context):
                     continue
                 sym = item.get("symbol", "")
                 if sym and sym not in pipeline_symbols:
-                    # Check if grace period expired
-                    last_passed = item.get("last_passed", today)
+                    # Check if grace period expired. Anchor on grace_start; fall
+                    # back to last_passed, then today.
+                    anchor = item.get("grace_start") or item.get("last_passed") or today
                     try:
-                        last_passed_date = datetime.strptime(str(last_passed), "%Y-%m-%d")
+                        last_passed_date = datetime.strptime(str(anchor), "%Y-%m-%d")
                         today_date = datetime.strptime(today, "%Y-%m-%d")
                         days_in_grace = (today_date - last_passed_date).days
                         if days_in_grace >= grace_days:

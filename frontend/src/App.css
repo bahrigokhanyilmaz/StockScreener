@@ -262,6 +262,7 @@ th.sticky-col-2 {
 
 .status-active { background: #166534; color: #86efac; }
 .status-grace { background: #713f12; color: #fde047; }
+.status-grace-expiring { background: #7f1d1d; color: #fecaca; }
 .status-manual { background: #1e3a5f; color: #93c5fd; }
 
 .sentiment-indicator {

@@ -101,6 +101,8 @@ def get_stocks():
     seen_symbols = set()
     # Manual-track snapshots keyed by symbol: {symbol: {mark_price, mark_date}}
     mark_snapshots = {}
+    # grace_start (from TRACKING) keyed by symbol — anchor for grace-days-left.
+    grace_start_by_symbol = {}
 
     for status in ["ACTIVE", "GRACE", "MANUAL"]:
         result = table.query(
@@ -114,11 +116,14 @@ def get_stocks():
             # A mark is independent of screen status: a marked stock may show up
             # under ACTIVE/GRACE (if it also passes the screen) or MANUAL. We key
             # off the presence of mark_price, not the tracking_status.
-            if item.get("SK") == "TRACKING" and item.get("mark_price") is not None:
-                mark_snapshots[symbol] = {
-                    "mark_price": decimal_to_float(item.get("mark_price")),
-                    "mark_date": item.get("mark_date") or item.get("first_tracked"),
-                }
+            if item.get("SK") == "TRACKING":
+                if item.get("mark_price") is not None:
+                    mark_snapshots[symbol] = {
+                        "mark_price": decimal_to_float(item.get("mark_price")),
+                        "mark_date": item.get("mark_date") or item.get("first_tracked"),
+                    }
+                if item.get("grace_start"):
+                    grace_start_by_symbol[symbol] = item.get("grace_start")
             # Only take LATEST items (which have investability_score)
             # Skip TRACKING items to avoid duplicates
             if symbol in seen_symbols:
@@ -155,6 +160,20 @@ def get_stocks():
         cur = s.get("price")
         if mp and cur is not None and mp > 0:
             s["mark_change_pct"] = round((cur - mp) / mp * 100, 2)
+
+    # Grace-days-left for GRACE stocks: removed at last_passed + 30 days.
+    grace_period = int(os.environ.get("GRACE_PERIOD_DAYS", "30"))
+    today_et = eastern_today()
+    for s in all_stocks:
+        if s.get("tracking_status") == "GRACE":
+            gs = grace_start_by_symbol.get(s.get("symbol"))
+            if gs:
+                try:
+                    from datetime import date
+                    days_in_grace = (date.fromisoformat(today_et) - date.fromisoformat(gs)).days
+                    s["grace_days_left"] = max(0, grace_period - days_in_grace)
+                except (ValueError, TypeError):
+                    pass
 
     # Sort by investability score (highest first)
     all_stocks.sort(key=lambda s: s.get("investability_score") or 0, reverse=True)

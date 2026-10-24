@@ -385,7 +385,10 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                   ) : '—'}
                 </td>
                 <td>
-                  <span className={`status-pill ${stock.tracking_status === 'ACTIVE' ? 'status-active' : stock.tracking_status === 'GRACE' ? 'status-grace' : ''}`}>
+                  <span
+                    className={`status-pill ${stock.tracking_status === 'ACTIVE' ? 'status-active' : stock.tracking_status === 'GRACE' ? (stock.grace_days_left != null && stock.grace_days_left <= 5 ? 'status-grace-expiring' : 'status-grace') : ''}`}
+                    title={stock.tracking_status === 'GRACE' && stock.grace_days_left != null ? `${stock.grace_days_left} day(s) until removed` : ''}
+                  >
                     {stock.tracking_status}
                   </span>
                 </td>

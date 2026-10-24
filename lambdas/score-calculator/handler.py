@@ -559,6 +559,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
     # there is genuinely no history do we treat the stock as new (today).
     first_tracked_dates = {}
     mark_snapshots = {}  # symbol -> {"mark_price", "mark_date"}
+    prev_tracking = {}   # symbol -> {"last_passed", "grace_start", "tracking_status"}
     for stock in scored_stocks:
         symbol = stock.get("symbol", "")
         if not symbol:
@@ -566,7 +567,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
         try:
             resp = table.get_item(
                 Key={"PK": f"STOCK#{symbol}", "SK": "TRACKING"},
-                ProjectionExpression="first_tracked, mark_price, mark_date",
+                ProjectionExpression="first_tracked, mark_price, mark_date, last_passed, grace_start, tracking_status",
             )
             existing_tracking = resp.get("Item", {})
             ft = existing_tracking.get("first_tracked")
@@ -580,6 +581,11 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                     "mark_price": existing_tracking.get("mark_price"),
                     "mark_date": existing_tracking.get("mark_date"),
                 }
+            prev_tracking[symbol] = {
+                "last_passed": existing_tracking.get("last_passed"),
+                "grace_start": existing_tracking.get("grace_start"),
+                "tracking_status": existing_tracking.get("tracking_status"),
+            }
         except Exception:
             pass
 
@@ -666,13 +672,29 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
             ))
 
             # Item 3: Tracking status
+            passes = stock.get("passes_screen")
+            prev = prev_tracking.get(symbol, {})
+
+            # Durable grace anchor. The 30-day removal clock counts from grace_start.
+            #  - Passing: clears the anchor and stamps last_passed = today.
+            #  - Failing (GRACE): preserve the existing grace_start if present; if
+            #    this is the first failing run, stamp grace_start = today. NEVER
+            #    overwrite with None (the old bug that made GRACE stocks immortal).
+            if passes:
+                last_passed = today
+                grace_start = None
+            else:
+                last_passed = prev.get("last_passed")  # keep the real last-pass date
+                grace_start = prev.get("grace_start") or today
+
             tracking_item = {
                 "PK": f"STOCK#{symbol}",
                 "SK": "TRACKING",
                 "symbol": symbol,
-                "tracking_status": "ACTIVE" if stock.get("passes_screen") else "GRACE",
+                "tracking_status": "ACTIVE" if passes else "GRACE",
                 "first_tracked": first_tracked,
-                "last_passed": today if stock.get("passes_screen") else None,
+                "last_passed": last_passed,
+                "grace_start": grace_start,
                 "last_updated": now_iso,
                 # GSI attributes
             }
