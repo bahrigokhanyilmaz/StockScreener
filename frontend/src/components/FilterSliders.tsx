@@ -50,6 +50,10 @@ export function getDefaultFilters(): FilterValues {
 
 export function applyFilters(stocks: Record<string, unknown>[], filters: FilterValues, industryAverages?: IndustryAverages): Record<string, unknown>[] {
   return stocks.filter(stock => {
+    // GRACE stocks always render regardless of filters — the point of GRACE is
+    // to watch a dropped stock wind down, and it fails a filter by definition.
+    if (stock['tracking_status'] === 'GRACE') return true;
+
     for (const config of SLIDER_CONFIG) {
       const value = stock[config.key] as number | null | undefined;
       if (value === null || value === undefined) continue;
