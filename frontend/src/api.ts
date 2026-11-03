@@ -40,6 +40,7 @@ export interface Stock {
   grace_days_left: number | null;
   target_price_upside: number | null;
   analyst_target_price: number | null;
+  analyst_count: number | null;
   interest_coverage_ratio: number | null;
   hhi_score: number | null;
   competition_score: number | null;

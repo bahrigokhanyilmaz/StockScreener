@@ -709,6 +709,14 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if nearest_eps and nearest_eps > 0 and price:
             stock["forward_pe"] = round(price / nearest_eps, 2)
 
+        # Number of analysts covering the nearest-year EPS estimate.
+        na = estimates[0].get("numAnalystsEps") if estimates else None
+        if na is not None:
+            try:
+                stock["analyst_count"] = int(na)
+            except (TypeError, ValueError):
+                pass
+
         # Forward LT Growth: CAGR from current EPS to furthest available estimate (up to 3 years)
         # Use the furthest year available (prefer 3rd, fall back to 2nd, then 1st)
         # Get current EPS: from FMP ratios (netIncomePerShareTTM), EDGAR, or price/PE

@@ -245,6 +245,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
     { key: 'est_lt_revenue_growth', label: 'Rev →', tooltip: 'Forward revenue growth CAGR from analyst estimates (1-3 years out). What analysts project.' },
     { key: 'est_lt_growth', label: 'EPS →', tooltip: 'Forward long-term EPS (earnings) growth estimate from analysts (CAGR over 1-3 years). Positive = expected earnings growth.' },
     { key: 'target_price_upside', label: 'Target ↑', tooltip: 'Upside to analyst consensus price target. Green ≥20%, Yellow 0-20%, Red = above target.' },
+    { key: 'analyst_count', label: 'Analysts', tooltip: 'Number of analysts covering the nearest-year EPS estimate (from FMP).' },
     { key: '_signal', label: 'Signal', tooltip: 'SELL/NEAR signal for owned stocks approaching analyst target price' },
     { key: '_mark', label: 'Track', tooltip: 'Mark / unmark this stock to track its price change over time' },
     { key: '_buy', label: 'Trade', tooltip: 'Record a purchase (Buy) or remove a position (✕)' },
@@ -419,6 +420,7 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                 <td style={{ color: metricColor('est_lt_growth', stock.est_lt_revenue_growth as number | null) }}>{formatPct(stock.est_lt_revenue_growth as number | null)}</td>
                 <td style={{ color: metricColor('est_lt_growth', stock.est_lt_growth as number | null) }}>{formatPct(stock.est_lt_growth as number | null)}</td>
                 <td style={{ color: targetUpsideColor(stock.target_price_upside) }}>{formatPct(stock.target_price_upside)}</td>
+                <td>{stock.analyst_count != null ? stock.analyst_count : '—'}</td>
                 <td>
                   {signal && <span className={`sell-indicator ${signal === 'SELL' ? 'sell-now' : ''}`}>{signal}</span>}
                 </td>
