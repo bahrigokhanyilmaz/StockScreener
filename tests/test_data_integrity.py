@@ -26,6 +26,7 @@ def _valid_stock():
         "investability_score": 70, "fundamental_score": 65, "sentiment_score": 0.2,
         "competition_score": 2, "first_tracked": "2026-09-09",
         "last_updated": "2026-09-15T20:00:00+00:00",
+        "tracking_status": "ACTIVE",
     }
 
 
@@ -134,6 +135,21 @@ def test_price_mismatch_with_latest_bar_flagged():
     bars = [{"c": 884.74}, {"c": 833.59}, {"c": 855.10}, {"c": 797.64}]  # latest 797.64
     issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
     assert any("out of sync with Daily" in i["message"] and i["severity"] == "MED" for i in issues)
+
+
+@pytest.mark.unit
+def test_grace_stock_exempt_from_hard_filter_checks():
+    # A GRACE stock is EXPECTED to fail a hard filter — must not be flagged HIGH.
+    s = _valid_stock(); s["tracking_status"] = "GRACE"; s["price_to_fcf"] = 25.0; s["peg_ratio"] = 1.8
+    issues = audit.audit_tracked_stocks([s], today=TODAY)
+    assert not any(i["severity"] == "HIGH" for i in issues)
+
+
+@pytest.mark.unit
+def test_active_stock_still_flagged_for_hard_filter():
+    s = _valid_stock(); s["tracking_status"] = "ACTIVE"; s["price_to_fcf"] = 25.0
+    issues = audit.audit_tracked_stocks([s], today=TODAY)
+    assert any(i["severity"] == "HIGH" and "price_to_fcf" in i["message"] for i in issues)
 
 
 @pytest.mark.unit

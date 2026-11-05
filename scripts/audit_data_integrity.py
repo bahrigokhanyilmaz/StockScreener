@@ -59,28 +59,33 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
         inv = _f(s.get("investability_score")); fund = _f(s.get("fundamental_score"))
         sent = _f(s.get("sentiment_score")); comp = _f(s.get("competition_score"))
         ft = s.get("first_tracked"); lu = s.get("last_updated")
+        status = s.get("tracking_status")
 
         # --- HARD FILTERS ---
-        if peg is None:
-            flag(sym, "HIGH", "PEG blank but tracked (should fail: missing=FAIL)")
-        elif peg > 1.0:
-            flag(sym, "HIGH", f"PEG={peg} > 1.0 but tracked")
-        if fwd_revg is None:
-            flag(sym, "HIGH", "forward revenue growth blank but tracked")
-        elif fwd_revg <= 0:
-            flag(sym, "HIGH", f"forward revenue growth={fwd_revg} <= 0 but tracked")
-        if de is not None and de > 1.0 and not (icr is not None and icr > 3.0):
-            flag(sym, "HIGH", f"D/E={de} > 1.0 and ICR override not met (ICR={icr})")
-        if qr is None:
-            flag(sym, "MED", "quick_ratio blank")
-        elif qr < 1.0:
-            flag(sym, "HIGH", f"quick_ratio={qr} < 1.0 but tracked")
-        if om is not None and om <= 0 and not (revg is not None and revg > 0.20):
-            flag(sym, "HIGH", f"operating_margin={om} <= 0 and rev-growth override not met (revg={revg})")
-        if pfcf is None:
-            flag(sym, "MED", "price_to_fcf blank")
-        elif pfcf > 20 or pfcf < 0:
-            flag(sym, "HIGH", f"price_to_fcf={pfcf} fails <20 but tracked")
+        # Only ACTIVE stocks must satisfy every hard filter. GRACE stocks are, by
+        # definition, ones that stopped passing — they're EXPECTED to breach a
+        # filter while they wind down, so checking them here is a false positive.
+        if status == "ACTIVE":
+            if peg is None:
+                flag(sym, "HIGH", "PEG blank but ACTIVE (should fail: missing=FAIL)")
+            elif peg > 1.0:
+                flag(sym, "HIGH", f"PEG={peg} > 1.0 but ACTIVE")
+            if fwd_revg is None:
+                flag(sym, "HIGH", "forward revenue growth blank but ACTIVE")
+            elif fwd_revg <= 0:
+                flag(sym, "HIGH", f"forward revenue growth={fwd_revg} <= 0 but ACTIVE")
+            if de is not None and de > 1.0 and not (icr is not None and icr > 3.0):
+                flag(sym, "HIGH", f"D/E={de} > 1.0 and ICR override not met (ICR={icr})")
+            if qr is None:
+                flag(sym, "MED", "quick_ratio blank")
+            elif qr < 1.0:
+                flag(sym, "HIGH", f"quick_ratio={qr} < 1.0 but ACTIVE")
+            if om is not None and om <= 0 and not (revg is not None and revg > 0.20):
+                flag(sym, "HIGH", f"operating_margin={om} <= 0 and rev-growth override not met (revg={revg})")
+            if pfcf is None:
+                flag(sym, "MED", "price_to_fcf blank")
+            elif pfcf > 20 or pfcf < 0:
+                flag(sym, "HIGH", f"price_to_fcf={pfcf} fails <20 but ACTIVE")
 
         # --- SANITY RANGES ---
         if price is None or price <= 0:
