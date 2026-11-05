@@ -132,16 +132,28 @@ def backfill_price_history(scored_stocks: list, today: str):
 
     fmp_key = get_fmp_key()
 
+    # symbol -> most recent close from price history. Used to keep LATEST.price
+    # (and therefore "Since Mark") in sync with the same series the "Daily"
+    # column uses, so all price-derived figures come from ONE source.
+    latest_close = {}
+
     for i, symbol in enumerate(symbols):
         # Check if we already have recent history (skip if last backfill was today)
         try:
             existing = table.get_item(
                 Key={"PK": f"PRICE_HISTORY#{symbol}", "SK": "DAILY"},
-                ProjectionExpression="last_backfill",
+                ProjectionExpression="last_backfill, bars",
             ).get("Item", {})
 
             if existing.get("last_backfill") == today:
                 print(f"    {symbol}: already backfilled today, skipping")
+                # Still capture the latest close so price stays consistent.
+                bars_existing = existing.get("bars") or []
+                if bars_existing:
+                    try:
+                        latest_close[symbol] = float(bars_existing[-1].get("c"))
+                    except (TypeError, ValueError):
+                        pass
                 continue
         except Exception:
             pass
@@ -171,6 +183,9 @@ def backfill_price_history(scored_stocks: list, today: str):
                     # Sort by date ascending (FMP returns newest first)
                     price_history.sort(key=lambda x: x["d"])
 
+                    # Capture the most recent close to sync LATEST.price.
+                    latest_close[symbol] = price_history[-1]["c"]
+
                     # Write to DynamoDB
                     table.put_item(Item=_to_decimal({
                         "PK": f"PRICE_HISTORY#{symbol}",
@@ -193,6 +208,14 @@ def backfill_price_history(scored_stocks: list, today: str):
         # FMP rate limit: 300 calls/min → 1s pacing is very safe
         if i < len(symbols) - 1:
             time.sleep(1)
+
+    # Sync each stock's price to the latest close from its history, so Price,
+    # "Since Mark", and "Daily" all derive from the SAME series (no vendor-lag mismatch).
+    for s in scored_stocks:
+        c = latest_close.get(s.get("symbol"))
+        if c is not None:
+            s["price"] = c
+    return latest_close
 
 
 # Risk flag penalties — severe issues get hard score reductions
