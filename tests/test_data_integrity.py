@@ -97,8 +97,9 @@ def _odd(issues):
 @pytest.mark.unit
 def test_odd_never_makes_valid_stock_dirty():
     # A valid stock with sane price history produces no issues at all.
+    # Latest bar close must equal the stock price (same series).
     s = _valid_stock()
-    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}]
+    bars = [{"c": 39.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}, {"c": 40.0}]
     issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
     assert issues == []
 
@@ -122,8 +123,25 @@ def test_odd_price_outside_30d_range():
 @pytest.mark.unit
 def test_odd_price_within_range_ok():
     s = _valid_stock(); s["price"] = 40.5
-    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 40.5}, {"c": 39.5}]
+    bars = [{"c": 39.0}, {"c": 40.0}, {"c": 41.0}, {"c": 39.5}, {"c": 40.5}]
     assert _odd(audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})) == []
+
+
+@pytest.mark.regression
+def test_price_mismatch_with_latest_bar_flagged():
+    # MU bug: stock price stale vs latest price-history bar close.
+    s = _valid_stock(); s["price"] = 855.10
+    bars = [{"c": 884.74}, {"c": 833.59}, {"c": 855.10}, {"c": 797.64}]  # latest 797.64
+    issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
+    assert any("out of sync with Daily" in i["message"] and i["severity"] == "MED" for i in issues)
+
+
+@pytest.mark.unit
+def test_price_matches_latest_bar_ok():
+    s = _valid_stock(); s["price"] = 797.64
+    bars = [{"c": 884.74}, {"c": 833.59}, {"c": 855.10}, {"c": 797.64}]
+    issues = audit.audit_tracked_stocks([s], today=TODAY, price_bars_by_symbol={"GOOD": bars})
+    assert not any("out of sync with Daily" in i["message"] for i in issues)
 
 
 @pytest.mark.unit

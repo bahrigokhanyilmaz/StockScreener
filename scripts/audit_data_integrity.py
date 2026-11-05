@@ -137,6 +137,17 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
             # Allow 15% slack beyond the observed range (a fresh close can exceed it).
             if price < lo * 0.85 or price > hi * 1.15:
                 flag(sym, "ODD", f"price {price} outside 30d range [{lo:.2f}, {hi:.2f}] (+/-15% slack)")
+        # Price must match the latest price-history bar close — they come from the
+        # same series now. A mismatch means Price/"Since Mark" and "Daily" would
+        # disagree (the MU 855.10-vs-797.64 bug). Bars are stored date-ascending.
+        if price is not None and price > 0 and bars:
+            latest_bar_close = _f(bars[-1].get("c"))
+            if latest_bar_close is not None and latest_bar_close > 0:
+                diff_pct = abs(price - latest_bar_close) / latest_bar_close * 100
+                if diff_pct > 0.5:  # allow tiny rounding; flag real divergence
+                    flag(sym, "MED",
+                         f"price {price} != latest price-history close {latest_bar_close} "
+                         f"({diff_pct:.1f}% apart) — Price/Since-Mark out of sync with Daily")
         # PEG present but its inputs (forward P/E or growth) missing — shouldn't happen.
         if peg is not None and (fpe is None or lt is None):
             flag(sym, "ODD", f"PEG={peg} present but forward_pe={fpe} / est_lt_growth={lt} missing")
