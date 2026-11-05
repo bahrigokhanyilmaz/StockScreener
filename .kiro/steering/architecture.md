@@ -33,6 +33,7 @@ Always keep README and steering docs updated without being asked.
     - No "wipe and rerun to see what happens" as a substitute for tests. We must understand impact ahead of time, not discover it in production.
     - When a change breaks a test, fix the code (or the test if the contract legitimately changed) — never delete a test to make the suite pass.
 15. **Be Concise (NON-NEGOTIABLE)** — Say something once. No restating the same point in different words, no recap sections, no re-explaining what was already said. Lead with the answer. Trust the user to ask follow-ups. Verbosity and repetition waste tokens and the user's time. User is in Pacific time.
+16. **Verify Before Explaining (NON-NEGOTIABLE)** — Never assert a cause, number, or behavior you have not checked against the actual data (DynamoDB items, S3 outputs, price bars, logs, code). Read the record first, then explain. If you have not verified something, say so plainly ("I haven't checked X") instead of inventing a plausible-sounding reason. A fabricated explanation that happens to sound reasonable is a lie and is worse than admitting uncertainty. When the user reports a discrepancy, reproduce it from the stored data before offering any theory.
 
 ## Current Architecture (Deployed & Working)
 

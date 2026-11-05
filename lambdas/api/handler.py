@@ -399,10 +399,34 @@ def untrack_stock(ticker: str):
 
 
 def _get_current_price(symbol: str):
-    """Return the latest closing price for a symbol from its LATEST item, or None."""
+    """
+    Return the latest closing price for a symbol.
+
+    Prefers the most recent price-history bar (the authoritative latest close,
+    same series the "Daily" column uses). Falls back to LATEST.price only if no
+    bars exist. This matters for marking at night: LATEST.price can lag a day
+    behind the real latest close, which would set a stale mark baseline.
+    """
     table = get_table()
+    sym = symbol.upper()
+
+    # 1) Latest price-history bar close (date-ascending, so last = newest).
+    ph = table.get_item(
+        Key={"PK": f"PRICE_HISTORY#{sym}", "SK": "DAILY"},
+        ProjectionExpression="bars",
+    ).get("Item")
+    bars = (ph or {}).get("bars") or []
+    if bars:
+        try:
+            c = bars[-1].get("c")
+            if c is not None:
+                return float(c)
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    # 2) Fallback: LATEST.price.
     item = table.get_item(
-        Key={"PK": f"STOCK#{symbol.upper()}", "SK": "LATEST"},
+        Key={"PK": f"STOCK#{sym}", "SK": "LATEST"},
         ProjectionExpression="price",
     ).get("Item")
     if item and item.get("price") is not None:
