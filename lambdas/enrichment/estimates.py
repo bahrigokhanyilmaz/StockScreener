@@ -34,6 +34,12 @@ def _period_end(entry):
     return d[:10] if isinstance(d, str) and len(d) >= 10 else None
 
 
+def has_estimate_data(snapshot) -> bool:
+    """True if the snapshot carries any real value besides its fetched_at stamp."""
+    return isinstance(snapshot, dict) and any(
+        v is not None for k, v in snapshot.items() if k != "fetched_at")
+
+
 def build_estimates_snapshot(estimates, targets, fetched_at: str) -> dict:
     """
     estimates: list of future annual estimates, nearest first (fy1 = [0], fy2 = [1]).

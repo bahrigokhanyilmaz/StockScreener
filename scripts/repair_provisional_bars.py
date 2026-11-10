@@ -56,6 +56,11 @@ def _f(v):
         return None
 
 
+def _fmt(v, width=0):
+    """Right-aligned display value; '-' for None so a missing field never crashes the table."""
+    return f"{'-' if v is None else v:>{width}}"
+
+
 def find_candidates(price_history_items, target_date):
     """Items whose newest stored bar is dated target_date. Pure."""
     out = []
@@ -277,8 +282,9 @@ def main(argv=None, *, now_utc=None, table=None, key=None, fetch=None):
         for r in rows:
             s, f = r["stored"], r["final"]
             print(f"{r['symbol']:8} {r['date']:11} "
-                  f"{_f(s.get('c'))}/{_f(s.get('h'))}/{_f(s.get('v')):>12} "
-                  f"{f['c']}/{f['h']}/{f['v']:>12}  {','.join(r['fields_changed'])}")
+                  f"{_fmt(_f(s.get('c')))}/{_fmt(_f(s.get('h')))}/{_fmt(_f(s.get('v')), 12)} "
+                  f"{_fmt(f.get('c'))}/{_fmt(f.get('h'))}/{_fmt(f.get('v'), 12)}  "
+                  f"{','.join(r['fields_changed'])}")
     else:
         print("No differences found.")
 

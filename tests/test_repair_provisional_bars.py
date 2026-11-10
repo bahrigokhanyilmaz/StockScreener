@@ -194,3 +194,15 @@ def test_mark_equal_to_stored_close_warns_but_is_not_edited(dynamodb_table, caps
     assert "WARNING HLIO" in capsys.readouterr().out
     t = dynamodb_table.get_item(Key={"PK": "STOCK#HLIO", "SK": "TRACKING"})["Item"]
     assert t["mark_price"] == Decimal("49.59")
+
+
+@pytest.mark.regression
+def test_dry_run_table_survives_none_fields(dynamodb_table, capsys):
+    """A stored bar missing h/v made the table format spec hit None and crash."""
+    dynamodb_table.put_item(Item={
+        "PK": "PRICE_HISTORY#HLIO", "SK": "DAILY", "symbol": "HLIO",
+        "bars": [{"d": TARGET, "c": Decimal("49.59")}],
+        "last_final_date": TARGET, "fetched_at": "2026-11-09T20:25:00Z"})
+    rc = rep.main(["--date", TARGET], now_utc=AFTER, table=WriteGuard(dynamodb_table), key=KEY, fetch=Fetcher())
+    out = capsys.readouterr().out
+    assert rc == 0 and "HLIO" in out and "-" in out

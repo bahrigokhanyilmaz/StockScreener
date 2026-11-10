@@ -220,3 +220,17 @@ def test_market_cap_recomputed_from_shares_implied(env_factory):
     sc.backfill_price_history(stocks, TODAY, now_utc=AFTER_SETTLE)
     assert stocks[0]["market_cap"] == round(34_580_000.0 * 50.0)
     assert stocks[1]["market_cap"] == 1_640_280_868
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("now,expect_skip,why", [
+    (datetime(2026, 11, 9, 22, 10, tzinfo=timezone.utc), False, "holiday-style Monday: newest session (Mon) has no stored bar, so refetch"),
+    (datetime(2026, 11, 7, 17, 0, tzinfo=timezone.utc), True, "Saturday: newest final session is Friday, already stored"),
+    (datetime(2026, 11, 6, 22, 10, tzinfo=timezone.utc), True, "Friday after settle, series fetched Friday 17:05"),
+])
+def test_should_skip_backfill_calendar_behaviour(now, expect_skip, why):
+    """Documents holiday behaviour: a holiday weekday is treated as a session with no bar,
+    so a run on it refetches once per stock. Step 0 (market gate) stops the pipeline on
+    holidays, so this only happens on a fail-open gate or a manual run."""
+    existing = {"last_final_date": "2026-11-06", "fetched_at": "2026-11-06T22:05:00Z"}
+    assert sc.should_skip_backfill(existing, now) is expect_skip, why

@@ -43,3 +43,77 @@ test('old UTC-only Events rule is gone', () => {
   // monthly tag discovery rule is unaffected
   expect(names).toContain('stock-screener-monthly-tag-discovery');
 });
+
+const schedule = () => Object.values(template.findResources('AWS::Scheduler::Schedule'))[0] as any;
+const machineId = () => Object.keys(template.findResources('AWS::StepFunctions::StateMachine'))[0];
+
+test('schedule input is the same empty JSON object the old Events rule passed', () => {
+  expect(JSON.parse(schedule().Properties.Target.Input)).toEqual({});
+});
+
+test('schedule target role is a scheduler.amazonaws.com role', () => {
+  const roleRef = schedule().Properties.Target.RoleArn['Fn::GetAtt'][0];
+  const role = template.findResources('AWS::IAM::Role')[roleRef] as any;
+  expect(role.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+    expect.objectContaining({
+      Action: 'sts:AssumeRole',
+      Effect: 'Allow',
+      Principal: { Service: 'scheduler.amazonaws.com' },
+    }),
+  ]);
+  expect(Object.keys(role.Properties)).not.toContain('ManagedPolicyArns');
+});
+
+test('scheduler role may states:StartExecution on exactly the pipeline state machine', () => {
+  const roleRef = schedule().Properties.Target.RoleArn['Fn::GetAtt'][0];
+  const policies = Object.values(template.findResources('AWS::IAM::Policy')) as any[];
+  const attached = policies.filter((p) => p.Properties.Roles?.some((r: any) => r.Ref === roleRef));
+  expect(attached).toHaveLength(1);
+  const statements = attached[0].Properties.PolicyDocument.Statement as any[];
+  const start = statements.filter((st) => ([] as string[]).concat(st.Action).includes('states:StartExecution'));
+  expect(start).toHaveLength(1);
+  expect(start[0].Effect).toBe('Allow');
+  expect(start[0].Action).toBe('states:StartExecution');
+  expect(start[0].Resource).toEqual({ Ref: machineId() });
+});
+
+test('schedule target role is wired to that role', () => {
+  const roleRef = schedule().Properties.Target.RoleArn;
+  const roles = Object.keys(template.findResources('AWS::IAM::Role'));
+  expect(roles).toContain(roleRef['Fn::GetAtt'][0]);
+});
+
+test('a failed schedule start lands in a DLQ that the role can write to', () => {
+  const queues = template.findResources('AWS::SQS::Queue');
+  const dlqId = Object.keys(queues).find(
+    (k) => (queues[k] as any).Properties.QueueName === 'stock-screener-schedule-dlq',
+  )!;
+  expect(dlqId).toBeDefined();
+  expect(schedule().Properties.Target.DeadLetterConfig).toEqual({ Arn: { 'Fn::GetAtt': [dlqId, 'Arn'] } });
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith(['sqs:SendMessage']),
+          Resource: { 'Fn::GetAtt': [dlqId, 'Arn'] },
+        }),
+      ]),
+    },
+  });
+});
+
+test('DLQ alarm notifies the existing alerts topic', () => {
+  const topics = template.findResources('AWS::SNS::Topic');
+  const topicId = Object.keys(topics).find(
+    (k) => (topics[k] as any).Properties.TopicName === 'stock-screener-alerts',
+  )!;
+  template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+    AlarmName: 'stock-screener-schedule-failed',
+    MetricName: 'ApproximateNumberOfMessagesVisible',
+    Namespace: 'AWS/SQS',
+    Threshold: 1,
+    ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+    TreatMissingData: 'notBreaching',
+    AlarmActions: [{ Ref: topicId }],
+  });
+});

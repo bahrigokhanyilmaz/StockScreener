@@ -172,13 +172,28 @@ def test_persist_snapshot_sets_estimates_and_shares(ddb):
 
 
 @pytest.mark.unit
-def test_persist_snapshot_removes_stale_shares_implied(ddb):
+def test_persist_snapshot_removes_shares_when_profile_returned_but_unusable(ddb):
     _seed_latest(ddb, shares_implied=Decimal("34000000"))
-    stock = _enrich({})  # profile lacks price -> shares_implied None
-    enrichment._persist_enrichment_snapshot_to_latest(stock)
+    stock = _enrich({"marketCap": 1_700_000_000, "price": 0})  # profile returned, price invalid
+    enrichment._persist_enrichment_snapshot_to_latest(stock, profile_fetched=True)
     item = _latest(ddb)
     assert "shares_implied" not in item
     assert "estimates" in item
+
+
+@pytest.mark.regression
+def test_persist_snapshot_failed_fetch_keeps_previous_values(ddb):
+    """Transient FMP profile/estimates failure must not wipe yesterday's values."""
+    prev = est.build_estimates_snapshot(_ests(), {"lastQuarterAvgPriceTarget": 60.0},
+                                        "2026-11-08T22:05:00Z")
+    _seed_latest(ddb, shares_implied=Decimal("34000000"), estimates=enrichment._to_ddb(prev))
+    stock = _enrich({}, estimates=[], targets={"x": 1})  # profile -> {}, estimates -> [], no targets
+    assert stock["shares_implied"] is None and not est.has_estimate_data(stock["estimates"])
+    enrichment._persist_enrichment_snapshot_to_latest(stock, profile_fetched=False)
+    item = _latest(ddb)
+    assert item["shares_implied"] == Decimal("34000000")
+    assert item["estimates"]["eps_fy1"] == Decimal("2.5")
+    assert item["estimates"]["fetched_at"] == "2026-11-08T22:05:00Z"
 
 
 @pytest.mark.unit
@@ -294,3 +309,38 @@ def test_grace_enriched_but_failed_stock_gets_recomputed_market_cap(sc7):
     score_calc.persist_to_dynamodb(stocks, "2026-11-09")
     row = sc7.get_item(Key={"PK": "STOCK#HLIO", "SK": "SCORE#2026-11-09"})["Item"]
     assert row["estimates_as_of"] == "2026-11-05"  # visibly stale
+
+
+@pytest.mark.regression
+def test_step7_carries_forward_shares_and_estimates_when_fetch_failed(sc7):
+    """Step 7 put_item rewrites LATEST whole; a failed fetch must not drop stored values."""
+    prev = est.build_estimates_snapshot(_ests(), {"lastQuarterAvgPriceTarget": 60.0},
+                                        "2026-11-08T22:05:00Z")
+    _seed_latest(sc7, shares_implied=Decimal("34000000"), estimates=enrichment._to_ddb(prev))
+    stock = _scored(shares_implied=None,
+                    estimates=est.build_estimates_snapshot([], {}, "2026-11-09T22:05:00Z"))
+    score_calc._carry_forward_enrichment(sc7, [stock])
+    score_calc.persist_to_dynamodb([stock], "2026-11-09")
+    latest = _latest(sc7)
+    assert latest["shares_implied"] == Decimal("34000000.0")
+    assert latest["estimates"]["eps_fy1"] == Decimal("2.5")
+    row = sc7.get_item(Key={"PK": "STOCK#HLIO", "SK": "SCORE#2026-11-09"})["Item"]
+    assert row["estimates_as_of"] == "2026-11-08"  # visibly stale, not relabelled as today
+
+
+@pytest.mark.unit
+def test_step7_carry_forward_skips_read_when_fresh_data_present(sc7):
+    class Boom:
+        def get_item(self, **kw):
+            raise AssertionError("no read expected")
+    score_calc._carry_forward_enrichment(Boom(), [_scored()])
+
+
+@pytest.mark.unit
+def test_step7_omits_price_as_of_when_unknown(sc7):
+    """Finding: legacy stock with no bars. Field is omitted (never stored as None)."""
+    stock = _scored()
+    del stock["price_as_of"]
+    score_calc.persist_to_dynamodb([stock], "2026-11-09")
+    assert "price_as_of" not in _latest(sc7)
+    assert "price_as_of" not in sc7.get_item(Key={"PK": "STOCK#HLIO", "SK": "SCORE#2026-11-09"})["Item"]

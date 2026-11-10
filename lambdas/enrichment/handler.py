@@ -44,7 +44,7 @@ from datetime import datetime, timezone, timedelta, date
 import boto3
 import requests as http_requests
 
-from estimates import build_estimates_snapshot
+from estimates import build_estimates_snapshot, has_estimate_data
 
 # AWS
 ssm_client = boto3.client("ssm")
@@ -375,32 +375,40 @@ def _to_ddb(obj):
     return obj
 
 
-def _persist_enrichment_snapshot_to_latest(stock: dict):
+def _persist_enrichment_snapshot_to_latest(stock: dict, profile_fetched: bool = False):
     """
     Carry this run's estimate snapshot and implied share count to the stock's
     LATEST item so Step 7 can use them even if the stock fails the full screen
     (GRACE stocks bypass Steps 4-6). Conditional on LATEST existing, so only
     tracked stocks are touched. Failures only warn: the previous snapshot stays
     (visibly stale via estimates_as_of).
+
+    A failed or empty FMP fetch never erases a previously stored value: an
+    all-empty snapshot is not written, and shares_implied is removed only when
+    the profile was actually returned (profile_fetched) but unusable.
     """
     symbol = stock.get("symbol", "")
     table_name = os.environ.get("DATA_TABLE_NAME", "")
     if not symbol or not table_name:
         return
-    sets = ["estimates = :e"]
-    vals = {":e": _to_ddb(stock.get("estimates"))}
-    remove = ""
+    sets, vals, remove = [], {}, ""
+    if has_estimate_data(stock.get("estimates")):
+        sets.append("estimates = :e")
+        vals[":e"] = _to_ddb(stock["estimates"])
     if stock.get("shares_implied") is not None:
         sets.append("shares_implied = :s")
         vals[":s"] = _to_ddb(stock["shares_implied"])
-    else:
-        remove = " REMOVE shares_implied"
+    elif profile_fetched:
+        remove = "REMOVE shares_implied"
+    if not sets and not remove:
+        return
     try:
         boto3.resource("dynamodb").Table(table_name).update_item(
             Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
-            UpdateExpression="SET " + ", ".join(sets) + remove,
+            UpdateExpression=" ".join(
+                x for x in ("SET " + ", ".join(sets) if sets else "", remove) if x),
             ConditionExpression="attribute_exists(PK)",
-            ExpressionAttributeValues=vals,
+            **({"ExpressionAttributeValues": vals} if vals else {}),
         )
     except Exception as e:
         code = getattr(e, "response", {}).get("Error", {}).get("Code", "")

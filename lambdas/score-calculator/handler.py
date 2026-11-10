@@ -38,7 +38,7 @@ import boto3
 from et_date import eastern_date, eastern_today, days_tracked
 
 # Real New York market-clock helpers: decide whether a daily bar is final.
-from estimates import build_estimates_snapshot
+from estimates import build_estimates_snapshot, has_estimate_data
 from market_time import (
     SKIP_SETTLED_AFTER, is_bar_final, latest_final_session_date,
     new_york_date, new_york_dt, parse_utc_iso,
@@ -1023,6 +1023,34 @@ def backfill_from_latest(stocks: list):
                         print(f"    Backfilled {symbol} from DynamoDB (fundamental_score={existing.get('fundamental_score')})")
                 except Exception as e:
                     print(f"    Warning: Could not backfill {symbol}: {e}")
+        _carry_forward_enrichment(_table, stocks)
+
+
+def _carry_forward_enrichment(table, stocks: list):
+    """
+    LATEST is rewritten whole each run, so a stock whose FMP profile/estimates
+    fetch failed today (no shares_implied / empty snapshot) would lose the values
+    stored yesterday. Carry them forward instead; estimates_as_of keeps showing
+    the snapshot's real age.
+    """
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        if not symbol or (stock.get("shares_implied") is not None
+                          and has_estimate_data(stock.get("estimates"))):
+            continue
+        try:
+            prev = table.get_item(
+                Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                ProjectionExpression="shares_implied, estimates",
+            ).get("Item", {})
+        except Exception as e:
+            print(f"    Warning: Could not carry forward {symbol}: {type(e).__name__}")
+            continue
+        if stock.get("shares_implied") is None and prev.get("shares_implied") is not None:
+            stock["shares_implied"] = float(prev["shares_implied"])
+        prev_est = _from_decimal(prev.get("estimates"))
+        if not has_estimate_data(stock.get("estimates")) and has_estimate_data(prev_est):
+            stock["estimates"] = prev_est
 
 
 def handler(event, context):

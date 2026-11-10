@@ -11,6 +11,9 @@ import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
 import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
@@ -522,6 +525,25 @@ export class StockScreenerStack extends cdk.Stack {
     });
     stateMachine.grantStartExecution(dailyTriggerRole);
 
+    // A missed run must not be silent: if Scheduler cannot start the pipeline
+    // (after its bounded retries) it parks the event here, and the alarm below
+    // emails the existing alerts topic. SQS + one alarm: effectively free.
+    const scheduleDlq = new sqs.Queue(this, 'DailyScheduleDlq', {
+      queueName: 'stock-screener-schedule-dlq',
+      retentionPeriod: cdk.Duration.days(14),
+      enforceSSL: true,
+    });
+    scheduleDlq.grantSendMessages(dailyTriggerRole);
+    new cloudwatch.Alarm(this, 'DailyScheduleFailedAlarm', {
+      alarmName: 'stock-screener-schedule-failed',
+      alarmDescription: 'EventBridge Scheduler failed to start the daily pipeline (event landed in the DLQ)',
+      metric: scheduleDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
     new scheduler.CfnSchedule(this, 'DailySchedule', {
       name: 'stock-screener-daily-trigger',
       description: 'Triggers the pipeline weekdays at 5 PM America/New_York (DST-aware), after the 4 PM close',
@@ -532,6 +554,7 @@ export class StockScreenerStack extends cdk.Stack {
         arn: stateMachine.stateMachineArn,
         roleArn: dailyTriggerRole.roleArn,
         input: '{}',
+        deadLetterConfig: { arn: scheduleDlq.queueArn },
         // Bounded retries: a transient StartExecution failure must not start a run hours late.
         retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 3600 },
       },
