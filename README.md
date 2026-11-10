@@ -14,10 +14,10 @@ A value stock screening application that combines fundamental financial analysis
 
 ## Architecture
 
-AWS serverless — runs daily Mon-Fri at market close (4 PM ET / 8 PM UTC), costs under $5/month.
+AWS serverless — runs daily Mon-Fri at 5 PM ET (DST-aware, after the 4 PM close), costs under $5/month.
 
 ```
-EventBridge (Mon-Fri 4PM ET) → Step Functions (8-step pipeline)
+EventBridge Scheduler (Mon-Fri 5PM America/New_York) → Step Functions (8-step pipeline)
   Step 1: EDGAR Bulk Fundamentals (~10 API calls → 5,097 companies)
   Step 2: Pre-Screen (D/E, QR, OpMargin, EPS Growth, Rev Growth → ~69 pass)
   Step 3: Polygon Bulk Prices (1 call) + Finnhub Metrics (3 calls/stock for ~69 candidates)

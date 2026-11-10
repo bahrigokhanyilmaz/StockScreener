@@ -26,6 +26,7 @@ Environment Variables:
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -35,6 +36,13 @@ import boto3
 # US-Eastern business-date helpers (dependency-free). Business dates
 # (first_tracked, SCORE#{date}, last_passed) are keyed on the US market day.
 from et_date import eastern_date, eastern_today, days_tracked
+
+# Real New York market-clock helpers: decide whether a daily bar is final.
+from estimates import build_estimates_snapshot
+from market_time import (
+    SKIP_SETTLED_AFTER, is_bar_final, latest_final_session_date,
+    new_york_date, new_york_dt, parse_utc_iso,
+)
 
 # DynamoDB client
 dynamodb = boto3.resource("dynamodb")
@@ -104,118 +112,205 @@ def enrich_with_sic_industry(stocks: list):
     print(f"  Mapped {mapped}/{len(stocks)} stocks to SIC industries")
 
 
-def backfill_price_history(scored_stocks: list, today: str):
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _fetch_fmp_bars(symbol: str, from_date: str, to_date: str, key: str):
+    """One FMP historical-price-eod/full call. Returns the parsed JSON (newest first)."""
+    import urllib.request
+    url = (f"https://financialmodelingprep.com/stable/historical-price-eod/full"
+           f"?symbol={symbol}&from={from_date}&to={to_date}&apikey={key}")
+    req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+
+
+def normalize_bars(raw) -> tuple:
     """
-    Fetch 30-day price history from FMP for each passing stock.
+    Validate FMP rows. Returns (bars_ascending, skipped_count).
+    A row needs a YYYY-MM-DD date, numeric open/high/low/close and close > 0.
+    """
+    if not isinstance(raw, list):
+        return [], 0
+    bars, skipped = [], 0
+    for row in raw:
+        try:
+            if (not isinstance(row, dict) or not _DATE_RE.match(str(row.get("date", "")))
+                    or not all(_is_num(row.get(k)) for k in ("open", "high", "low", "close"))
+                    or row["close"] <= 0):
+                skipped += 1
+                continue
+            vol = row.get("volume")
+            bars.append({
+                "d": row["date"],
+                "o": round(row["open"], 2),
+                "h": round(row["high"], 2),
+                "l": round(row["low"], 2),
+                "c": round(row["close"], 2),
+                "v": vol if _is_num(vol) else 0,
+            })
+        except Exception:
+            skipped += 1
+    bars.sort(key=lambda b: b["d"])
+    return bars, skipped
 
-    Stores as PRICE_HISTORY#{ticker} in DynamoDB with a list of daily bars.
-    Only backfills if the stock doesn't already have recent price history
-    (avoids redundant calls on subsequent runs).
 
-    FMP /stable/historical-price-eod/full: 300 calls/min.
-    For ~20 stocks = ~20 seconds with 1s pacing.
-    Returns: symbol, date, open, high, low, close, volume, change, changePercent, vwap
+def select_final_bars(bars: list, now_utc) -> list:
+    """Keep only bars whose session is complete as of now_utc (ascending by date)."""
+    final = [b for b in bars if isinstance(b, dict) and is_bar_final(b.get("d"), now_utc)]
+    final.sort(key=lambda b: b["d"])
+    return final
+
+
+def should_skip_backfill(existing: dict, now_utc) -> bool:
+    """
+    True only when the stored series is final AND was fetched after the vendor
+    settle time on the session date, so a re-run needs no FMP call. Legacy items
+    (no last_final_date / fetched_at) are always refetched.
+    """
+    lfd = existing.get("last_final_date")
+    fetched = parse_utc_iso(existing.get("fetched_at"))
+    if not lfd or fetched is None:
+        return False
+    if lfd < latest_final_session_date(now_utc):
+        return False
+    fd = new_york_date(fetched)
+    return fd > lfd or (fd == lfd and new_york_dt(fetched).time() >= SKIP_SETTLED_AFTER)
+
+
+def _bar_close(bar):
+    """(date, close) for a stored bar, or None if unusable."""
+    try:
+        c = float(bar.get("c"))
+        d = bar.get("d")
+        return (d, c) if d and c > 0 else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _fallback_bar(existing: dict, now_utc):
+    """
+    Newest trustworthy stored bar. Items with last_final_date were written by the
+    final-bars-only code and are trusted. Legacy items may hold a partial bar on
+    their last run date, so bars on/after that date are never re-adopted.
+    """
+    bars = [b for b in (existing.get("bars") or []) if isinstance(b, dict)]
+    if not existing.get("last_final_date"):
+        cutoff = existing.get("last_backfill") or new_york_date(now_utc)
+        bars = [b for b in bars if str(b.get("d", "")) < cutoff]
+    final = select_final_bars(bars, now_utc)
+    return _bar_close(final[-1]) if final else None
+
+
+def backfill_price_history(scored_stocks: list, today: str, now_utc=None):
+    """
+    Maintain PRICE_HISTORY#{ticker} (30-day OHLCV) and sync each stock's canonical
+    price from it.
+
+    Only FINAL bars are stored (see market_time.is_bar_final), so every consumer
+    can treat the stored series as complete. price = close of the newest final
+    bar, price_as_of = that bar's date, and market_cap = shares_implied * price
+    when shares_implied is known.
+
+    FMP /stable/historical-price-eod/full: 300 calls/min (1s pacing is very safe).
+    Returns {symbol: close} for symbols that have a canonical price.
     """
     table_name = os.environ.get("DATA_TABLE_NAME", "")
     if not table_name:
-        return
+        return {}
 
-    import urllib.request
     from datetime import timedelta
 
+    def clock():
+        return now_utc if now_utc is not None else datetime.now(timezone.utc)
+
     table = dynamodb.Table(table_name)
-    today_dt = datetime.strptime(today, "%Y-%m-%d")
-    from_date = (today_dt - timedelta(days=45)).strftime("%Y-%m-%d")  # 45 days to ensure 30 trading days
+    ny_today = new_york_date(clock())
+    from_date = (datetime.strptime(ny_today, "%Y-%m-%d") - timedelta(days=45)).strftime("%Y-%m-%d")
 
     symbols = [s.get("symbol", "") for s in scored_stocks if s.get("symbol")]
     print(f"  Backfilling 30-day price history for {len(symbols)} stocks...")
 
     fmp_key = get_fmp_key()
 
-    # symbol -> most recent close from price history. Used to keep LATEST.price
-    # (and therefore "Since Mark") in sync with the same series the "Daily"
-    # column uses, so all price-derived figures come from ONE source.
-    latest_close = {}
+    # symbol -> (bar_date, close) of the newest final bar. Recorded only once the
+    # bar is durably stored (or already stored), so price never runs ahead of the series.
+    canonical = {}
 
     for i, symbol in enumerate(symbols):
-        # Check if we already have recent history (skip if last backfill was today)
+        existing = {}
         try:
             existing = table.get_item(
                 Key={"PK": f"PRICE_HISTORY#{symbol}", "SK": "DAILY"},
-                ProjectionExpression="last_backfill, bars",
+                ProjectionExpression="last_final_date, fetched_at, last_backfill, bars",
             ).get("Item", {})
-
-            if existing.get("last_backfill") == today:
-                print(f"    {symbol}: already backfilled today, skipping")
-                # Still capture the latest close so price stays consistent.
-                bars_existing = existing.get("bars") or []
-                if bars_existing:
-                    try:
-                        latest_close[symbol] = float(bars_existing[-1].get("c"))
-                    except (TypeError, ValueError):
-                        pass
-                continue
-        except Exception:
-            pass
-
-        # Fetch from FMP
-        try:
-            url = (f"https://financialmodelingprep.com/stable/historical-price-eod/full"
-                   f"?symbol={symbol}&from={from_date}&to={today}&apikey={fmp_key}")
-            req = urllib.request.Request(url, headers={"User-Agent": "StockScreener/2.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                bars_data = json.loads(resp.read().decode())
-
-            if bars_data and isinstance(bars_data, list):
-                # FMP returns: symbol, date, open, high, low, close, volume, change, changePercent, vwap
-                price_history = []
-                for bar in bars_data:
-                    price_history.append({
-                        "d": bar.get("date", ""),
-                        "o": round(bar.get("open", 0), 2),
-                        "h": round(bar.get("high", 0), 2),
-                        "l": round(bar.get("low", 0), 2),
-                        "c": round(bar.get("close", 0), 2),
-                        "v": bar.get("volume", 0),
-                    })
-
-                if price_history:
-                    # Sort by date ascending (FMP returns newest first)
-                    price_history.sort(key=lambda x: x["d"])
-
-                    # Capture the most recent close to sync LATEST.price.
-                    latest_close[symbol] = price_history[-1]["c"]
-
-                    # Write to DynamoDB
-                    table.put_item(Item=_to_decimal({
-                        "PK": f"PRICE_HISTORY#{symbol}",
-                        "SK": "DAILY",
-                        "symbol": symbol,
-                        "bars": price_history,
-                        "bar_count": len(price_history),
-                        "from_date": from_date,
-                        "to_date": today,
-                        "last_backfill": today,
-                    }))
-                    print(f"    {symbol}: {len(price_history)} daily bars stored")
-                else:
-                    print(f"    {symbol}: no bars returned")
-            else:
-                print(f"    {symbol}: empty response from FMP")
         except Exception as e:
-            print(f"    {symbol}: error — {e}")
+            print(f"    {symbol}: WARN could not read existing history ({type(e).__name__})")
+
+        if should_skip_backfill(existing, clock()):
+            print(f"    {symbol}: final bars already stored, skipping")
+            bars_existing = [b for b in (existing.get("bars") or []) if isinstance(b, dict)]
+            bc = _bar_close(bars_existing[-1]) if bars_existing else None
+            if bc:
+                canonical[symbol] = bc
+            continue
+
+        stored = False
+        try:
+            raw = _fetch_fmp_bars(symbol, from_date, ny_today, fmp_key)
+            fetched_at = clock().strftime("%Y-%m-%dT%H:%M:%SZ")
+            bars, skipped = normalize_bars(raw)
+            final = select_final_bars(bars, clock())
+            if skipped:
+                print(f"    {symbol}: skipped {skipped} invalid bar(s)")
+            if final:
+                newest = final[-1]["d"]
+                table.put_item(Item=_to_decimal({
+                    "PK": f"PRICE_HISTORY#{symbol}",
+                    "SK": "DAILY",
+                    "symbol": symbol,
+                    "bars": final,
+                    "bar_count": len(final),
+                    "from_date": from_date,
+                    "to_date": newest,
+                    "last_final_date": newest,
+                    "fetched_at": fetched_at,
+                }))
+                canonical[symbol] = (newest, final[-1]["c"])
+                stored = True
+                print(f"    {symbol}: {len(final)} final daily bars stored")
+            else:
+                print(f"    {symbol}: no final bars returned")
+        except Exception as e:
+            # Never log the message: urllib/requests errors can embed the URL (API key).
+            print(f"    {symbol}: error — {type(e).__name__}")
+
+        if not stored:
+            fb = _fallback_bar(existing, clock())
+            if fb:
+                canonical[symbol] = fb
 
         # FMP rate limit: 300 calls/min → 1s pacing is very safe
         if i < len(symbols) - 1:
             time.sleep(1)
 
-    # Sync each stock's price to the latest close from its history, so Price,
-    # "Since Mark", and "Daily" all derive from the SAME series (no vendor-lag mismatch).
+    # Sync price / price_as_of / market_cap so Price, "Since Mark" and "Daily"
+    # all derive from the SAME final-bar series.
     for s in scored_stocks:
-        c = latest_close.get(s.get("symbol"))
-        if c is not None:
-            s["price"] = c
-    return latest_close
+        bc = canonical.get(s.get("symbol"))
+        if bc is None:
+            continue
+        bar_date, close = bc
+        s["price"] = close
+        s["price_as_of"] = bar_date
+        shares = s.get("shares_implied")
+        if _is_num(shares) and shares > 0:
+            s["market_cap"] = round(shares * close)
+    return {sym: c for sym, (_, c) in canonical.items()}
 
 
 # Risk flag penalties — severe issues get hard score reductions
@@ -621,6 +716,13 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
             now_iso = datetime.now(timezone.utc).isoformat()
             first_tracked = first_tracked_dates.get(symbol, today)
 
+            # Estimate snapshot: always a full map (None fields when never enriched).
+            # estimates_as_of is the New York date of the FMP fetch, same calendar
+            # as price_as_of; a carried-over snapshot therefore shows as stale.
+            snapshot = stock.get("estimates") or build_estimates_snapshot(None, None, None)
+            fetched_dt = parse_utc_iso(snapshot.get("fetched_at"))
+            estimates_as_of = new_york_date(fetched_dt) if fetched_dt else None
+
             # Item 1: LATEST (current state — overwritten each run)
             # Persist ALL screener metrics so the dashboard can display them
             latest_item = {
@@ -634,7 +736,10 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "sector": stock.get("sector", ""),
                 "industry": stock.get("industry", ""),
                 "price": stock.get("price"),
+                "price_as_of": stock.get("price_as_of"),
                 "market_cap": stock.get("market_cap"),
+                "shares_implied": stock.get("shares_implied"),
+                "estimates": snapshot,
                 "investability_score": stock.get("investability_score"),
                 "fundamental_score": stock.get("fundamental_score"),
                 "sentiment_score": stock.get("sentiment", {}).get("sentiment_score"),
@@ -686,6 +791,9 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "fundamental_score": stock.get("fundamental_score"),
                 "sentiment_score": stock.get("sentiment", {}).get("sentiment_score"),
                 "price": stock.get("price"),
+                "price_as_of": stock.get("price_as_of"),
+                "estimates": snapshot,
+                "estimates_as_of": estimates_as_of,
                 "pe_ratio": stock.get("pe_ratio"),
                 "debt_to_equity": stock.get("debt_to_equity"),
                 "risk_flags": stock.get("sentiment", {}).get("risk_flags", []),
@@ -880,6 +988,43 @@ def compute_portfolio_signals(scored_stocks: list, today: str):
     print(f"  Portfolio signals updated")
 
 
+def backfill_from_latest(stocks: list):
+    """
+    For tracked stocks that bypassed Steps 2-4 (came directly from news→sentiment),
+    backfill their fundamental_score, metrics, estimate snapshot and shares_implied
+    from their existing DynamoDB LATEST item.
+    """
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if table_name:
+        _table = dynamodb.Table(table_name)
+        for stock in stocks:
+            if stock.get("fundamental_score") is None:
+                symbol = stock.get("symbol", "")
+                try:
+                    resp = _table.get_item(
+                        Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                        ProjectionExpression="fundamental_score, pe_ratio, peg_ratio, price_to_fcf, "
+                                            "debt_to_equity, quick_ratio, operating_margin, "
+                                            "revenue_growth_yoy, eps_growth_yoy, est_lt_growth, "
+                                            "est_lt_revenue_growth, "
+                                            "forward_pe, interest_coverage_ratio, analyst_recommendation, "
+                                            "target_price_upside, analyst_target_price, market_cap, "
+                                            "company_description, logo, weburl, sector, industry, "
+                                            "estimates, shares_implied",
+                    )
+                    existing = resp.get("Item", {})
+                    if existing:
+                        for key, val in existing.items():
+                            if key not in ("PK", "SK") and stock.get(key) is None:
+                                if isinstance(val, (dict, list)):
+                                    stock[key] = _from_decimal(val)  # nested Decimals break the Lambda JSON response
+                                else:
+                                    stock[key] = float(val) if isinstance(val, (int, float)) or (hasattr(val, 'is_finite') and val.is_finite()) else val
+                        print(f"    Backfilled {symbol} from DynamoDB (fundamental_score={existing.get('fundamental_score')})")
+                except Exception as e:
+                    print(f"    Warning: Could not backfill {symbol}: {e}")
+
+
 def handler(event, context):
     """
     Lambda entry point. Called by Step Functions after sentiment-analyzer.
@@ -908,33 +1053,7 @@ def handler(event, context):
 
     print(f"Calculating investability scores for {len(stocks)} stocks...")
 
-    # For tracked stocks that bypassed Steps 2-4 (came directly from news→sentiment),
-    # backfill their fundamental_score and metrics from their existing DynamoDB LATEST item
-    table_name = os.environ.get("DATA_TABLE_NAME", "")
-    if table_name:
-        _table = dynamodb.Table(table_name)
-        for stock in stocks:
-            if stock.get("fundamental_score") is None:
-                symbol = stock.get("symbol", "")
-                try:
-                    resp = _table.get_item(
-                        Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
-                        ProjectionExpression="fundamental_score, pe_ratio, peg_ratio, price_to_fcf, "
-                                            "debt_to_equity, quick_ratio, operating_margin, "
-                                            "revenue_growth_yoy, eps_growth_yoy, est_lt_growth, "
-                                            "est_lt_revenue_growth, "
-                                            "forward_pe, interest_coverage_ratio, analyst_recommendation, "
-                                            "target_price_upside, analyst_target_price, market_cap, "
-                                            "company_description, logo, weburl, sector, industry",
-                    )
-                    existing = resp.get("Item", {})
-                    if existing:
-                        for key, val in existing.items():
-                            if key not in ("PK", "SK") and stock.get(key) is None:
-                                stock[key] = float(val) if isinstance(val, (int, float)) or (hasattr(val, 'is_finite') and val.is_finite()) else val
-                        print(f"    Backfilled {symbol} from DynamoDB (fundamental_score={existing.get('fundamental_score')})")
-                except Exception as e:
-                    print(f"    Warning: Could not backfill {symbol}: {e}")
+    backfill_from_latest(stocks)
 
     # Load existing risk flag ledgers from DynamoDB (for lifecycle management)
     existing_ledgers = load_existing_risk_ledgers([s.get("symbol", "") for s in stocks])

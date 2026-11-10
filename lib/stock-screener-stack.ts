@@ -10,6 +10,7 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
 import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
@@ -27,7 +28,8 @@ import { PythonFunction } from '@aws-cdk/aws-lambda-python-alpha';
  * 7. Score Calculator — investability score + DynamoDB persistence
  * 8. Alert Checker — threshold monitoring + SNS notifications
  *
- * Triggered daily Mon-Fri at 4PM ET (8PM UTC).
+ * Triggered daily Mon-Fri at 5PM America/New_York (EventBridge Scheduler, DST-aware),
+ * after the 4PM close so Step 7 stores only final daily bars.
  */
 export class StockScreenerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -508,21 +510,32 @@ export class StockScreenerStack extends cdk.Stack {
     });
 
     // ==========================================
-    // EVENTBRIDGE — Daily Schedule
+    // EVENTBRIDGE SCHEDULER — Daily Schedule
     // ==========================================
-    const dailyRule = new events.Rule(this, 'DailyTrigger', {
-      ruleName: 'stock-screener-daily-trigger',
-      schedule: events.Schedule.cron({
-        minute: '0',
-        hour: '20',
-        weekDay: 'MON-FRI',
-      }),
-      description: 'Triggers pipeline daily at market close (4 PM ET / 8 PM UTC)',
+    // Scheduler (not an Events rule) because rules are UTC-only: 20:00 UTC is
+    // 4 PM EDT but 3 PM EST, i.e. BEFORE the close for half the year, which let
+    // Step 7 store partial bars. Scheduler takes an IANA timezone, so 5 PM ET
+    // holds across DST. 5 PM leaves ~1h after the close for FMP's EOD bar to
+    // settle; Step 7 itself starts ~12-15 minutes later.
+    const dailyTriggerRole = new iam.Role(this, 'DailyTriggerRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
     });
+    stateMachine.grantStartExecution(dailyTriggerRole);
 
-    dailyRule.addTarget(new targets.SfnStateMachine(stateMachine, {
-      input: events.RuleTargetInput.fromObject({}),
-    }));
+    new scheduler.CfnSchedule(this, 'DailySchedule', {
+      name: 'stock-screener-daily-trigger',
+      description: 'Triggers the pipeline weekdays at 5 PM America/New_York (DST-aware), after the 4 PM close',
+      scheduleExpression: 'cron(0 17 ? * MON-FRI *)',
+      scheduleExpressionTimezone: 'America/New_York',
+      flexibleTimeWindow: { mode: 'OFF' },
+      target: {
+        arn: stateMachine.stateMachineArn,
+        roleArn: dailyTriggerRole.roleArn,
+        input: '{}',
+        // Bounded retries: a transient StartExecution failure must not start a run hours late.
+        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 3600 },
+      },
+    });
 
     // Monthly tag discovery (1st of each month at 6 AM UTC)
     const monthlyDiscoveryRule = new events.Rule(this, 'MonthlyTagDiscovery', {

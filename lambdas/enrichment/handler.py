@@ -44,6 +44,8 @@ from datetime import datetime, timezone, timedelta, date
 import boto3
 import requests as http_requests
 
+from estimates import build_estimates_snapshot
+
 # AWS
 ssm_client = boto3.client("ssm")
 
@@ -92,7 +94,7 @@ def get_last_trading_day(polygon_key: str = None) -> str:
     calendar.
 
     Polygon free tier publishes the previous day's data by ~5 AM UTC and our
-    pipeline runs at 8 PM UTC, so T-1 normally has data — unless T-1 was a
+    pipeline runs at 5 PM New York time, so T-1 normally has data — unless T-1 was a
     holiday/weekend, in which case we step further back.
     """
     target = datetime.now(timezone.utc).date() - timedelta(days=1)
@@ -331,8 +333,9 @@ def local_prefilter(stocks: list, prices: dict) -> tuple[list, list, dict, dict,
 
 def _refresh_latest_valuation(stock: dict):
     """Update a dropped stock's LATEST item with freshly-recomputed valuation
-    metrics (price, pe_ratio, price_to_fcf). Only if a LATEST item already exists
-    (i.e. the stock is currently tracked)."""
+    metrics (pe_ratio, price_to_fcf). Only if a LATEST item already exists
+    (i.e. the stock is currently tracked). Does NOT write price: Step 7 is the
+    single writer of LATEST.price / price_as_of."""
     symbol = stock.get("symbol", "")
     table_name = os.environ.get("DATA_TABLE_NAME", "")
     if not symbol or not table_name:
@@ -345,7 +348,7 @@ def _refresh_latest_valuation(stock: dict):
         if not existing:
             return
         sets, vals = [], {}
-        for field in ("price", "pe_ratio", "price_to_fcf"):
+        for field in ("pe_ratio", "price_to_fcf"):
             v = stock.get(field)
             if v is not None:
                 sets.append(f"{field} = :{field}")
@@ -358,6 +361,51 @@ def _refresh_latest_valuation(stock: dict):
             )
     except Exception as e:
         print(f"    {symbol}: could not refresh LATEST valuation ({e})")
+
+
+def _to_ddb(obj):
+    """Floats -> Decimal (recursively) for DynamoDB."""
+    from decimal import Decimal
+    if isinstance(obj, float):
+        return Decimal(str(round(obj, 6)))
+    if isinstance(obj, dict):
+        return {k: _to_ddb(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_ddb(v) for v in obj]
+    return obj
+
+
+def _persist_enrichment_snapshot_to_latest(stock: dict):
+    """
+    Carry this run's estimate snapshot and implied share count to the stock's
+    LATEST item so Step 7 can use them even if the stock fails the full screen
+    (GRACE stocks bypass Steps 4-6). Conditional on LATEST existing, so only
+    tracked stocks are touched. Failures only warn: the previous snapshot stays
+    (visibly stale via estimates_as_of).
+    """
+    symbol = stock.get("symbol", "")
+    table_name = os.environ.get("DATA_TABLE_NAME", "")
+    if not symbol or not table_name:
+        return
+    sets = ["estimates = :e"]
+    vals = {":e": _to_ddb(stock.get("estimates"))}
+    remove = ""
+    if stock.get("shares_implied") is not None:
+        sets.append("shares_implied = :s")
+        vals[":s"] = _to_ddb(stock["shares_implied"])
+    else:
+        remove = " REMOVE shares_implied"
+    try:
+        boto3.resource("dynamodb").Table(table_name).update_item(
+            Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+            UpdateExpression="SET " + ", ".join(sets) + remove,
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeValues=vals,
+        )
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if code != "ConditionalCheckFailedException":  # untracked stock: expected, silent
+            print(f"    {symbol}: WARN could not persist estimate snapshot ({type(e).__name__})")
 
 
 # ==========================================
@@ -833,6 +881,21 @@ def enrich_with_fmp(stock: dict, ratios: dict, growth: dict,
         if avg_vol:
             stock["average_volume"] = avg_vol
 
+    # Implied share count = profile marketCap / profile price (same quote instant),
+    # so Step 7 can recompute market_cap against the canonical bar price. Only when
+    # both are positive: never divide by a different-instant (e.g. Polygon T-1) price.
+    p_mc = profile.get("marketCap") if profile else None
+    p_px = profile.get("price") if profile else None
+    if (isinstance(p_mc, (int, float)) and not isinstance(p_mc, bool) and p_mc > 0
+            and isinstance(p_px, (int, float)) and not isinstance(p_px, bool) and p_px > 0):
+        stock["shares_implied"] = p_mc / p_px
+    else:
+        stock["shares_implied"] = None
+
+    # Daily estimate snapshot (no extra FMP calls: reuses data fetched above).
+    stock["estimates"] = build_estimates_snapshot(
+        estimates, targets, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
     # Forward PEG: forward_pe / (est_lt_growth * 100). Both sides forward-looking.
     # Set to None (blank) when forward P/E or forward growth aren't positive.
     stock["peg_ratio"] = compute_forward_peg(
@@ -954,6 +1017,7 @@ def handler(event, context):
         # Apply FMP data to stock
         enrich_with_fmp(stock, ratios, growth, estimates, targets, profile, grades_score)
         fmp_enriched += 1
+        _persist_enrichment_snapshot_to_latest(stock)
 
         if (i + 1) % 10 == 0:
             print(f"    [{i+1}/{len(candidates)}] enriched {fmp_enriched}")

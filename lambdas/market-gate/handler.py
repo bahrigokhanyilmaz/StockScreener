@@ -7,7 +7,8 @@ skips the entire pipeline — saving a full run's worth of EDGAR/FMP/Polygon/Bed
 cost on days that would only re-process stale (unchanged) prices.
 
 Why this exists:
-    The EventBridge schedule fires Mon-Fri but has NO awareness of market holidays
+    The EventBridge Scheduler schedule (5 PM America/New_York) fires Mon-Fri but has
+    NO awareness of market holidays
     (e.g. Labor Day, Thanksgiving). On those days prices don't advance, so a run
     adds no new market data yet still incurs Bedrock/API cost. This gate stops that.
 

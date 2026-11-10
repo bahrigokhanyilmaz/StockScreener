@@ -15,6 +15,7 @@ Exit code: 0 if no HIGH/MED issues, 1 otherwise (so it can gate CI / hooks).
 The core logic lives in audit_tracked_stocks() so tests can call it directly
 against a mocked table.
 """
+import os
 import sys
 import json
 from datetime import datetime, timezone
@@ -22,12 +23,17 @@ from datetime import datetime, timezone
 import boto3
 from boto3.dynamodb.conditions import Attr
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lambdas", "shared"))
+from market_time import (  # noqa: E402
+    is_bar_final, latest_final_session_date, new_york_date, parse_utc_iso, previous_weekday,
+)
+
 
 def _f(v):
     return float(v) if v is not None else None
 
 
-def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
+def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None, now_utc=None):
     """
     Pure function: given the list of LATEST items, return a list of issues.
     Each issue is a dict: {severity, symbol, message}. No AWS calls here so it's
@@ -41,10 +47,13 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
                      that may indicate bad source data.
 
     price_bars_by_symbol: optional {symbol: [bar,...]} for range checks.
+    now_utc: audit time for the bar-finality checks (default: current time).
     """
     if today is None:
         today = datetime.now(timezone.utc).date()
     price_bars_by_symbol = price_bars_by_symbol or {}
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
     issues = []
 
     def flag(sym, sev, msg):
@@ -153,6 +162,21 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None):
                     flag(sym, "MED",
                          f"price {price} != latest price-history close {latest_bar_close} "
                          f"({diff_pct:.1f}% apart) — Price/Since-Mark out of sync with Daily")
+        # Bar finality / canonical-price provenance. Only when the newest bar carries
+        # a date (bars are stored date-ascending); runs only if bars are present.
+        nb = bars[-1] if bars else None
+        nb_d = nb.get("d") if isinstance(nb, dict) else None
+        if isinstance(nb_d, str) and len(nb_d) == 10:
+            lu_dt = parse_utc_iso(lu)
+            if lu_dt is not None and nb_d == new_york_date(lu_dt) and not is_bar_final(nb_d, lu_dt):
+                flag(sym, "MED", f"latest bar {nb_d} may be provisional (written {lu}, before it was final)")
+            pao = s.get("price_as_of")
+            if pao is None:
+                flag(sym, "ODD", "price_as_of missing (written before canonical-price rollout?)")
+            elif is_bar_final(nb_d, now_utc) and pao != nb_d:
+                flag(sym, "MED", f"price_as_of {pao} != latest bar date {nb_d}")
+            if nb_d < previous_weekday(latest_final_session_date(now_utc)):
+                flag(sym, "ODD", f"price bars stale: newest bar {nb_d}")
         # PEG present but its inputs (forward P/E or growth) missing — shouldn't happen.
         if peg is not None and (fpe is None or lt is None):
             flag(sym, "ODD", f"PEG={peg} present but forward_pe={fpe} / est_lt_growth={lt} missing")

@@ -10,6 +10,8 @@ This tests the already-backfilled-today path, which reads existing bars from the
 table and syncs price without any HTTP call.
 """
 import os
+from datetime import datetime, timezone
+
 import pytest
 from decimal import Decimal
 from conftest import load_handler
@@ -29,7 +31,8 @@ def test_price_synced_to_latest_bar_close(dynamodb_table, monkeypatch):
     # Existing price history already backfilled today, latest close 797.64.
     dynamodb_table.put_item(Item={
         "PK": "PRICE_HISTORY#MU", "SK": "DAILY", "symbol": "MU",
-        "last_backfill": today,
+        "last_final_date": today,
+        "fetched_at": "2026-11-04T22:30:00Z",
         "bars": [
             {"d": "2026-11-03", "c": Decimal("855.10")},
             {"d": "2026-11-04", "c": Decimal("797.64")},
@@ -38,7 +41,8 @@ def test_price_synced_to_latest_bar_close(dynamodb_table, monkeypatch):
 
     # Stock still carries the stale Polygon price.
     stocks = [{"symbol": "MU", "price": 855.10}]
-    latest_close = sc.backfill_price_history(stocks, today)
+    latest_close = sc.backfill_price_history(
+        stocks, today, now_utc=datetime(2026, 11, 4, 23, 0, tzinfo=timezone.utc))  # 18:00 EST
 
     assert latest_close["MU"] == 797.64
     assert stocks[0]["price"] == 797.64  # synced to the latest bar

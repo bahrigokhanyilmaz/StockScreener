@@ -170,3 +170,78 @@ def test_odd_does_not_gate_exit_semantics():
     assert any("differ" in i["message"] for i in issues if i["severity"] == "ODD")
     gating = [i for i in issues if i["severity"] in ("HIGH", "MED")]
     assert gating == []
+
+
+# --- Bar finality / canonical price provenance ---
+from datetime import datetime as _dt, timezone as _tz  # noqa: E402
+
+
+def _bar(d, c=40.0):
+    return {"d": d, "o": c, "h": c, "l": c, "c": c, "v": 1}
+
+
+def _bars_ending(d, c=40.0):
+    return [_bar("2026-11-03", c), _bar("2026-11-04", c), _bar("2026-11-05", c),
+            _bar("2026-11-06", c), _bar(d, c)]
+
+
+NOW_AFTER = _dt(2026, 11, 9, 22, 30, tzinfo=_tz.utc)  # 17:30 EST Monday
+
+
+def _audit(s, bars, now=NOW_AFTER):
+    return audit.audit_tracked_stocks([s], today=_dt(2026, 11, 9).date(),
+                                      price_bars_by_symbol={"GOOD": bars}, now_utc=now)
+
+
+def _msgs(issues, sev):
+    return [i["message"] for i in issues if i["severity"] == sev]
+
+
+@pytest.mark.regression
+def test_provisional_latest_bar_flagged_med_hlio_scenario():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T20:25:42Z"   # 15:25 EST, before the close
+    s["price_as_of"] = "2026-11-09"
+    assert any("provisional" in m for m in _msgs(_audit(s, _bars_ending("2026-11-09")), "MED"))
+
+
+@pytest.mark.unit
+def test_final_latest_bar_not_flagged():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T22:15:00Z"   # 17:15 EST
+    s["price_as_of"] = "2026-11-09"
+    assert _audit(s, _bars_ending("2026-11-09")) == []
+
+
+@pytest.mark.unit
+def test_unparseable_last_updated_skips_provisional_rule():
+    s = _valid_stock()
+    s["last_updated"] = "garbage"
+    s["price_as_of"] = "2026-11-09"
+    assert not any("provisional" in m for m in _msgs(_audit(s, _bars_ending("2026-11-09")), "MED"))
+
+
+@pytest.mark.unit
+def test_price_as_of_mismatch_flagged_med():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T22:15:00Z"
+    s["price_as_of"] = "2026-11-06"
+    assert any("price_as_of" in m for m in _msgs(_audit(s, _bars_ending("2026-11-09")), "MED"))
+
+
+@pytest.mark.unit
+def test_price_as_of_missing_is_odd_not_gating():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T22:15:00Z"
+    issues = _audit(s, _bars_ending("2026-11-09"))
+    assert any("price_as_of missing" in m for m in _msgs(issues, "ODD"))
+    assert not [i for i in issues if i["severity"] in ("HIGH", "MED")]
+
+
+@pytest.mark.unit
+def test_stale_bars_flagged_odd():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T22:15:00Z"
+    s["price_as_of"] = "2026-11-05"
+    issues = _audit(s, [_bar(d) for d in ("2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05")])
+    assert any("stale" in m for m in _msgs(issues, "ODD"))

@@ -13,7 +13,7 @@ Principle #14), the suite MUST pass before every deploy.
 ## Run
 
 ```bash
-./scripts/run_tests.sh                 # everything
+./scripts/run_tests.sh                 # everything (pytest, then Jest for CDK)
 ./scripts/run_tests.sh -m regression   # only past-bug regression tests
 ./scripts/run_tests.sh -m unit         # only fast unit tests
 ./scripts/run_tests.sh -m integration  # cross-step / DynamoDB tests
@@ -27,6 +27,13 @@ Principle #14), the suite MUST pass before every deploy.
 | `test_tracking_preservation.py` | `mark_price`/`mark_date`/`first_tracked` survive the alert-checker (Step 8) TRACKING rewrite (regression: mark wipe + Days reset) |
 | `test_market_gate.py` | Step 0 skips weekends/holidays, proceeds on trading days, fails open on API error |
 | `test_screening_filters.py` | `apply_filter`: missing data = FAIL, percent_as_decimal conversion |
+| `test_market_time.py` | `market_time`: NY clock across EDT/EST, 16:15 bar-finality boundary, weekends, DST days, vendored-copy equality |
+| `test_bar_backfill.py` | Step 7 stores only FINAL bars; skip/settle rules; FMP error and write-failure fallbacks; legacy items; `market_cap` recompute (regression: HLIO partial bar frozen) |
+| `test_price_sync.py` | Price synced to the newest final bar close |
+| `test_estimates.py` | Estimate snapshot builder, `eps_revision_pct`, enrichment `shares_implied`/snapshot persistence, Step 7 `price_as_of`/`estimates` persistence |
+| `test_repair_provisional_bars.py` | Repair script: dry-run default (no writes), conditional `--apply`, key redaction, mark warning |
+| `test_data_integrity.py` | Audit invariants incl. provisional-bar, `price_as_of` and stale-bar checks |
+| `test/stock-screener.test.ts` (Jest) | CDK: one `AWS::Scheduler::Schedule` (5 PM America/New_York), no old Events rule |
 
 ## How the tests import Lambdas
 

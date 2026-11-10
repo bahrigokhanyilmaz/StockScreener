@@ -40,7 +40,7 @@ Always keep README and steering docs updated without being asked.
 ### 8-Step Pipeline
 
 ```
-EventBridge (Mon-Fri 4PM ET / 8PM UTC)
+EventBridge Scheduler (Mon-Fri 5PM America/New_York, DST-aware)
     → Step Functions (stock-screener-pipeline)
         → Step 0: Market Gate (is US market open today? skip weekends/holidays → Choice, instant)
         → Step 1: EDGAR Bulk Fundamentals (~10 calls → 5,097 companies, ~3 min)
@@ -64,7 +64,8 @@ Total: ~12-15 minutes per run.
   - Polygon `/v1/marketstatus/upcoming` holiday calendar — if today is listed as `closed` for NYSE/NASDAQ, the market is closed. Data-driven, self-maintaining (no hardcoded holiday list).
 - Returns `{"market_open": bool, "reason", "today"}`. A Step Functions `Choice` (`MarketOpen?`) routes: closed → `MarketClosed` (Succeed, pipeline skipped, zero cost); open → full pipeline.
 - Fail-open: if the Polygon call errors, it proceeds (never skips a real trading day over a transient API error). Weekend check runs regardless.
-- **Reasoning:** EventBridge fires Mon-Fri but has no holiday awareness. On holidays (e.g. Labor Day) prices don't advance, so a run adds no new market data yet still incurs Bedrock/API cost. This gate stops the no-op spend. Consistent with "be frugal" + "data-driven, no hardcoded lists".
+- No time-of-day awareness: the 5 PM ET schedule is what guarantees the close has passed. Step 7 additionally refuses to store non-final bars (see "Price canonicalisation and bar finality").
+- **Reasoning:** The schedule fires Mon-Fri but has no holiday awareness. On holidays (e.g. Labor Day) prices don't advance, so a run adds no new market data yet still incurs Bedrock/API cost. This gate stops the no-op spend. Consistent with "be frugal" + "data-driven, no hardcoded lists".
 
 **Step 1 — EDGAR Bulk Fetch** (~3 minutes)
 - Source: SEC EDGAR Frames API (free, unlimited, US government)
@@ -219,7 +220,7 @@ Total: ~12-15 minutes per run.
 | DynamoDB Table | stock-screener-data |
 | DynamoDB GSI | tracking-status-index (PK: tracking_status, SK: last_updated) |
 | Step Functions | stock-screener-pipeline |
-| EventBridge Rule | stock-screener-daily-trigger (Mon-Fri 8PM UTC) |
+| EventBridge Scheduler | stock-screener-daily-trigger (cron(0 17 ? * MON-FRI *), America/New_York; replaced the UTC-only Events rule, which ran at 3 PM EST in winter) |
 | SNS Topic | stock-screener-alerts |
 | API Gateway | https://kw8mlahpj2.execute-api.us-east-2.amazonaws.com/prod/ |
 | Lambda (Step 1) | stock-screener-fundamentals-fetcher |
@@ -247,11 +248,11 @@ Total: ~12-15 minutes per run.
 | PK | SK | Purpose |
 |----|----|---------| 
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
-| STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day, never overwritten) |
+| STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day). Also `price_as_of`, `estimates` (analyst-estimate snapshot map), `estimates_as_of` (New York date of the FMP fetch) |
 | STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). Holds first_tracked, last_passed, grace_start, and for manual marks mark_price+mark_date. NOTE: BOTH Step 7 (score-calculator) and Step 8 (alert-checker) rewrite this item every run and MUST preserve first_tracked, mark_price/mark_date, AND grace_start — else "Since Mark" resets or GRACE stocks never expire. grace_start = day it entered GRACE; the 30-day removal clock counts from it (cleared on passing, stamped once on failing) |
 | STOCK#{ticker} | ARTICLES | Analyzed articles with per-article risk flags (overwritten daily) |
 | STOCK#{ticker} | TRACK_HIST#{unmark_ts} | Closed manual-tracking stint: mark_date, mark_price, unmark_date, unmark_price, change_pct. record_type=TRACK_HIST. Persisted on unmark, never overwritten |
-| PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV price bars (overwritten daily) |
+| PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV FINAL bars only (overwritten when refetched). Also `last_final_date`, `fetched_at` (ISO UTC), `to_date` (= newest bar date). `last_backfill` is no longer written |
 | INDUSTRY_AVG#{industry} | METRICS | Industry median benchmarks (overwritten each pipeline run) |
 
 **GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated, projection: ALL)
@@ -428,9 +429,9 @@ Architecture:
 
 ### Price History & Trend Detection
 
-- Score calculator fetches 30-day OHLCV bars from Polygon `/v2/aggs/ticker/{ticker}/range/1/day/`
+- Score calculator fetches 30-day OHLCV bars from FMP `/stable/historical-price-eod/full`
 - Stored as `PRICE_HISTORY#{ticker}` in DynamoDB (one item per stock, ~19 trading bars)
-- Skips backfill if already done today (idempotent)
+- Skips the refetch only when the stored series is final and was fetched at/after 17:00 ET on the session date (`should_skip_backfill`); legacy items are refetched
 - API endpoint: `GET /stocks/{ticker}/prices`
 - Frontend calculates trends from bars:
   - `changePercent`: overall period change
@@ -442,6 +443,16 @@ Architecture:
 - Table shows **daily change** column (last day %, color-coded), NOT 30d total
 - Detail panel shows SVG sparkline chart with 30-day trend + state badge + day count
 - Price fetching is batched (4 at a time) to avoid API throttling
+
+### Price canonicalisation and bar finality
+
+- `lambdas/shared/market_time.py` (vendored byte-identical into `score-calculator/`) is real America/New_York time, pure stdlib. `et_date.eastern_date` is PACIFIC despite its name; it is unchanged and still keys `SCORE#`, `first_tracked`, etc. At the 5 PM ET run time both give the same calendar date.
+- A bar dated today is FINAL at/after 16:15 ET on a weekday (`BAR_FINAL_AFTER`). Step 7 stores only final bars, so no consumer needs to know about "provisional" bars. Holidays are handled as data (FMP returns no bar for them); no holiday list.
+- `LATEST.price` = close of the newest final bar, `price_as_of` = that bar's date, `market_cap = shares_implied * price` when `shares_implied` is known. `shares_implied = profile.marketCap / profile.price` is set in enrichment only when both are positive (no Polygon fallback). Step 7 is the single writer of `LATEST.price`; `_refresh_latest_valuation` no longer writes it.
+- Stocks never FMP-enriched since rollout keep their legacy `market_cap` beside the new `price` (residual gap, not audited).
+- T-1 note: screening ratios (P/E, forward P/E, P/FCF, PEG, target upside) use the Polygon grouped-daily close for the last trading day (T-1), so after a 5 PM ET run they can be one session older than the displayed `price`. Pre-existing; not changed here.
+- Estimate snapshots (`lambdas/shared/estimates.py`, vendored to `enrichment/` and `score-calculator/`): built from data enrichment already fetched (zero new FMP calls), stored in `SCORE#{date}` and `LATEST`. `eps_revision_pct` matches fiscal periods by period end. Not yet wired into any UI or alert.
+- `scripts/repair_provisional_bars.py` repairs bars stored before the rollout (dry run by default; `--apply` only after 17:00 ET, conditional writes).
 
 ### GRACE Stock Lifecycle
 
@@ -520,6 +531,10 @@ Architecture:
 | Competition score: HHI + Claude hybrid | HHI from EDGAR revenue is quantitative but SEC SIC too broad. Claude adjusts with moat/niche knowledge. Stores both for transparency |
 | Competition weight 15% of investability | Enough to differentiate but doesn't dominate. Fundamentals (60%) remain primary signal |
 | Business dates keyed on US Eastern, not UTC | first_tracked, SCORE#{date}, mark_date, the Days column, and the market-gate holiday/weekend check are all US market (ET) calendar dates. Keying on UTC collapsed two same-UTC-day runs into one SCORE# snapshot and made same-day "NEW" stocks read "1" after UTC midnight. Shared dependency-free helper `et_date.py` (pure-stdlib US DST rules, no tzdata needed) vendored into each Lambda; frontend uses Intl `America/New_York`. Instants/timestamps (last_updated ISO) and S3 raw/ partitions stay UTC. Covered by tests/test_et_date.py (incl. DST boundaries) |
+| EventBridge Scheduler at 5 PM America/New_York | Events rules are UTC-only: `cron(0 20 ...)` was 4 PM EDT but 3 PM EST, so winter runs fired before the close and stored a partial bar (HLIO 2026-11-09). Scheduler takes an IANA timezone, so the time holds across DST; bounded retry (2 attempts / 1h) so a failed start cannot run hours late |
+| Only FINAL bars are stored (exclude, not flag) | Stored series is always complete, so no consumer needs a provisional state. `last_final_date` + `fetched_at` replace `last_backfill`; a series fetched before 17:00 ET on its session date is refetched rather than frozen |
+| Canonical price = newest final bar | `price`, `price_as_of`, `market_cap` set by Step 7 only; `shares_implied` carries the share count from enrichment |
+| Estimate snapshot in SCORE#/LATEST | Daily analyst-estimate map (EPS FY1/FY2 + period ends, revenue FY1, target price + count) so revisions can be measured later. Zero extra FMP calls |
 | Market gate (Step 0) skips weekends/holidays | EventBridge Mon-Fri has no holiday awareness; holiday runs re-process stale prices at full Bedrock/API cost. Step 0 Lambda checks weekend + Polygon holiday calendar (data-driven, self-maintaining), Choice state skips to Succeed when closed. Fail-open on API error |
 | first_tracked preserved in alert-checker too | Same class of bug as the mark wipe: Step 8 rebuilds TRACKING every run and reset first_tracked to today when the in-memory `prev` was partial (Days column reset to 1). Fix reads the durable stored first_tracked and never regresses it. Also fixed the portfolio-protected GRACE path which wrote no first_tracked at all |
 | Grace clock anchored on durable grace_start | ROOT-CAUSE BUG: score-calculator wrote last_passed=None and no grace_start for GRACE stocks every run, so the 30-day removal clock had no anchor → GRACE stocks never expired (immortal). Fix: stamp grace_start when a stock enters GRACE, preserve it across Step 7 AND Step 8 rewrites, clear it on passing. Expiry + the UI "days left" both count from grace_start. GRACE pill turns red when ≤5 days left. Backfilled existing GRACE stocks (lost real drop date → fresh 30-day clock). Covered by tests/test_grace_anchor.py |
@@ -534,7 +549,7 @@ Architecture:
 | 6-month data recency filter | Stocks with latest filing >180 days old are excluded. Can't invest on stale data. Applied across all stocks (GAAP and IFRS) |
 | P/E exemption when PEG < 1.0 | If PEG proves growth justifies valuation, P/E industry check is bypassed. Prevents blocking high-growth value stocks (e.g., WAY PEG=0.096) |
 | Forward PEG (both numerator + denominator) | PEG = forward_pe ÷ (forward est_lt_growth × 100). Replaced trailing PEG (P/E ÷ trailing eps_growth_yoy), which for low-base/recovery stocks produced a huge growth ratio that crushed PEG to ~0.00 (e.g. RAMP). Trailing PEG kept ONLY as a private pre-filter key (_prefilter_peg) to gate FMP calls cheaply before forward data exists; the displayed/filtered PEG is forward. No positive forward growth → PEG=None → fails screen (missing=FAIL). compute_forward_peg() covered by tests/test_forward_peg.py |
-| Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (yesterday's prices). Falls back to T-2 if Polygon returns error. Pipeline runs at 8PM UTC, well past 5AM publish time |
+| Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (the last completed trading day for screening ratios). Falls back to T-2 if Polygon returns error. The pipeline runs at 5 PM ET, well past the publish time |
 | TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
 | FMP ICR=0 treated as null | FMP returns interestCoverageRatioTTM=0 for debt-free companies. We now skip 0 values to avoid overwriting valid null with misleading zero |
@@ -597,14 +612,14 @@ Architecture:
 - Suite lives in `tests/` (pytest). Dev deps in `requirements-dev.txt`
   (`pytest`, `moto`, `requests-mock`) — install once with
   `.venv/bin/python3 -m pip install -r requirements-dev.txt`.
-- Run: `./scripts/run_tests.sh` (all) / `-m unit|integration|regression`.
+- Run: `./scripts/run_tests.sh` (pytest, then `npx jest` for the CDK assertions) / `-m unit|integration|regression` (pytest args only).
 - MUST be green before every deploy. Ad-hoc `scripts/test_*.py` (live-API
   probes) are NOT the suite and are excluded from pytest collection.
 - Mocking: `moto` for DynamoDB (single-table + tracking-status-index GSI),
   `requests-mock` for Polygon/FMP, `monkeypatch` to freeze time.
 - Coverage today: enrichment trading-day (holiday regression), TRACKING field
   preservation across Step 7/8 (mark + first_tracked regressions), market-gate
-  decisions, screening filter logic. Every new change adds/extends tests for its
+  decisions, screening filter logic, bar finality / price canonicalisation (`test_market_time.py`, `test_bar_backfill.py`), estimate snapshots (`test_estimates.py`), the repair script, and a Jest test asserting the Scheduler schedule. Every new change adds/extends tests for its
   blast radius; every fixed bug gets a regression test that fails on old code.
 - A `PostFileSave` hook (`.kiro/hooks/test-on-handler-save.json`) runs the suite
   automatically when any `lambdas/**/handler.py` is saved.
