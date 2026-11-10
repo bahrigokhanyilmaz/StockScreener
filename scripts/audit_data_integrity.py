@@ -33,7 +33,8 @@ def _f(v):
     return float(v) if v is not None else None
 
 
-def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None, now_utc=None):
+def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None, now_utc=None,
+                         price_meta_by_symbol=None):
     """
     Pure function: given the list of LATEST items, return a list of issues.
     Each issue is a dict: {severity, symbol, message}. No AWS calls here so it's
@@ -48,10 +49,13 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None, no
 
     price_bars_by_symbol: optional {symbol: [bar,...]} for range checks.
     now_utc: audit time for the bar-finality checks (default: current time).
+    price_meta_by_symbol: optional {symbol: {"fetched_at", "last_final_date"}} from
+        the PRICE_HISTORY#{sym}/DAILY item; used to judge newest-bar finality.
     """
     if today is None:
         today = datetime.now(timezone.utc).date()
     price_bars_by_symbol = price_bars_by_symbol or {}
+    price_meta_by_symbol = price_meta_by_symbol or {}
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
     issues = []
@@ -167,9 +171,25 @@ def audit_tracked_stocks(latest_items, today=None, price_bars_by_symbol=None, no
         nb = bars[-1] if bars else None
         nb_d = nb.get("d") if isinstance(nb, dict) else None
         if isinstance(nb_d, str) and len(nb_d) == 10:
-            lu_dt = parse_utc_iso(lu)
-            if lu_dt is not None and nb_d == new_york_date(lu_dt) and not is_bar_final(nb_d, lu_dt):
-                flag(sym, "MED", f"latest bar {nb_d} may be provisional (written {lu}, before it was final)")
+            # Finality is judged from the PRICE_HISTORY item's own provenance (what
+            # Step 7 / the repair script stamp), not LATEST.last_updated, which a
+            # repair does not touch. Provisional only if the series was fetched
+            # before the bar was final AND last_final_date doesn't cover the bar.
+            meta = price_meta_by_symbol.get(sym) or {}
+            lfd = meta.get("last_final_date")
+            fetched_dt = parse_utc_iso(meta.get("fetched_at"))
+            if lfd or fetched_dt is not None:
+                if not (lfd and str(lfd) >= nb_d) and fetched_dt is not None \
+                        and not is_bar_final(nb_d, fetched_dt):
+                    flag(sym, "MED", f"latest bar {nb_d} may be provisional "
+                                     f"(series fetched {meta.get('fetched_at')}, before it was final)")
+            else:
+                # Legacy item, no provenance: finality is unknowable, so never MED.
+                # Fall back to the LATEST.last_updated heuristic as advisory only.
+                lu_dt = parse_utc_iso(lu)
+                if lu_dt is not None and nb_d == new_york_date(lu_dt) and not is_bar_final(nb_d, lu_dt):
+                    flag(sym, "ODD", f"latest bar {nb_d} may be provisional "
+                                     f"(legacy series, no fetched_at; LATEST written {lu})")
             pao = s.get("price_as_of")
             if pao is None:
                 flag(sym, "ODD", "price_as_of missing (written before canonical-price rollout?)")
@@ -217,12 +237,16 @@ def main():
     latest = _scan(table, FilterExpression=Attr("SK").eq("LATEST"))
     # Pull price-history bars for the range plausibility check.
     price_bars = {}
+    price_meta = {}
     for s in latest:
         sym = s.get("symbol")
         ph = table.get_item(Key={"PK": f"PRICE_HISTORY#{sym}", "SK": "DAILY"}).get("Item")
         if ph and ph.get("bars"):
             price_bars[sym] = ph["bars"]
-    issues = audit_tracked_stocks(latest, price_bars_by_symbol=price_bars)
+            price_meta[sym] = {"fetched_at": ph.get("fetched_at"),
+                               "last_final_date": ph.get("last_final_date")}
+    issues = audit_tracked_stocks(latest, price_bars_by_symbol=price_bars,
+                                  price_meta_by_symbol=price_meta)
     orphans = find_orphans(table)
 
     if as_json:

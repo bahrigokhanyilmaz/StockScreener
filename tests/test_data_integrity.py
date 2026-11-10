@@ -188,9 +188,10 @@ def _bars_ending(d, c=40.0):
 NOW_AFTER = _dt(2026, 11, 9, 22, 30, tzinfo=_tz.utc)  # 17:30 EST Monday
 
 
-def _audit(s, bars, now=NOW_AFTER):
+def _audit(s, bars, now=NOW_AFTER, meta=None):
     return audit.audit_tracked_stocks([s], today=_dt(2026, 11, 9).date(),
-                                      price_bars_by_symbol={"GOOD": bars}, now_utc=now)
+                                      price_bars_by_symbol={"GOOD": bars}, now_utc=now,
+                                      price_meta_by_symbol={"GOOD": meta} if meta else None)
 
 
 def _msgs(issues, sev):
@@ -202,7 +203,37 @@ def test_provisional_latest_bar_flagged_med_hlio_scenario():
     s = _valid_stock()
     s["last_updated"] = "2026-11-09T20:25:42Z"   # 15:25 EST, before the close
     s["price_as_of"] = "2026-11-09"
-    assert any("provisional" in m for m in _msgs(_audit(s, _bars_ending("2026-11-09")), "MED"))
+    meta = {"fetched_at": "2026-11-09T20:25:40Z"}  # fetched before finality, no last_final_date
+    assert any("provisional" in m for m in _msgs(_audit(s, _bars_ending("2026-11-09"), meta=meta), "MED"))
+
+
+@pytest.mark.regression
+def test_repaired_series_not_flagged_despite_old_last_updated():
+    # Repair replaced the bar with a final one but left LATEST.last_updated untouched.
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T20:25:42Z"
+    s["price_as_of"] = "2026-11-09"
+    meta = {"fetched_at": "2026-11-10T03:00:00Z", "last_final_date": "2026-11-09"}
+    assert _audit(s, _bars_ending("2026-11-09"), meta=meta) == []
+
+
+@pytest.mark.unit
+def test_legacy_series_without_provenance_never_med():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T20:25:42Z"
+    s["price_as_of"] = "2026-11-09"
+    issues = _audit(s, _bars_ending("2026-11-09"), meta={"fetched_at": None, "last_final_date": None})
+    assert not _msgs(issues, "MED")
+    assert any("legacy" in m for m in _msgs(issues, "ODD"))
+
+
+@pytest.mark.unit
+def test_normal_post_close_pipeline_write_not_flagged():
+    s = _valid_stock()
+    s["last_updated"] = "2026-11-09T22:15:00Z"
+    s["price_as_of"] = "2026-11-09"
+    meta = {"fetched_at": "2026-11-09T22:14:50Z", "last_final_date": "2026-11-09"}
+    assert _audit(s, _bars_ending("2026-11-09"), meta=meta) == []
 
 
 @pytest.mark.unit
