@@ -17,3 +17,6 @@ __pycache__/
 lambdas/**/test_local.py
 .venv/
 .pytest_cache/
+
+# Backtest cache (research script output)
+.cache/
