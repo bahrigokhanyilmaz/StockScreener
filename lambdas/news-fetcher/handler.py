@@ -34,6 +34,11 @@ from datetime import datetime, timezone
 
 import boto3
 
+from market_time import new_york_date
+from news_select import (cap_articles, detect_earnings_event, filter_company_articles,
+                         plan_tickertick_calls)
+from news_text import dedupe_articles
+
 # AWS clients
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
@@ -43,6 +48,19 @@ FMP_BASE = "https://financialmodelingprep.com/stable"
 
 # Rate limit: 300 requests/min → can go fast, but add small delay for safety
 RATE_LIMIT_DELAY = 1.0  # seconds between requests
+
+# TickerTick (free tier: 10 req/min). Calls are paced start-to-start and capped so
+# the phase fits the 15-minute Lambda timeout even when every call times out:
+# 20 s other work + 420 s phase budget + 15 s last call = about 465 s.
+TT_PACE_SECONDS = 6.5
+TT_MAX_CALLS = 45
+TT_PHASE_BUDGET_S = 420
+TT_MIN_REMAINING_MS = 150_000
+# n=6 never reached the earnings items (HLIO: newest 6 were wrong-company noise); n=50 reaches back ~2 weeks.
+TT_FEED_SIZE = 50
+TT_MAX_AGE_DAYS = 14
+TT_MIN_DESCRIPTION_CHARS = 40
+MAX_ARTICLES_PER_STOCK = 12
 
 # Cache
 _fmp_key = None
@@ -143,7 +161,7 @@ def _normalize_articles(data: list, symbol: str) -> list[dict]:
     return articles
 
 
-def fetch_tickertick_news(symbol: str, max_articles: int = 10) -> list[dict]:
+def fetch_tickertick_news(symbol: str, max_articles: int = TT_FEED_SIZE) -> list[dict]:
     """
     Fetch news from TickerTick (free, no API key needed).
     Catches articles from sources FMP doesn't cover (tickerreport, gurufocus, sec.gov, etc.)
@@ -158,11 +176,10 @@ def fetch_tickertick_news(symbol: str, max_articles: int = 10) -> list[dict]:
         articles = []
         for story in stories:
             ts = story.get("time", 0)
-            # Convert ms timestamp to date string
+            # Convert ms timestamp to a UTC date string (same convention as FMP)
             pub_date = ""
             if ts and ts > 0:
-                from datetime import datetime as dt
-                pub_date = dt.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                pub_date = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             articles.append({
                 "title": story.get("title", ""),
                 "description": story.get("description", ""),
@@ -178,30 +195,48 @@ def fetch_tickertick_news(symbol: str, max_articles: int = 10) -> list[dict]:
         return []
 
 
-def merge_and_deduplicate(fmp_articles: list, tt_articles: list) -> list:
+def load_latest_signals(table, symbols: list[str]) -> dict[str, dict]:
     """
-    Merge articles from FMP and TickerTick, removing duplicates by title similarity.
-    FMP articles take priority (they have better text summaries).
+    Read-only: per symbol, the stored news_price_divergence (advisory flag from
+    Step 7) and the stored guidance event date. Symbols that fail to read are omitted.
     """
-    # Use first 50 chars of lowercase title as dedup key
-    seen_titles = set()
-    merged = []
+    signals = {}
+    for sym in symbols:
+        try:
+            item = table.get_item(
+                Key={"PK": f"STOCK#{sym}", "SK": "LATEST"},
+                ProjectionExpression="news_price_divergence, guidance_signal.event_date",
+            ).get("Item") or {}
+        except Exception as e:
+            print(f"  Warning: could not read LATEST signals for {sym}: {e}")
+            continue
+        divergence = item.get("news_price_divergence")
+        signals[sym] = {
+            # Decimal -> float so the value survives the JSON pipeline output
+            "news_price_divergence": json.loads(json.dumps(divergence, default=float)) if divergence else None,
+            "prior_event_date": (item.get("guidance_signal") or {}).get("event_date"),
+        }
+    return signals
 
-    # FMP first (preferred)
-    for a in fmp_articles:
-        key = a.get("title", "").lower()[:50]
-        if key and key not in seen_titles:
-            seen_titles.add(key)
-            merged.append(a)
 
-    # Then TickerTick (adds coverage FMP doesn't have)
-    for a in tt_articles:
-        key = a.get("title", "").lower()[:50]
-        if key and key not in seen_titles:
-            seen_titles.add(key)
-            merged.append(a)
+def _remaining_ms(context) -> float:
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    return getter() if getter else float("inf")
 
-    return merged
+
+def _recent_company_articles(tt_articles: list, symbol: str, company_name: str, today: str) -> list:
+    """TickerTick items about this company that are at most TT_MAX_AGE_DAYS old."""
+    cutoff = datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp() - TT_MAX_AGE_DAYS * 86400
+    fresh = []
+    for a in filter_company_articles(tt_articles, symbol, company_name):
+        try:
+            ts = datetime.strptime(a.get("published_at") or "", "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            fresh.append(a)
+    return fresh
 
 
 def store_raw_news(bucket_name: str, data: list, symbol: str):
@@ -263,6 +298,7 @@ def handler(event, context):
     # Also include ACTIVE and GRACE tracked stocks from DynamoDB
     # (they need fresh news/sentiment/competition even if they failed today's filters)
     tracked_stocks = []
+    table = None
     try:
         import boto3
         table_name = os.environ.get("DATA_TABLE_NAME", "")
@@ -339,33 +375,76 @@ def handler(event, context):
                 print(f"  {sym}: fallback individual FMP fetch → {len(articles)} articles")
             time.sleep(0.5)
 
-    # Merge with TickerTick (catches sources FMP misses: sec.gov, tickerreport, gurufocus)
-    # TickerTick rate limit: 10 req/min → 6.5s pacing
-    # Only fetch TickerTick for stocks with <4 articles from FMP (save time)
-    tt_candidates = [sym for sym in symbols if len(all_fetched.get(sym, [])) < 4]
-    print(f"  Fetching TickerTick for {len(tt_candidates)}/{len(symbols)} stocks (skipping those with enough FMP articles)...")
-    for sym in tt_candidates:
-        tt_articles = fetch_tickertick_news(sym, max_articles=6)
+    # Earnings events and divergence flags decide who gets a TickerTick call
+    today = new_york_date()
+    stock_by_symbol = {s.get("symbol"): s for s in all_stocks}
+    signals = load_latest_signals(table, symbols) if table is not None else {}
+    events = {}
+    for sym in symbols:
+        prior = signals.get(sym, {}).get("prior_event_date")
+        events[sym] = detect_earnings_event(all_fetched.get(sym, []), today, prior_event_date=prior)
+
+    candidates = [{
+        "symbol": sym,
+        "fmp_count": len(all_fetched.get(sym, [])),
+        "earnings_event": events[sym],
+        "divergence": bool(signals.get(sym, {}).get("news_price_divergence")),
+    } for sym in symbols]
+    selected, deferred = plan_tickertick_calls(candidates, TT_MAX_CALLS, today)
+    print(f"  TickerTick plan: {len(selected)} calls (cap {TT_MAX_CALLS}), {len(deferred)} deferred "
+          f"{deferred[:10]}, {sum(1 for e in events.values() if e)} earnings events, "
+          f"{sum(1 for c in candidates if c['divergence'])} divergence flags")
+
+    # TickerTick: 10 req/min free tier, paced start-to-start so a slow response does not add idle time
+    tt_started = time.monotonic()
+    last_call_start = None
+    calls_made = 0
+    for sym in selected:
+        if time.monotonic() - tt_started >= TT_PHASE_BUDGET_S:
+            print(f"  TickerTick phase budget {TT_PHASE_BUDGET_S}s reached after {calls_made} calls")
+            break
+        if _remaining_ms(context) < TT_MIN_REMAINING_MS:
+            print(f"  Lambda time nearly out, stopping TickerTick after {calls_made} calls")
+            break
+        if last_call_start is not None:
+            wait = TT_PACE_SECONDS - (time.monotonic() - last_call_start)
+            if wait > 0:
+                time.sleep(wait)
+        last_call_start = time.monotonic()
+        tt_articles = fetch_tickertick_news(sym)
+        calls_made += 1
+
+        company_name = stock_by_symbol.get(sym, {}).get("company_name", "")
         fmp_articles = all_fetched.get(sym, [])
-        if tt_articles:
-            merged = merge_and_deduplicate(fmp_articles, tt_articles)
-            new_count = len(merged) - len(fmp_articles)
-            if new_count > 0:
-                print(f"    {sym}: +{new_count} from TickerTick (total {len(merged)})")
-            all_fetched[sym] = merged
-        time.sleep(6.5)  # TickerTick: 10 req/min
+        tt_recent = _recent_company_articles(tt_articles, sym, company_name, today)
+        # Detect on the merged list first: short items (sec.gov, empty Seeking Alpha) still evidence an event
+        events[sym] = detect_earnings_event(fmp_articles + tt_recent, today,
+                                            prior_event_date=signals.get(sym, {}).get("prior_event_date"))
+        usable = [a for a in tt_recent if len(a.get("description") or "") >= TT_MIN_DESCRIPTION_CHARS]
+        all_fetched[sym] = fmp_articles + usable
+        print(f"    {sym}: TickerTick {len(tt_articles)} stories, {len(tt_recent)} about the company, "
+              f"{len(usable)} usable")
+    print(f"  TickerTick calls: planned {len(selected)}, made {calls_made}")
 
     # Build output
     for symbol in symbols:
-        articles = all_fetched.get(symbol, [])
+        stock_data = stock_by_symbol.get(symbol, {})
+        deduped, _ = dedupe_articles(all_fetched.get(symbol, []), stock_data.get("company_name", ""), symbol)
+        articles = cap_articles(deduped, MAX_ARTICLES_PER_STOCK)
         total_articles += len(articles)
 
-        stock_data = next((s for s in all_stocks if s.get("symbol") == symbol), {})
-        stocks_with_news.append({
+        event = events.get(symbol)
+        stock_out = {
             **stock_data,
             "articles": articles,
             "article_count": len(articles),
-        })
+        }
+        if event:
+            stock_out["earnings_event"] = {**event, "event_key": f"{symbol}:{event['event_date']}"}
+        divergence = signals.get(symbol, {}).get("news_price_divergence")
+        if divergence:
+            stock_out["news_price_divergence"] = divergence
+        stocks_with_news.append(stock_out)
 
         # Store raw news in S3
         if bucket_name and articles:

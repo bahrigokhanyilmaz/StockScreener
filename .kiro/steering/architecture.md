@@ -112,13 +112,16 @@ Total: ~12-15 minutes per run.
 - ~30 → ~20-30 pass with scores
 - **Reasoning:** Step 4 exists to compute `fundamental_score` which is 60% of the investability formula. It also catches edge cases where FMP data differs from EDGAR (e.g., FMP reports different revenue growth than EDGAR computed from filings).
 
-**Step 5 — News Fetch** (~4 minutes)
-- For each passing stock + GRACE stocks from DynamoDB:
+**Step 5 — News Fetch** (~7-9 minutes worst case; was ~2 min)
+- For each passing stock + ACTIVE/GRACE stocks from DynamoDB:
   - FMP `/stable/news/stock` — batched 5 symbols per call, good article summaries
-  - TickerTick API — individual calls, 6.5s pacing. Catches SEC filings, short interest reports, analyst downgrades that FMP misses.
-  - Merge and deduplicate by title (first 50 chars). FMP articles take priority.
-- ~10-15 articles per stock after merge
-- **Reasoning:** Dual sources because FMP misses critical articles for smaller stocks (e.g., "Short Interest Up 859%" only appeared on TickerTick for WETH). TickerTick is free but slow (10 req/min). FMP is fast but incomplete for niche sources (sec.gov, tickerreport, gurufocus).
+  - TickerTick API (`tt:{sym}&n=50`) — paced 6.5s start-to-start. Called when ANY of: fewer than 4 FMP articles; an earnings event in the last 7 days (`news_select.detect_earnings_event`: earnings/results/guidance/transcript titles, scheduling and preview titles vetoed, no new API call); `LATEST.news_price_divergence` is set
+  - TickerTick results go through a company filter (`is_company_article`: core company name or an explicit ticker reference such as `(NYSE:HLIO)`), because the feed tags every story mentioning "Helios" with HLIO. Stories older than 14 days, or with descriptions under 40 chars, are dropped (event detection runs before the length drop)
+  - Dedupe (`shared/news_text.dedupe_articles`): exact normalized title across FMP and TickerTick; the longest description wins (a transcript arrives as 9,999/200/75 chars)
+  - Per stock at most 12 articles (`cap_articles`): earnings/analyst titles first, long texts (>= 2,000 chars) before short snippets, then newest
+- Call budget (`plan_tickertick_calls`): at most 45 calls per run. Order: divergence, then earnings events newest first, then under-covered stocks rotated by day number. The phase stops at 420 s or when the Lambda has under 150 s left. Worst case with every call timing out is about 465 s of 900 s, so no timeout change
+- Output per stock gains `earnings_event` ({event_date, event_key, evidence_titles}) and `news_price_divergence` (copied from LATEST) when present
+- **Reasoning:** FMP misses critical articles (short-interest reports for WETH; for HLIO, the Q4 guide below consensus and the price-target cuts only appeared on TickerTick). n=6 never reached the earnings items (the newest six were wrong-company noise), so n=50 with a company filter. The budget keeps the free-tier 10 req/min limit and the Lambda timeout safe at peak earnings season.
 
 **Step 6 — Sentiment Analysis** (~5 minutes)
 - Amazon Bedrock Claude Haiku 4.5 per article
@@ -206,7 +209,7 @@ Total: ~12-15 minutes per run.
 | Finnhub /stock/metric | Forward P/E, LT Growth | 60 req/min | ACTIVE |
 | Finnhub /stock/recommendation | Analyst consensus | 60 req/min | ACTIVE |
 | Finnhub /stock/profile2 | Logo, weburl, industry | 60 req/min | ACTIVE |
-| TickerTick | News articles | 10 req/min | ACTIVE |
+| TickerTick | News articles (earnings/divergence/under-covered stocks, max 45 calls/run) | 10 req/min | ACTIVE |
 | Bedrock Claude Haiku 4.5 | Sentiment analysis | Pay per token | ACTIVE |
 | FMP | — | — | INACTIVE (bandwidth exhausted) |
 | Alpha Vantage | — | — | INACTIVE (25/day too few) |
@@ -554,7 +557,7 @@ Architecture:
 | P/E exemption when PEG < 1.0 | If PEG proves growth justifies valuation, P/E industry check is bypassed. Prevents blocking high-growth value stocks (e.g., WAY PEG=0.096) |
 | Forward PEG (both numerator + denominator) | PEG = forward_pe ÷ (forward est_lt_growth × 100). Replaced trailing PEG (P/E ÷ trailing eps_growth_yoy), which for low-base/recovery stocks produced a huge growth ratio that crushed PEG to ~0.00 (e.g. RAMP). Trailing PEG kept ONLY as a private pre-filter key (_prefilter_peg) to gate FMP calls cheaply before forward data exists; the displayed/filtered PEG is forward. No positive forward growth → PEG=None → fails screen (missing=FAIL). compute_forward_peg() covered by tests/test_forward_peg.py |
 | Polygon T-1 with T-2 fallback | Changed from hardcoded T-2 to T-1 first (the last completed trading day for screening ratios). Falls back to T-2 if Polygon returns error. The pipeline runs at 5 PM ET, well past the publish time |
-| TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
+| TickerTick after earnings or divergence (replaces under-covered-only rule) | HLIO fell 26% after earnings while TickerTick, the only source with the guide and target cuts, was skipped (FMP returned 4+ articles) and n=6 would not have reached them. Now: <4 FMP articles OR earnings event in 7 days OR divergence flag, n=50, company filter (39 of 100 HLIO stories kept), cap 45 calls/run, 420 s phase budget, 150 s Lambda-time guard, 12 articles/stock. No timeout bump: worst case 465 s of 900 s |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
 | FMP ICR=0 treated as null | FMP returns interestCoverageRatioTTM=0 for debt-free companies. We now skip 0 values to avoid overwriting valid null with misleading zero |
 | News-vs-price divergence flag | HLIO fell 30.7% in 3 sessions after earnings while stock sentiment was +0.72. Advisory flag from stored final bars (zero API cost): sentiment > 0.3 (0.3 flags 7 of 81 tracked stocks today; 0.2 flags 10) and 3-day return ≤ -10% (5.5% of 2,497 stored windows) or ≤ -7% with volume ≥ 2× (2.9%). Lookback 5 windows so a weekend cannot clear it. Never gates the screen or changes the score. Computed in Step 7 from `PRICE_HISTORY#` read back after the backfill |

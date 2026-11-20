@@ -33,8 +33,10 @@ Principle #14), the suite MUST pass before every deploy.
 | `test_estimates.py` | Estimate snapshot builder, `eps_revision_pct`, enrichment `shares_implied`/snapshot persistence, Step 7 `price_as_of`/`estimates` persistence |
 | `test_price_signals.py` | Divergence flag thresholds, tiers, lookback; HLIO real-bar regression (fixtures in `tests/fixtures/hlio/`) |
 | `test_divergence_persistence.py` | Step 7 writes/clears `news_price_divergence`, tracking + price fields untouched, API passes new fields through |
-| `test_news_text.py` | Title normalization, date parsing, exact/near dedupe, vendored-copy equality |
+| `test_news_text.py` | Title normalization, date parsing, exact/near dedupe, vendored-copy equality (sentiment-analyzer, score-calculator, news-fetcher) |
 | `test_sentiment_aggregation.py` | Aggregation (recency, wires, dedupe, counts) and prompt contract; HLIO duplicate-recap regression |
+| `test_news_select.py` | TickerTick company filter (real HLIO feed), earnings-event detection, call plan, article cap |
+| `test_news_fetcher_budget.py` | Step 5 handler: HLIO end to end, n=50, 45-call cap, start-to-start pacing, 420 s budget, remaining-time guard, UTC timestamps |
 | `test_article_storage.py` | Newest-10 relevant-first article storage; score still uses all articles |
 | `test_repair_provisional_bars.py` | Repair script: dry-run default (no writes), conditional `--apply`, key redaction, mark warning |
 | `test_data_integrity.py` | Audit invariants incl. provisional-bar, `price_as_of` and stale-bar checks |

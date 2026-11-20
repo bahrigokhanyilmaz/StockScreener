@@ -23,7 +23,7 @@ EventBridge Scheduler (Mon-Fri 5PM America/New_York) → Step Functions (8-step 
   Step 2: Pre-Screen (D/E, QR, OpMargin, EPS Growth, Rev Growth → ~69 pass)
   Step 3: Polygon Bulk Prices (1 call) + Finnhub Metrics (3 calls/stock for ~69 candidates)
   Step 4: Full Screen (all 12 filters, missing data = FAIL → ~6 pass)
-  Step 5: News Fetch (TickerTick, 10 articles/stock)
+  Step 5: News Fetch (FMP + TickerTick after earnings/divergence/thin coverage, company-filtered, max 12 articles/stock)
   Step 6: Sentiment Analysis (Bedrock Claude Haiku 4.5)
   Step 7: Score Calculator (investability score + Polygon company descriptions + DynamoDB)
   Step 8: Alert Checker (threshold monitoring + tracking lifecycle + SNS)
@@ -123,7 +123,7 @@ stock-screener/
 │   │       └── fmp_provider.py        INACTIVE: retained for paid upgrade
 │   ├── stock-screener/                Steps 2 & 4: Value filter (pre-screen + full screen)
 │   ├── enrichment/                    Step 3: Polygon prices + Finnhub metrics + profiles
-│   ├── news-fetcher/                  Step 5: TickerTick news articles
+│   ├── news-fetcher/                  Step 5: FMP + TickerTick news (company filter, call budget)
 │   ├── sentiment-analyzer/            Step 6: Bedrock/Claude sentiment
 │   ├── score-calculator/              Step 7: Investability score + Polygon descriptions + DynamoDB
 │   ├── alert-checker/                 Step 8: Threshold monitoring + SNS alerts

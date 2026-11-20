@@ -86,5 +86,5 @@ def test_near_dedupe_does_not_merge_different_stories():
 @pytest.mark.unit
 def test_vendored_copies_identical():
     ref = open(os.path.join(LAMBDAS_DIR, "shared", "news_text.py"), "rb").read()
-    for lam in ("sentiment-analyzer", "score-calculator"):
+    for lam in ("sentiment-analyzer", "score-calculator", "news-fetcher"):
         assert open(os.path.join(LAMBDAS_DIR, lam, "news_text.py"), "rb").read() == ref
