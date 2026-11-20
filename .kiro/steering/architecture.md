@@ -129,6 +129,7 @@ Total: ~12-15 minutes per run.
 - Risk flags constrained to 8 values (fraud, SEC investigation, accounting, regulatory, lawsuit, revenue risk, management departure, product recall)
 - Prompt: earnings releases, transcripts and analyst rating/price-target notes are always relevant (short text = low confidence, not irrelevant). Negative anchors: guidance below consensus/lowered, margin compression, price target cut, downgrade, pull-forward. Company wires are promotional; consensus is judged ONLY if the text states it
 - Aggregate per stock (`calculate_aggregate_sentiment`): weight = confidence × recency × source. Recency half-life 4 days (floor 0.05, undated = 7 days old). Company wires (Business Wire, GlobeNewswire, PR Newswire, Accesswire) ×0.5 unless the article carries a risk flag. Same-event articles count once (`lambdas/shared/news_text.py`: exact normalized title at any date, or token Jaccard ≥ 0.75 within 2 days; higher confidence wins). Each article gets `analysis.counted`/`duplicate_of`. `sentiment_score = Σ(s·w)/Σw`, `confidence = Σ(w·c)/Σw`; also returns `scored_count` (counted relevant articles) and `article_count` (all analyzed)
+- **Earnings guidance extraction** (`sentiment-analyzer/guidance.py`): for stocks with `earnings_event` (from Step 5), ONE Bedrock call per event over the best long text (the longest earnings-titled description, up to 10,000 chars, so the transcript or full release) plus up to 8 analyst/guidance snippets cut to 500 chars, capped at 16,000 chars (about 4-5k tokens), `max_tokens` 700, temperature 0. Strict JSON: `guidance_vs_prior` (raised|maintained|narrowed|lowered|not_stated), `guidance_vs_consensus` (above|in_line|below|not_stated), `margin_outlook` and `demand_outlook` (up|flat|down|not_stated), `one_time_or_pull_forward_flag`, `analyst_actions` (max 8), `key_quotes_or_numbers` (max 3), `evidence_fields_present`, `verdict`, `confidence`. The parser coerces any component not listed in `evidence_fields_present` to `not_stated`, so the model cannot invent consensus; unparseable replies return None (no write, retried next run). Cap 12 calls per run (peak seen: 9 new events in one day), divergence-flagged stocks first, then newest event; the rest are deferred and retried (still inside the 7-day window). Idempotent by `event_key` (`SYMBOL:event_date`, stable via the stored `prior_guidance`); one re-extraction when the input grew by 2,000+ chars (the transcript usually lands a day after the release). Cost cap about $0.10/day (Bedrock price assumed, not verified)
 - **Competition assessment:** One additional Claude call per stock after all articles analyzed. Receives HHI score + article summaries, returns adjusted competition_score (1-5) + reasoning.
 - **Reasoning:** AI reads every article and produces structured sentiment. Humans can't read 200 articles daily. Claude identifies specific risk categories that feed into the scoring penalty system. Competition assessment leverages Claude's broad knowledge of market dynamics to adjust the quantitative HHI score.
 
@@ -138,7 +139,9 @@ Total: ~12-15 minutes per run.
 - Fetches company descriptions from FMP `/stable/profile` (fallback if not already present)
 - Manages risk flag ledger (time-decay for one-time events, persistence for uncertain events)
 - Persists ALL to DynamoDB: LATEST, SCORE#date, TRACKING, ARTICLES, PRICE_HISTORY#
+- ARTICLES stores a raw 240-char `snippet` for unscored articles (the model summary of an unscored article can mislead, e.g. "scheduling announcement" on a transcript); the UI shows it instead
 - ARTICLES stores the 10 best articles (`select_articles_to_store`: scored first, newest first, then the rest; output newest first) with `scored` and `duplicate_of`. The stock score uses ALL articles (computed in Step 6)
+- **Guidance penalty** (`guidance_penalty.py`): `penalty = -min(15, points) × confidence × decay` only when `guidance_signal.verdict == "negative"`. Points: guidance lowered vs prior 6, below consensus 5, margin down 4, demand down 3, pull-forward/one-time 2. `decay = max(0, 1 - days since event_date / 30)`. Negative only (no bonus), a separate term so the positive recaps of the same release cannot dilute it. HLIO example (5+4+2 = 11 points, confidence 0.8): -8.8 on day 0, -4.4 on day 15, 0 from day 30. `LATEST` is a whole-item put, so `_carry_forward_guidance` copies the stored `guidance_signal` forward while it is inside the 30-day window. `guidance_signal` is written to `LATEST` every run and to `SCORE#{date}` only on the extraction day. Advisory fields `score_breakdown.guidance_penalty`/`guidance_detail` go to the S3 output only
 - **News-vs-price divergence** (`price_signals.news_price_divergence`, advisory, never gates or scores): reads the stored final bars after the backfill. Flags when `sentiment_score > 0.3` and a 3-session return ≤ -10% (strong) or ≤ -7% with volume ≥ 2× the prior-20-bar mean (mild), looking back over the last 5 rolling windows (HLIO stayed lit 8 sessions). Written to `LATEST.news_price_divergence` only when flagged, so absence clears it
 - Computes portfolio signals (green/yellow/red) for owned stocks
 - **Reasoning:** Single step that combines fundamental + sentiment + competition into one actionable score, persists everything for the dashboard, and maintains the risk lifecycle.
@@ -254,7 +257,7 @@ Total: ~12-15 minutes per run.
 | PK | SK | Purpose |
 |----|----|---------| 
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
-| STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day). Also `price_as_of`, `estimates` (analyst-estimate snapshot map), `estimates_as_of` (New York date of the FMP fetch) |
+| STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day). Also `guidance_signal` (only on the extraction day), `price_as_of`, `estimates` (analyst-estimate snapshot map), `estimates_as_of` (New York date of the FMP fetch) |
 | STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). Holds first_tracked, last_passed, grace_start, and for manual marks mark_price+mark_date. NOTE: BOTH Step 7 (score-calculator) and Step 8 (alert-checker) rewrite this item every run and MUST preserve first_tracked, mark_price/mark_date, AND grace_start — else "Since Mark" resets or GRACE stocks never expire. grace_start = day it entered GRACE; the 30-day removal clock counts from it (cleared on passing, stamped once on failing) |
 | STOCK#{ticker} | ARTICLES | Up to 10 analyzed articles (newest first, scored preferred) with per-article risk flags, `scored`, `duplicate_of` (overwritten daily) |
 | STOCK#{ticker} | TRACK_HIST#{unmark_ts} | Closed manual-tracking stint: mark_date, mark_price, unmark_date, unmark_price, change_pct. record_type=TRACK_HIST. Persisted on unmark, never overwritten |
@@ -263,7 +266,7 @@ Total: ~12-15 minutes per run.
 
 **GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated, projection: ALL)
 
-**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, sentiment_scored_count, sentiment_article_count, news_price_divergence (only when flagged: flag/tier/return_3d/return_1d/volume_ratio/sentiment/as_of/trigger_date; returns are fractions), hhi_score, competition_score, competition_reasoning, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, analyst_target_price, target_price_upside, institutional_transactions, last_updated
+**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, sentiment_scored_count, sentiment_article_count, guidance_signal (map: the guidance_* components, verdict, confidence, analyst_actions, key_quotes_or_numbers, evidence_fields_present, event_key/event_date, extracted_at/extracted_on, extraction_count, input_chars, input_titles, model; about 1.5-2.5 KB; kept 30 days after the event), news_price_divergence (only when flagged: flag/tier/return_3d/return_1d/volume_ratio/sentiment/as_of/trigger_date; returns are fractions), hhi_score, competition_score, competition_reasoning, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, analyst_target_price, target_price_upside, institutional_transactions, last_updated
 
 ### API Endpoints
 
@@ -289,13 +292,14 @@ Layout: Filters (collapsible top bar) → 2-column (table + detail panel)
 
 Components:
 - `App.tsx` — Layout, filter sliders at top, fetches trends for all stocks on load
-- `StockTable.tsx` — All metrics + 30d trend column + risk badges + ICR override badge. One row per stock. Extra columns: "Since Mark" (live % since manual mark), "Track" (☆/★ mark toggle), "Trade" (Buy / ✕ remove). NEW stocks (first tracked today) float to top.
+- `StockTable.tsx` — All metrics + 30d trend column + risk badges + ICR override badge + `DIV` badge (price-vs-news divergence, red strong / amber mild, tooltip "Price fell X% in 3 days while news is positive: check why") + `G▼` marker (negative earnings guidance, tooltip lists the components). One row per stock. Extra columns: "Since Mark" (live % since manual mark), "Track" (☆/★ mark toggle), "Trade" (Buy / ✕ remove). NEW stocks (first tracked today) float to top.
 - `TrackHistory.tsx` — Closed manual-tracking stints, grouped by stock. Top row per stock (stint count + avg % change), expandable to a nested table of individual mark→unmark stints. Hidden when no history exists.
 - `StockDetail.tsx` — Two tabs:
-  - Overview: Company profile, score cards, sparkline chart, risk flags (with ledger metadata), news
+  - Overview: Company profile, score cards (sentiment card shows "scored n of m articles" and confidence), sparkline chart, divergence banner, Guidance block (components, analyst actions, quotes, event date, age), risk flags (with ledger metadata), news (unscored articles greyed with a "not scored" tag and the raw snippet instead of the model summary, per-article confidence, grey 0 badge for a genuinely scored 0)
   - Metrics Guide: Industry comparison (real medians from SEC SIC data), scoring methodology, metric definitions with interpretation
 - `FilterSliders.tsx` — Client-side re-filtering with D/E override note ("or ICR > 3.0x")
 - `MetricsGuide.tsx` — Industry averages (fetched from API), metric definitions, scoring formulas explained
+- `utils/signals.ts` — divergence message, guidance lines/tooltip, `isArticleScored` (legacy items without `scored` fall back to `relevant`)
 - `utils/trends.ts` — calculateTrend: changePercent, consecutiveDown/Up, isFalling/isStabilizing/isRecovering
 
 ### Screening Filters Config
@@ -332,7 +336,9 @@ Source of truth: `shared/config/screener-filters.json`
 ### Investability Score Formula
 
 ```
-investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties + rev_accel_bonus
+investability = (0.6 × fundamental_score) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties + guidance_penalty + rev_accel_bonus
+
+guidance_penalty: 0 to -15, see Step 7 (negative earnings-guidance verdict only, × confidence × 30-day decay). Never positive.
 
 rev_accel_bonus: +5 flat when revenue_accel_underpriced flag is set (fwd rev growth > trailing AND P/S < industry median). Clamped into [0,100].
 
@@ -564,6 +570,8 @@ Architecture:
 | Sentiment recency half-life 4 days | Matches the 5-day one-time risk-flag decay; median article (4 days old) weighs 0.5, p90 (15 days) 0.07. The old docstring claimed recency weighting that did not exist |
 | Same-event articles count once | HLIO had the same "Q3 Earnings Call Highlights" recap twice (MarketBeat, Defense World). Aggregation dedupes; risk flags are still collected from every relevant article so a duplicate cannot hide one |
 | Company wires weigh 0.5 | Business Wire/GlobeNewswire/PR Newswire/Accesswire are issuer-written. Exempt when the article carries a risk flag (adverse disclosures are not promotional) |
+| Guidance extraction + separate penalty | HLIO's guide below consensus, margin down and pull-forward appeared only in long texts the per-article scorer never read, and 3 of 4 relevant HLIO articles were positive recaps, so any sentiment adjustment would be diluted. One capped Bedrock call per earnings event over the transcript/release returns an evidence-gated signal; a negative verdict subtracts up to 15 points × confidence × 30-day decay. Cap 12 calls/run, idempotent by event key, one re-read when the text grows 2,000+ chars. Asymmetric by design: no bonus for good guidance. Components the text does not state are `not_stated`, so the model cannot invent consensus |
+| Unscored articles keep a raw snippet | The model summary of an irrelevant/duplicate article can describe the wrong thing, so Step 7 stores a 240-char raw snippet and the UI labels the article "not scored" instead of showing the summary |
 | Hollow growth exclusion | Exclude stocks where Forward P/E < Trailing P/E AND LT Growth ≤ 0. Near-term earnings improving but long-term outlook negative = value trap (cost-cutting, not real growth) |
 
 ### Build Progress
@@ -630,7 +638,7 @@ Architecture:
   `requests-mock` for Polygon/FMP, `monkeypatch` to freeze time.
 - Coverage today: enrichment trading-day (holiday regression), TRACKING field
   preservation across Step 7/8 (mark + first_tracked regressions), market-gate
-  decisions, screening filter logic, bar finality / price canonicalisation (`test_market_time.py`, `test_bar_backfill.py`), estimate snapshots (`test_estimates.py`), the repair script, and a Jest test asserting the Scheduler schedule. Every new change adds/extends tests for its
+  decisions, screening filter logic, bar finality / price canonicalisation (`test_market_time.py`, `test_bar_backfill.py`), estimate snapshots (`test_estimates.py`), the repair script, divergence/aggregation/news selection, guidance extraction + penalty + persistence + API pass-through (`test_guidance*.py`), and a Jest test asserting the Scheduler schedule. Every new change adds/extends tests for its
   blast radius; every fixed bug gets a regression test that fails on old code.
 - A `PostFileSave` hook (`.kiro/hooks/test-on-handler-save.json`) runs the suite
   automatically when any `lambdas/**/handler.py` is saved.

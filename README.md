@@ -9,7 +9,8 @@ A value stock screening application that combines fundamental financial analysis
 3. **Fetches news** — Recent articles from ~10,000 sources per passing stock (TickerTick)
 4. **Analyzes sentiment** — Claude AI (Bedrock Haiku 4.5) scores each article and detects risk flags. Recent articles weigh more (4-day half-life), repeated coverage of one event counts once, and company press releases weigh half
    A price-vs-news flag warns when positive sentiment meets a sharp 3-day drop (advisory only)
-5. **Calculates investability** — Combines fundamental quality (70%) + sentiment (30%) into a 0-100 score
+   After earnings, one Claude call reads the transcript or release and extracts the guidance (vs prior, vs consensus, margin, demand, pull-forward); a negative reading lowers the score by up to 15 points, fading over 30 days
+5. **Calculates investability** — Combines fundamental quality (60%), sentiment (25%) and competition (15%) into a 0-100 score, less risk-flag and earnings-guidance penalties
 6. **Shows company profiles** — Business descriptions from Polygon, logos/industry from Finnhub
 7. **Alerts you** — Email notification when stocks breach thresholds or new value picks appear
 
@@ -24,7 +25,7 @@ EventBridge Scheduler (Mon-Fri 5PM America/New_York) → Step Functions (8-step 
   Step 3: Polygon Bulk Prices (1 call) + Finnhub Metrics (3 calls/stock for ~69 candidates)
   Step 4: Full Screen (all 12 filters, missing data = FAIL → ~6 pass)
   Step 5: News Fetch (FMP + TickerTick after earnings/divergence/thin coverage, company-filtered, max 12 articles/stock)
-  Step 6: Sentiment Analysis (Bedrock Claude Haiku 4.5)
+  Step 6: Sentiment Analysis + earnings guidance extraction (Bedrock Claude Haiku 4.5)
   Step 7: Score Calculator (investability score + Polygon company descriptions + DynamoDB)
   Step 8: Alert Checker (threshold monitoring + tracking lifecycle + SNS)
 

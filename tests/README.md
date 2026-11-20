@@ -37,6 +37,9 @@ Principle #14), the suite MUST pass before every deploy.
 | `test_sentiment_aggregation.py` | Aggregation (recency, wires, dedupe, counts) and prompt contract; HLIO duplicate-recap regression |
 | `test_news_select.py` | TickerTick company filter (real HLIO feed), earnings-event detection, call plan, article cap |
 | `test_news_fetcher_budget.py` | Step 5 handler: HLIO end to end, n=50, 45-call cap, start-to-start pacing, 420 s budget, remaining-time guard, UTC timestamps |
+| `test_guidance.py` | Guidance parser (fences, invalid JSON, NaN, enum + evidence gating), input builder (real HLIO transcript), idempotency, cap/priority, fake-Bedrock extraction, handler wiring |
+| `test_guidance_penalty.py` | Component points, cap 15, confidence, 30-day decay, verdict gating, score stays in [0,100], no bonus |
+| `test_guidance_persistence.py` | LATEST/SCORE# persistence, carry-forward regression, Decimal round trip, item size, tracking fields, unscored snippet, API + fetcher pass-through |
 | `test_article_storage.py` | Newest-10 relevant-first article storage; score still uses all articles |
 | `test_repair_provisional_bars.py` | Repair script: dry-run default (no writes), conditional `--apply`, key redaction, mark warning |
 | `test_data_integrity.py` | Audit invariants incl. provisional-bar, `price_as_of` and stale-bar checks |
