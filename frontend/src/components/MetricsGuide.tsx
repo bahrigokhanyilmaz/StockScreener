@@ -193,7 +193,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     name: 'News Sentiment Score',
     shortName: 'Sentiment',
     definition: 'AI-analyzed sentiment from recent news articles. Range: -1.0 (extremely negative) to +1.0 (extremely positive). Captures market perception and potential catalysts not yet in the numbers.',
-    formula: 'Confidence-weighted average of Claude AI sentiment scores across recent articles',
+    formula: 'Weighted average of Claude AI sentiment scores: weight = confidence × recency (half-life 4 days) × source (company press releases 0.5). Same-event articles count once.',
     threshold: '> -0.3 (our filter)',
     increasing: 'News coverage becoming more positive. Could signal improving perception, upcoming catalysts, or resolution of previous concerns.',
     decreasing: 'News coverage becoming more negative. May precede price declines. Watch for risk flags (lawsuits, SEC investigations, management changes).',
@@ -350,7 +350,7 @@ export default function MetricsGuide({ stock }: Props) {
             The final ranking score that combines fundamentals, market sentiment, and competitive positioning. All components are on a 0–100 scale, so the result properly fills 0–100.
           </p>
           <div className="def-formula">
-            <span className="formula-label">Formula:</span> (0.6 × Fundamental Score) + (0.25 × Sentiment Normalized) + (0.15 × Competition Normalized) + Risk Penalties
+            <span className="formula-label">Formula:</span> (0.6 × Fundamental Score) + (0.25 × Sentiment Normalized) + (0.15 × Competition Normalized) + Risk Penalties + Guidance Penalty
           </div>
           <div className="score-breakdown-details">
             <p><strong>Sentiment Normalized (0–100):</strong> 50 + (raw_sentiment × 50 × confidence)</p>
@@ -360,7 +360,9 @@ export default function MetricsGuide({ stock }: Props) {
             <p><strong>Competition Normalized (0–100):</strong> (5 - competition_score) × 25</p>
             <p>• Score 1 (dominant) → 100 | Score 3 (moderate) → 50 | Score 5 (fragmented) → 0</p>
             <p><strong>Risk Penalties:</strong> Fraud (-35), SEC investigation (-30), accounting irregularity (-25), revenue risk (-15), regulatory risk (-15), lawsuit/management/recall (-10)</p>
+            <p><strong>Guidance Penalty (0 to -15):</strong> applied only when the earnings-guidance reading (see the Guidance card below) is negative. Points: guidance lowered vs prior +6, guidance below consensus +5, margin outlook down +4, demand outlook down +3, pull-forward or one-time items +2 (total capped at 15). Penalty = -points × confidence × decay, where decay = 1 - days since earnings / 30 (zero after 30 days). Good guidance gives no bonus.</p>
             <p><strong>Example:</strong> Fundamental 64, Sentiment raw -0.28 with confidence 0.55, Competition score 2 → Sentiment normalized = 42.3, Competition normalized = 75 → Investability = (0.6 × 64) + (0.25 × 42.3) + (0.15 × 75) = 38.4 + 10.6 + 11.3 = <strong>60.3</strong> before penalties.</p>
+            <p><strong>Guidance example:</strong> below consensus (5) + margin down (4) + pull-forward (2) = 11 points, confidence 0.8: penalty is -8.8 on earnings day and -4.4 fifteen days later, so 60.3 becomes 51.5, then 55.9.</p>
           </div>
         </div>
 
@@ -388,18 +390,39 @@ export default function MetricsGuide({ stock }: Props) {
             <span className="def-name">Sentiment Score (-100 to +100)</span>
           </div>
           <p className="def-text">
-            AI-analyzed news sentiment from the past 7 days. Claude AI reads each article about the stock, rates it from -1.0 (extremely negative) to +1.0 (extremely positive), and assigns a confidence level (0–1). The final score is displayed scaled to -100 to +100 in the UI.
+            AI-analyzed news sentiment from recent articles. Claude AI reads each article about the stock, rates it from -1.0 (extremely negative) to +1.0 (extremely positive), and assigns a confidence level (0–1). The final score is displayed scaled to -100 to +100 in the UI. The card shows "scored n of m articles": m articles were analyzed, n of them counted (irrelevant articles and repeats of the same event are shown greyed as "not scored").
           </p>
           <div className="def-formula">
-            <span className="formula-label">Method:</span> For each relevant article: Claude assigns (sentiment, confidence). Raw score = sum(sentiment × confidence) / sum(confidence). Displayed as raw score × 100.
+            <span className="formula-label">Method:</span> For each counted article: weight = confidence × recency × source. Recency halves every 4 days (floor 0.05, undated articles count as 7 days old). Company-issued wires (Business Wire, GlobeNewswire, PR Newswire, Accesswire) weigh 0.5 unless they carry a risk flag. Raw score = sum(sentiment × weight) / sum(weight). Displayed as raw score × 100.
           </div>
           <div className="score-breakdown-details">
-            <p><strong>Step 1:</strong> Fetch up to 10 recent articles per stock from 10,000+ news sources.</p>
+            <p><strong>Step 1:</strong> Fetch up to 12 recent articles per stock (FMP, plus TickerTick after earnings, a price-vs-news divergence, or thin FMP coverage), keeping only stories about the company.</p>
             <p><strong>Step 2:</strong> Claude AI reads each article and rates: Is it relevant to this stock? What's the sentiment (-1 to +1)? How confident is it (0 to 1)?</p>
-            <p><strong>Step 3:</strong> Irrelevant articles are discarded. Remaining articles are averaged, weighted by confidence (a definitive article with confidence 0.9 counts more than a vague one at 0.3).</p>
+            <p><strong>Step 3:</strong> Irrelevant articles are discarded and the same event reported twice counts once. Remaining articles are averaged by weight: confidence × recency × source (a fresh, confident article counts far more than a week-old recap or a company press release).</p>
             <p><strong>Step 4:</strong> Risk flags extracted (fraud allegations, SEC investigations, lawsuits, etc.) — these become hard penalties on the Investability Score.</p>
-            <p><strong>Example:</strong> 3 relevant articles with (sentiment=+0.6, conf=0.9), (sentiment=+0.2, conf=0.5), (sentiment=-0.3, conf=0.7). Raw score = (0.6×0.9 + 0.2×0.5 + -0.3×0.7) / (0.9 + 0.5 + 0.7) = 0.44 / 2.1 = <strong>+0.21</strong> → displayed as <strong>+21</strong> in the UI.</p>
+            <p><strong>Example:</strong> 3 counted articles: (sentiment=+0.6, conf=0.9, today), (+0.2, conf=0.5, 4 days old), (-0.3, conf=0.7, 8 days old). Weights = 0.9, 0.5×0.5 = 0.25, 0.7×0.25 = 0.175. Raw score = (0.54 + 0.05 - 0.0525) / 1.325 = <strong>+0.41</strong> → displayed as <strong>+41</strong> in the UI. A score of 0 on a scored article is shown as a grey 0; "not scored" articles show no number.</p>
           </div>
+        </div>
+
+        <div className="definition-card">
+          <div className="def-header">
+            <span className="def-name">Earnings Guidance</span>
+          </div>
+          <p className="def-text">
+            Article-by-article sentiment misses the outlook: a company can beat the quarter while guiding below consensus, and the stock falls. After an earnings event (earnings or results headlines in the last 7 days), Claude reads the best long text available (transcript or full release) plus analyst notes once and reports what the text states: guidance versus prior, guidance versus consensus, margin outlook, demand outlook, pull-forward or one-time items, and analyst actions. Anything the text does not state is "not stated"; the model is not allowed to guess consensus.
+          </p>
+          <div className="def-formula">
+            <span className="formula-label">Effect:</span> a negative verdict lowers the Investability Score by up to 15 points (see Guidance Penalty above), fading to zero over 30 days. The Table shows G▼ for a negative reading. At most 12 stocks are read per run and each earnings event is read once (one re-read if the transcript arrives later).
+          </div>
+        </div>
+
+        <div className="definition-card">
+          <div className="def-header">
+            <span className="def-name">Price vs News Divergence (DIV)</span>
+          </div>
+          <p className="def-text">
+            Advisory flag, never part of the score or the screen. It lights when news sentiment is clearly positive (above +0.30) while the price dropped sharply: down 10% or more over 3 trading days (strong, red), or down 7% or more with volume at least 2x the prior 20-day average (mild, amber). It stays lit for about 5 sessions after the drop. It means "check why": the news we scored may be missing the reason for the fall.
+          </p>
         </div>
       </div>
 

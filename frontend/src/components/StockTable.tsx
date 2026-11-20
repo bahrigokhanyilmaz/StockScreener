@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Stock, IndustryAverages } from '../api.ts';
 import type { TrendData } from '../utils/trends.ts';
+import { divergenceMessage, guidanceTooltip, isNegativeGuidance } from '../utils/signals.ts';
 
 /**
  * StockTable Component
@@ -223,8 +224,8 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
 
   const columns: { key: string; label: string; className?: string; tooltip?: string }[] = [
     { key: 'symbol', label: 'Stock', className: 'sticky-col', tooltip: 'Company ticker and name' },
-    { key: 'investability_score', label: 'Score', className: 'sticky-col-2', tooltip: 'Investability Score (0-100): 60% fundamentals + 25% sentiment + 15% competition + risk penalties' },
-    { key: 'risk_flags', label: 'Risk', tooltip: 'Active risk flags from news analysis (hover for details)' },
+    { key: 'investability_score', label: 'Score', className: 'sticky-col-2', tooltip: 'Investability Score (0-100): 60% fundamentals + 25% sentiment + 15% competition + risk and earnings-guidance penalties' },
+    { key: 'risk_flags', label: 'Risk', tooltip: 'Active risk flags from news analysis (hover for details). DIV = price fell while news is positive. G▼ = negative earnings guidance' },
     { key: 'competition_score', label: 'Comp', tooltip: 'Competition score (1=dominant, 5=fragmented). Shows HHI→Claude-adjusted. Factors in AI disruption threat (how easily offerings can be replicated by AI). Lower is better. Hover a value for reasoning.' },
     { key: 'tracking_status', label: 'Status', tooltip: 'ACTIVE = passes current filters. GRACE = previously active, monitoring for 30 days.' },
     { key: 'first_tracked', label: 'Days', tooltip: 'Days since the stock was first tracked by the pipeline' },
@@ -375,6 +376,17 @@ export default function StockTable({ stocks, trends, ownedSymbols, industryAvera
                       </span>
                     );
                   })()}
+                  {stock.news_price_divergence && (
+                    <span
+                      className={`divergence-badge divergence-${stock.news_price_divergence.tier}`}
+                      title={divergenceMessage(stock.news_price_divergence)}
+                    >
+                      DIV
+                    </span>
+                  )}
+                  {stock.guidance_signal && isNegativeGuidance(stock.guidance_signal) && (
+                    <span className="guidance-marker" title={guidanceTooltip(stock.guidance_signal)}>G▼</span>
+                  )}
                 </td>
                 <td className="comp-cell" title={`${stock.ai_threat ? `AI threat: ${stock.ai_threat}\n` : ''}${stock.competition_reasoning || ''}`}>
                   {stock.competition_score != null ? (

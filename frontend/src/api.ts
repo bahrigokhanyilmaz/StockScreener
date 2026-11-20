@@ -7,6 +7,42 @@
 
 import { API_BASE_URL } from './config.ts';
 
+/** Advisory flag from Step 7: news is positive while the price fell sharply. Returns are fractions (-0.307 = -30.7%). */
+export interface NewsPriceDivergence {
+  flag: boolean;
+  tier: 'strong' | 'mild';
+  return_3d: number;
+  return_1d: number | null;
+  volume_ratio: number | null;
+  sentiment: number;
+  as_of: string;
+  trigger_date: string;
+}
+
+export interface GuidanceAnalystAction {
+  firm: string;
+  action: string;
+  target: string;
+}
+
+/** Step 6 extraction of an earnings event; components the text did not state are 'not_stated'. */
+export interface GuidanceSignal {
+  guidance_vs_prior: 'raised' | 'maintained' | 'narrowed' | 'lowered' | 'not_stated';
+  guidance_vs_consensus: 'above' | 'in_line' | 'below' | 'not_stated';
+  margin_outlook: 'up' | 'flat' | 'down' | 'not_stated';
+  demand_outlook: 'up' | 'flat' | 'down' | 'not_stated';
+  one_time_or_pull_forward_flag: boolean;
+  analyst_actions: GuidanceAnalystAction[];
+  key_quotes_or_numbers: string[];
+  evidence_fields_present: string[];
+  verdict: 'positive' | 'neutral' | 'negative';
+  confidence: number;
+  event_key: string;
+  event_date: string;
+  extracted_at: string;
+  extracted_on: string;
+}
+
 export interface Stock {
   symbol: string;
   company_name: string;
@@ -22,6 +58,10 @@ export interface Stock {
   fundamental_score: number | null;
   sentiment_score: number | null;
   sentiment_confidence: number | null;
+  sentiment_scored_count?: number | null;
+  sentiment_article_count?: number | null;
+  news_price_divergence?: NewsPriceDivergence | null;
+  guidance_signal?: GuidanceSignal | null;
   tracking_status: string;
   pe_ratio: number | null;
   forward_pe: number | null;
@@ -102,6 +142,11 @@ export interface NewsArticle {
   confidence?: number;
   risk_flags?: string[];
   summary?: string;
+  // Stored articles only. Legacy items lack scored; fall back to relevant, then treat as scored.
+  scored?: boolean;
+  relevant?: boolean;
+  duplicate_of?: string;
+  snippet?: string;
 }
 
 export async function getStockNews(ticker: string): Promise<{ articles: NewsArticle[]; count: number }> {

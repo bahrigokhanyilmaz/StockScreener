@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { getStockDetail, getStockHistory, getStockNews, getStockPrices } from '../api.ts';
-import type { Stock, ScoreHistoryPoint, NewsArticle, PriceBar } from '../api.ts';
+import type { Stock, ScoreHistoryPoint, NewsArticle, PriceBar, GuidanceSignal } from '../api.ts';
 import { calculateTrend } from '../utils/trends.ts';
 import type { TrendData } from '../utils/trends.ts';
+import { daysSince, divergenceMessage, guidanceLines, isArticleScored, isNegativeGuidance } from '../utils/signals.ts';
 import MetricsGuide from './MetricsGuide.tsx';
 
 /**
@@ -124,7 +125,8 @@ export default function StockDetail({ ticker, onClose }: Props) {
           <div className="score-section">
             <ScoreCard label="Investability" value={stock.investability_score} max={100} color={scoreColor(stock.investability_score)} />
             <ScoreCard label="Fundamental" value={stock.fundamental_score} max={100} color="#3b82f6" />
-            <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)} />
+            <ScoreCard label="Sentiment" value={stock.sentiment_score !== null ? stock.sentiment_score * 100 : null} max={100} min={-100} color={sentimentColor(stock.sentiment_score)}
+              caption={sentimentCaption(stock)} />
           </div>
 
           {/* Price Sparkline */}
@@ -160,6 +162,20 @@ export default function StockDetail({ ticker, onClose }: Props) {
               )}
             </div>
           )}
+
+          {stock.news_price_divergence && (
+            <div className={`divergence-banner divergence-${stock.news_price_divergence.tier}`}>
+              ⚠ {divergenceMessage(stock.news_price_divergence)}
+              <span className="divergence-meta">
+                {' '}(sentiment {stock.news_price_divergence.sentiment >= 0 ? '+' : ''}{stock.news_price_divergence.sentiment.toFixed(2)}
+                {stock.news_price_divergence.volume_ratio != null ? `, volume ${stock.news_price_divergence.volume_ratio.toFixed(1)}x normal` : ''}
+                , as of {stock.news_price_divergence.as_of})
+              </span>
+            </div>
+          )}
+
+          {/* Earnings Guidance */}
+          {stock.guidance_signal && <GuidanceBlock signal={stock.guidance_signal} />}
 
           {/* Risk Flags */}
           {stock.risk_flags && stock.risk_flags.length > 0 && (
@@ -224,35 +240,57 @@ export default function StockDetail({ ticker, onClose }: Props) {
                 {news.length === 0 ? (
                   <p className="news-empty">Loading news...</p>
                 ) : (
-                  news.map((article, i) => (
-                    <a key={i} href={article.url} target="_blank" rel="noopener noreferrer" className="news-item">
-                      <span className="news-title">
-                        {article.title}
-                        {article.risk_flags && article.risk_flags.length > 0 && (
-                          article.risk_flags.map((flag: string, fi: number) => (
-                            <span key={fi} className="article-risk-badge">
-                              {formatArticleFlag(flag)}
+                  news.map((article, i) => {
+                    const scored = isArticleScored(article);
+                    // 0 is a real score only for scored articles; unscored ones show "not scored" instead
+                    const hasScore = scored && article.sentiment !== undefined;
+                    return (
+                      <a key={i} href={article.url} target="_blank" rel="noopener noreferrer"
+                        className={`news-item ${scored ? '' : 'news-unscored'}`}>
+                        <span className="news-title">
+                          {article.title}
+                          {article.risk_flags && article.risk_flags.length > 0 && (
+                            article.risk_flags.map((flag: string, fi: number) => (
+                              <span key={fi} className="article-risk-badge">
+                                {formatArticleFlag(flag)}
+                              </span>
+                            ))
+                          )}
+                        </span>
+                        <span className="news-meta">
+                          {article.source}
+                          {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
+                          {hasScore && (
+                            <span className={`article-sentiment ${article.sentiment! > 0 ? 'positive' : article.sentiment! < 0 ? 'negative' : 'zero'}`}>
+                              {article.sentiment! > 0 ? '+' : ''}{(article.sentiment! * 100).toFixed(0)}
                             </span>
-                          ))
+                          )}
+                          {hasScore && article.confidence !== undefined && (
+                            <span className="article-confidence" title="Model confidence in this score">
+                              conf {(article.confidence * 100).toFixed(0)}%
+                            </span>
+                          )}
+                          {!scored && (
+                            <span className="not-scored-tag"
+                              title={article.duplicate_of ? `Same event as: ${article.duplicate_of}` : 'Not counted toward sentiment'}>
+                              {article.duplicate_of ? 'duplicate · not scored' : 'not scored'}
+                            </span>
+                          )}
+                        </span>
+                        {scored && article.summary && (
+                          <span className="news-desc">{article.summary}</span>
                         )}
-                      </span>
-                      <span className="news-meta">
-                        {article.source}
-                        {article.published_at ? ` · ${formatTimeAgo(article.published_at)}` : ''}
-                        {article.sentiment !== undefined && article.sentiment !== 0 && (
-                          <span className={`article-sentiment ${article.sentiment > 0 ? 'positive' : 'negative'}`}>
-                            {article.sentiment > 0 ? '+' : ''}{(article.sentiment * 100).toFixed(0)}
+                        {!scored && (article.snippet || article.description) && (
+                          <span className="news-desc">
+                            {(article.snippet || article.description).slice(0, 160)}...
                           </span>
                         )}
-                      </span>
-                      {article.summary && (
-                        <span className="news-desc">{article.summary}</span>
-                      )}
-                      {!article.summary && article.description && (
-                        <span className="news-desc">{article.description.slice(0, 120)}...</span>
-                      )}
-                    </a>
-                  ))
+                        {scored && !article.summary && article.description && (
+                          <span className="news-desc">{article.description.slice(0, 120)}...</span>
+                        )}
+                      </a>
+                    );
+                  })
                 )}
               </div>
             )}
@@ -304,8 +342,58 @@ function Sparkline({ closes, isFalling }: { closes: number[]; isFalling: boolean
   );
 }
 
-function ScoreCard({ label, value, max, min = 0, color }: {
-  label: string; value: number | null; max: number; min?: number; color: string;
+function sentimentCaption(stock: Stock): string | undefined {
+  const parts: string[] = [];
+  const scored = stock.sentiment_scored_count;
+  const total = stock.sentiment_article_count;
+  if (scored != null && total != null) parts.push(`scored ${scored} of ${total} articles`);
+  if (stock.sentiment_confidence != null) parts.push(`confidence ${(stock.sentiment_confidence * 100).toFixed(0)}%`);
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+const GUIDANCE_VERDICT_COLOR: Record<string, string> = { negative: '#ef4444', neutral: '#f59e0b', positive: '#22c55e' };
+
+function GuidanceBlock({ signal }: { signal: GuidanceSignal }) {
+  const stated = signal.evidence_fields_present?.length ?? 0;
+  return (
+    <div className="guidance-block">
+      <h4>
+        Guidance{' '}
+        <span className="guidance-verdict" style={{ color: GUIDANCE_VERDICT_COLOR[signal.verdict] }}>
+          {signal.verdict}
+        </span>
+      </h4>
+      <div className="guidance-meta">
+        Earnings of {signal.event_date} · read {daysSince(signal.extracted_on)}d ago · confidence {(signal.confidence * 100).toFixed(0)}%
+        {isNegativeGuidance(signal) ? ' · lowers the Investability Score (decays over 30 days)' : ' · does not change the score'}
+      </div>
+      <div className="guidance-lines">
+        {guidanceLines(signal).map(line => (
+          <div key={line.label} className="guidance-line">
+            <span className="guidance-label">{line.label}</span>
+            <span className={`guidance-value ${line.bad ? 'guidance-bad' : ''}`}>{line.value}</span>
+          </div>
+        ))}
+      </div>
+      {signal.analyst_actions?.length > 0 && (
+        <div className="guidance-actions">
+          {signal.analyst_actions.map((a, i) => (
+            <span key={i} className="guidance-action">{a.firm}: {a.action}{a.target ? ` ${a.target}` : ''}</span>
+          ))}
+        </div>
+      )}
+      {signal.key_quotes_or_numbers?.length > 0 && (
+        <ul className="guidance-quotes">
+          {signal.key_quotes_or_numbers.map((q, i) => <li key={i}>{q}</li>)}
+        </ul>
+      )}
+      {stated === 0 && <div className="guidance-meta">The coverage did not state any guidance figures.</div>}
+    </div>
+  );
+}
+
+function ScoreCard({ label, value, max, min = 0, color, caption }: {
+  label: string; value: number | null; max: number; min?: number; color: string; caption?: string;
 }) {
   const display = value !== null ? value.toFixed(0) : '—';
   const percentage = value !== null ? ((value - min) / (max - min)) * 100 : 0;
@@ -316,6 +404,7 @@ function ScoreCard({ label, value, max, min = 0, color }: {
         <div className="score-bar-fill" style={{ width: `${Math.max(0, Math.min(100, percentage))}%`, backgroundColor: color }} />
       </div>
       <div className="score-label">{label}</div>
+      {caption && <div className="score-caption">{caption}</div>}
     </div>
   );
 }

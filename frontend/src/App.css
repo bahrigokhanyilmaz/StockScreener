@@ -1698,3 +1698,78 @@ th.sticky-col-2 {
   vertical-align: middle;
   cursor: help;
 }
+
+/* Price-vs-news divergence and earnings guidance */
+.divergence-badge {
+  display: inline-block;
+  margin-left: 0.3rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  cursor: default;
+}
+.divergence-badge.divergence-strong { background: #7f1d1d; color: #fca5a5; }
+.divergence-badge.divergence-mild { background: #713f12; color: #fcd34d; }
+.guidance-marker {
+  display: inline-block;
+  margin-left: 0.3rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  background: #450a0a;
+  color: #f87171;
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: default;
+}
+.divergence-banner {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 4px;
+}
+.divergence-banner.divergence-strong { background: #450a0a; color: #fca5a5; }
+.divergence-banner.divergence-mild { background: #422006; color: #fcd34d; }
+.divergence-meta { opacity: 0.8; }
+.guidance-block {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+.guidance-block h4 { margin: 0 0 0.2rem; }
+.guidance-verdict { text-transform: uppercase; font-size: 0.7rem; margin-left: 0.3rem; }
+.guidance-meta { font-size: 0.68rem; color: #64748b; margin-bottom: 0.4rem; }
+.guidance-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  padding: 0.1rem 0;
+}
+.guidance-label { color: #94a3b8; }
+.guidance-value { color: #e2e8f0; text-transform: capitalize; }
+.guidance-value.guidance-bad { color: #f87171; font-weight: 700; }
+.guidance-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+.guidance-action {
+  font-size: 0.66rem;
+  background: #1e293b;
+  color: #cbd5e1;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+.guidance-quotes { margin: 0.4rem 0 0; padding-left: 1.1rem; font-size: 0.7rem; color: #94a3b8; }
+.score-caption { font-size: 0.6rem; color: #64748b; margin-top: 0.15rem; }
+
+/* News: unscored articles and zero-score badge */
+.news-item.news-unscored { opacity: 0.55; }
+.not-scored-tag {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  font-size: 0.58rem;
+  color: #94a3b8;
+}
+.article-sentiment.zero { color: #94a3b8; }
+.article-confidence { margin-left: 0.4rem; font-size: 0.6rem; color: #64748b; }
