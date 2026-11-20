@@ -7,7 +7,8 @@ A value stock screening application that combines fundamental financial analysis
 1. **Scans the entire US stock market** — SEC EDGAR provides financials for ~5,097 companies in ~10 API calls
 2. **Two-pass filtering** — Pre-screen (EDGAR metrics) narrows to ~69, then full screen (with Finnhub enrichment) to ~6 final picks
 3. **Fetches news** — Recent articles from ~10,000 sources per passing stock (TickerTick)
-4. **Analyzes sentiment** — Claude AI (Bedrock Haiku 4.5) scores each article and detects risk flags
+4. **Analyzes sentiment** — Claude AI (Bedrock Haiku 4.5) scores each article and detects risk flags. Recent articles weigh more (4-day half-life), repeated coverage of one event counts once, and company press releases weigh half
+   A price-vs-news flag warns when positive sentiment meets a sharp 3-day drop (advisory only)
 5. **Calculates investability** — Combines fundamental quality (70%) + sentiment (30%) into a 0-100 score
 6. **Shows company profiles** — Business descriptions from Polygon, logos/industry from Finnhub
 7. **Alerts you** — Email notification when stocks breach thresholds or new value picks appear

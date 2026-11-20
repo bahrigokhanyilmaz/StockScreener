@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 
 import boto3
 
+from news_text import dedupe_articles, published_utc
+
 # AWS clients
 s3_client = boto3.client("s3")
 bedrock_client = boto3.client("bedrock-runtime")
@@ -54,8 +56,9 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
 }}
 
 Scoring guide:
-- relevant: Is this article actually about {ticker} AND does it contain substantive information about the company's business, financials, or prospects? Mark FALSE for: scheduling announcements (conference attendance, earnings date notices), press release date notifications, articles that mention the company only in passing, or stub articles with no real content.
-- sentiment: -1.0 = very negative for stock (fraud, lawsuits, bankruptcy). 0.0 = neutral. +1.0 = very positive (strong earnings beat, major contract win).
+- relevant: Is this article actually about {ticker} AND does it contain substantive information about the company's business, financials, or prospects? Earnings releases, earnings call transcripts or highlights, and analyst rating or price-target notes are ALWAYS relevant, even when the text is short: give them low confidence (0.4 or below) instead of marking them irrelevant. Mark FALSE only for: conference or webcast attendance and earnings-date notices with no business content, articles about a different company, and articles that mention the company only in passing.
+- sentiment: -1.0 = very negative for stock (fraud, lawsuits, bankruptcy, guidance cut far below consensus). 0.0 = neutral. +1.0 = very positive (strong earnings beat, major contract win). Score negative for: guidance below consensus or lowered guidance, margin compression, a price target cut, an analyst downgrade, demand pulled forward from future quarters. A headline beat does not make an article positive if the outlook is weaker.
+- Company-issued press releases (Business Wire, GlobeNewswire, PR Newswire) are promotional: lower your confidence unless independent reporting corroborates them. Judge guidance versus consensus ONLY if the text states the consensus figure; never assume it.
 - confidence: How confident you are in the sentiment score. Low confidence for short/vague articles.
 - risk_flags: Only include if the article describes one of these SPECIFIC situations. Use ONLY these exact values — do not invent new ones:
   "SEC_investigation" — active SEC enforcement or investigation
@@ -252,77 +255,106 @@ def assess_competition(stock: dict, analyzed_articles: list, model_id: str) -> d
         }
 
 
-def calculate_aggregate_sentiment(analyzed_articles: list) -> dict:
+# Recency: a story loses half its weight every RECENCY_HALF_LIFE_DAYS (matches the
+# 5-day decay of one-time risk flags). Floor keeps old-but-relevant stories alive.
+RECENCY_HALF_LIFE_DAYS = 4.0
+RECENCY_FLOOR = 0.05
+UNDATED_AGE_DAYS = 7.0
+# Company-issued wires are promotional; weigh them below independent reporting.
+WIRE_WEIGHT = 0.5
+WIRE_SOURCES = ("business wire", "businesswire", "globenewswire", "globe newswire",
+                "pr newswire", "prnewswire", "accesswire")
+
+
+def _is_company_wire(article: dict) -> bool:
+    source = str(article.get("source", "")).lower()
+    return any(w in source for w in WIRE_SOURCES)
+
+
+def _article_weight(article: dict, now: datetime) -> float:
+    """confidence x recency x source. Wires keep full weight when they carry a risk flag."""
+    analysis = article["analysis"]
+    published = published_utc(article.get("published_at"))
+    age_days = UNDATED_AGE_DAYS if published is None else max(0.0, (now - published).total_seconds() / 86400)
+    recency = max(RECENCY_FLOOR, 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS))
+    source = WIRE_WEIGHT if _is_company_wire(article) and not analysis.get("risk_flags") else 1.0
+    return analysis["confidence"] * recency * source
+
+
+def calculate_aggregate_sentiment(analyzed_articles: list, now: datetime = None) -> dict:
     """
     Aggregate per-article sentiments into a single score for the stock.
 
     Weighting:
     - Only relevant articles are counted
-    - Higher confidence articles weigh more
-    - More recent articles weigh more (recency decay)
+    - The same event reported twice counts once (near-duplicate titles within
+      2 days; the more confident article is kept). Every analyzed article gets
+      analysis["counted"] (and analysis["duplicate_of"] for dropped ones) set in place.
+    - weight = confidence x recency (half-life 4 days) x source (wires 0.5
+      unless the article carries a risk flag)
+
+    sentiment_score = sum(sentiment x weight) / sum(weight).
+    confidence = sum(weight x confidence) / sum(weight).
 
     Returns:
         Dict with aggregate sentiment score and breakdown
     """
+    now = now or datetime.now(timezone.utc)
     relevant_articles = [a for a in analyzed_articles if a["analysis"]["relevant"]]
+
+    kept, dropped = dedupe_articles(relevant_articles, near_duplicates=True)
+    kept_ids = {id(a) for a in kept}
+    for article in analyzed_articles:
+        analysis = article["analysis"]
+        analysis["counted"] = id(article) in kept_ids
+        if analysis["relevant"] and not analysis["counted"]:
+            analysis["duplicate_of"] = dropped.get(article.get("title", ""), "")
 
     if not relevant_articles:
         return {
             "sentiment_score": 0.0,
             "confidence": 0.0,
-            "article_count": 0,
+            "article_count": len(analyzed_articles),
             "relevant_count": 0,
+            "scored_count": 0,
             "risk_flags": [],
+            "risk_flags_with_dates": [],
             "positive_count": 0,
             "negative_count": 0,
             "neutral_count": 0,
         }
 
-    # Weighted average: weight = confidence
-    total_weight = 0.0
-    weighted_sum = 0.0
+    # Risk flags come from ALL relevant articles: a duplicate must not hide a flag.
     all_risk_flags = []
     risk_flag_dates = {}  # flag → earliest article publication date
-    positive = 0
-    negative = 0
-    neutral = 0
-
     for article in relevant_articles:
-        analysis = article["analysis"]
-        confidence = analysis["confidence"]
-        sentiment = analysis["sentiment"]
-
-        weighted_sum += sentiment * confidence
-        total_weight += confidence
-
-        # Track risk flags with the article's publication date
-        for flag in analysis.get("risk_flags", []):
+        published = published_utc(article.get("published_at"))
+        pub_date = published.strftime("%Y-%m-%d") if published else ""
+        for flag in article["analysis"].get("risk_flags", []):
             all_risk_flags.append(flag)
-            pub_time = article.get("published_at", "")
-            # Handle both formats:
-            # - FMP: "2026-08-02 08:53:01" (string)
-            # - Legacy TickerTick: Unix timestamp in ms (integer)
-            pub_date = ""
-            if isinstance(pub_time, str) and pub_time:
-                # FMP format: "2026-08-02 08:53:01" → take date part
-                pub_date = pub_time[:10]
-            elif isinstance(pub_time, (int, float)) and pub_time > 0:
-                from datetime import datetime, timezone
-                ts = pub_time / 1000 if pub_time > 1e12 else pub_time
-                pub_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-            # Keep the earliest publication date per flag
             if flag not in risk_flag_dates or (pub_date and pub_date < risk_flag_dates[flag]):
                 risk_flag_dates[flag] = pub_date
 
-        if sentiment > 0.1:
+    total_weight = 0.0
+    weighted_sentiment = 0.0
+    weighted_confidence = 0.0
+    positive = negative = neutral = 0
+    for article in kept:
+        analysis = article["analysis"]
+        weight = _article_weight(article, now)
+        weighted_sentiment += analysis["sentiment"] * weight
+        weighted_confidence += analysis["confidence"] * weight
+        total_weight += weight
+
+        if analysis["sentiment"] > 0.1:
             positive += 1
-        elif sentiment < -0.1:
+        elif analysis["sentiment"] < -0.1:
             negative += 1
         else:
             neutral += 1
 
-    aggregate_score = weighted_sum / total_weight if total_weight > 0 else 0.0
-    aggregate_confidence = total_weight / len(relevant_articles) if relevant_articles else 0.0
+    aggregate_score = weighted_sentiment / total_weight if total_weight > 0 else 0.0
+    aggregate_confidence = weighted_confidence / total_weight if total_weight > 0 else 0.0
 
     # Deduplicate risk flags, attach earliest article date
     unique_flags = list(set(all_risk_flags))
@@ -336,6 +368,7 @@ def calculate_aggregate_sentiment(analyzed_articles: list) -> dict:
         "confidence": round(aggregate_confidence, 3),
         "article_count": len(analyzed_articles),
         "relevant_count": len(relevant_articles),
+        "scored_count": len(kept),
         "risk_flags": unique_flags,
         "risk_flags_with_dates": risk_flags_with_dates,
         "positive_count": positive,

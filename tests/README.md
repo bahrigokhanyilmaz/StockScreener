@@ -31,6 +31,11 @@ Principle #14), the suite MUST pass before every deploy.
 | `test_bar_backfill.py` | Step 7 stores only FINAL bars; skip/settle rules; FMP error and write-failure fallbacks; legacy items; `market_cap` recompute (regression: HLIO partial bar frozen) |
 | `test_price_sync.py` | Price synced to the newest final bar close |
 | `test_estimates.py` | Estimate snapshot builder, `eps_revision_pct`, enrichment `shares_implied`/snapshot persistence, Step 7 `price_as_of`/`estimates` persistence |
+| `test_price_signals.py` | Divergence flag thresholds, tiers, lookback; HLIO real-bar regression (fixtures in `tests/fixtures/hlio/`) |
+| `test_divergence_persistence.py` | Step 7 writes/clears `news_price_divergence`, tracking + price fields untouched, API passes new fields through |
+| `test_news_text.py` | Title normalization, date parsing, exact/near dedupe, vendored-copy equality |
+| `test_sentiment_aggregation.py` | Aggregation (recency, wires, dedupe, counts) and prompt contract; HLIO duplicate-recap regression |
+| `test_article_storage.py` | Newest-10 relevant-first article storage; score still uses all articles |
 | `test_repair_provisional_bars.py` | Repair script: dry-run default (no writes), conditional `--apply`, key redaction, mark warning |
 | `test_data_integrity.py` | Audit invariants incl. provisional-bar, `price_as_of` and stale-bar checks |
 | `test/stock-screener.test.ts` (Jest) | CDK: one `AWS::Scheduler::Schedule` (5 PM America/New_York), no old Events rule |

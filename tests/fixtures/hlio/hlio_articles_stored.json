@@ -1,0 +1,68 @@
+[
+ {
+  "confidence": 0.95,
+  "published_at": "2026-11-17 06:21:37",
+  "relevant": false,
+  "risk_flags": [],
+  "sentiment": 0,
+  "source": "Defense World",
+  "summary": "A routine institutional shareholding adjustment with no material implications for the company's business or prospects.",
+  "title": "Helios Technologies, Inc $HLIO Shares Sold by Aberdeen Group plc",
+  "url": "https://www.defenseworld.net/2026/11/17/helios-technologies-inc-hlio-shares-sold-by-aberdeen-group-plc.html"
+ },
+ {
+  "confidence": 0.85,
+  "published_at": "2026-11-07 09:21:06",
+  "relevant": true,
+  "risk_flags": [],
+  "sentiment": 0.75,
+  "source": "MarketBeat",
+  "summary": "Helios Technologies delivered record Q3 sales and raised full-year 2026 revenue guidance, demonstrating strong operational performance across both business segments despite macroeconomic headwinds.",
+  "title": "Helios Technologies Q3 Earnings Call Highlights",
+  "url": "https://www.marketbeat.com/instant-alerts/transcript-helios-technologies-q3-earnings-call-highlights-2026-11-07/"
+ },
+ {
+  "confidence": 0.85,
+  "published_at": "2026-11-10 03:53:32",
+  "relevant": true,
+  "risk_flags": [],
+  "sentiment": 0.75,
+  "source": "Defense World",
+  "summary": "Helios Technologies delivered record Q3 sales with raised 2026 guidance, demonstrating resilience across hydraulics and electronics segments despite macroeconomic headwinds.",
+  "title": "Helios Technologies Q3 Earnings Call Highlights",
+  "url": "https://www.defenseworld.net/2026/11/10/helios-technologies-q3-earnings-call-highlights.html"
+ },
+ {
+  "confidence": 0.1,
+  "published_at": "2026-11-06 14:34:45",
+  "relevant": false,
+  "risk_flags": [],
+  "sentiment": 0,
+  "source": "Seeking Alpha",
+  "summary": "This is a scheduling announcement for an earnings call with no substantive financial or business information provided.",
+  "title": "Helios Technologies, Inc. (HLIO) Q3 2026 Earnings Call Transcript",
+  "url": "https://seekingalpha.com/article/4964119-helios-technologies-inc-hlio-q3-2026-earnings-call-transcript"
+ },
+ {
+  "confidence": 0.3,
+  "published_at": "2026-11-05 20:00:51",
+  "relevant": false,
+  "risk_flags": [],
+  "sentiment": 0,
+  "source": "Zacks Investment Research",
+  "summary": "This is a scheduling announcement for Q3 2026 earnings analysis with no substantive financial data or business information provided.",
+  "title": "Here's What Key Metrics Tell Us About Helios Technologies (HLIO) Q3 Earnings",
+  "url": "https://www.zacks.com/stock/news/3024989/here-s-what-key-metrics-tell-us-about-helios-technologies-hlio-q3-earnings?cid=CS-STOCKNEWSAPI-FT-fundamental_analysis|nfm-3024989"
+ },
+ {
+  "confidence": 0.75,
+  "published_at": "2026-11-05 21:02:04",
+  "relevant": true,
+  "risk_flags": [],
+  "sentiment": 0.65,
+  "source": "Zacks Investment Research",
+  "summary": "HLIO beat Q3 earnings estimates with $0.80 EPS versus $0.75 consensus and showed year-over-year growth, indicating solid operational performance.",
+  "title": "Helios Technologies (HLIO) Tops Q3 Earnings and Revenue Estimates",
+  "url": "https://www.zacks.com/stock/news/3025091/helios-technologies-hlio-tops-q3-earnings-and-revenue-estimates?cid=CS-STOCKNEWSAPI-FT-fundamental_analysis|yseop_template_4-3025091"
+ }
+]

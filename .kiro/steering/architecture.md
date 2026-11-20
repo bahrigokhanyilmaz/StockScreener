@@ -124,7 +124,8 @@ Total: ~12-15 minutes per run.
 - Amazon Bedrock Claude Haiku 4.5 per article
 - Returns: relevance, sentiment (-1 to +1), confidence, risk flags, summary
 - Risk flags constrained to 8 values (fraud, SEC investigation, accounting, regulatory, lawsuit, revenue risk, management departure, product recall)
-- Aggregate per stock: confidence-weighted average sentiment
+- Prompt: earnings releases, transcripts and analyst rating/price-target notes are always relevant (short text = low confidence, not irrelevant). Negative anchors: guidance below consensus/lowered, margin compression, price target cut, downgrade, pull-forward. Company wires are promotional; consensus is judged ONLY if the text states it
+- Aggregate per stock (`calculate_aggregate_sentiment`): weight = confidence × recency × source. Recency half-life 4 days (floor 0.05, undated = 7 days old). Company wires (Business Wire, GlobeNewswire, PR Newswire, Accesswire) ×0.5 unless the article carries a risk flag. Same-event articles count once (`lambdas/shared/news_text.py`: exact normalized title at any date, or token Jaccard ≥ 0.75 within 2 days; higher confidence wins). Each article gets `analysis.counted`/`duplicate_of`. `sentiment_score = Σ(s·w)/Σw`, `confidence = Σ(w·c)/Σw`; also returns `scored_count` (counted relevant articles) and `article_count` (all analyzed)
 - **Competition assessment:** One additional Claude call per stock after all articles analyzed. Receives HHI score + article summaries, returns adjusted competition_score (1-5) + reasoning.
 - **Reasoning:** AI reads every article and produces structured sentiment. Humans can't read 200 articles daily. Claude identifies specific risk categories that feed into the scoring penalty system. Competition assessment leverages Claude's broad knowledge of market dynamics to adjust the quantitative HHI score.
 
@@ -134,6 +135,8 @@ Total: ~12-15 minutes per run.
 - Fetches company descriptions from FMP `/stable/profile` (fallback if not already present)
 - Manages risk flag ledger (time-decay for one-time events, persistence for uncertain events)
 - Persists ALL to DynamoDB: LATEST, SCORE#date, TRACKING, ARTICLES, PRICE_HISTORY#
+- ARTICLES stores the 10 best articles (`select_articles_to_store`: scored first, newest first, then the rest; output newest first) with `scored` and `duplicate_of`. The stock score uses ALL articles (computed in Step 6)
+- **News-vs-price divergence** (`price_signals.news_price_divergence`, advisory, never gates or scores): reads the stored final bars after the backfill. Flags when `sentiment_score > 0.3` and a 3-session return ≤ -10% (strong) or ≤ -7% with volume ≥ 2× the prior-20-bar mean (mild), looking back over the last 5 rolling windows (HLIO stayed lit 8 sessions). Written to `LATEST.news_price_divergence` only when flagged, so absence clears it
 - Computes portfolio signals (green/yellow/red) for owned stocks
 - **Reasoning:** Single step that combines fundamental + sentiment + competition into one actionable score, persists everything for the dashboard, and maintains the risk lifecycle.
 
@@ -250,14 +253,14 @@ Total: ~12-15 minutes per run.
 | STOCK#{ticker} | LATEST | Current scores + all fundamentals + profile (overwritten daily) |
 | STOCK#{ticker} | SCORE#{date} | Historical score snapshot (one per day). Also `price_as_of`, `estimates` (analyst-estimate snapshot map), `estimates_as_of` (New York date of the FMP fetch) |
 | STOCK#{ticker} | TRACKING | Tracking status (ACTIVE/GRACE/MANUAL). Holds first_tracked, last_passed, grace_start, and for manual marks mark_price+mark_date. NOTE: BOTH Step 7 (score-calculator) and Step 8 (alert-checker) rewrite this item every run and MUST preserve first_tracked, mark_price/mark_date, AND grace_start — else "Since Mark" resets or GRACE stocks never expire. grace_start = day it entered GRACE; the 30-day removal clock counts from it (cleared on passing, stamped once on failing) |
-| STOCK#{ticker} | ARTICLES | Analyzed articles with per-article risk flags (overwritten daily) |
+| STOCK#{ticker} | ARTICLES | Up to 10 analyzed articles (newest first, scored preferred) with per-article risk flags, `scored`, `duplicate_of` (overwritten daily) |
 | STOCK#{ticker} | TRACK_HIST#{unmark_ts} | Closed manual-tracking stint: mark_date, mark_price, unmark_date, unmark_price, change_pct. record_type=TRACK_HIST. Persisted on unmark, never overwritten |
 | PRICE_HISTORY#{ticker} | DAILY | 30-day OHLCV FINAL bars only (overwritten when refetched). Also `last_final_date`, `fetched_at` (ISO UTC), `to_date` (= newest bar date). `last_backfill` is no longer written |
 | INDUSTRY_AVG#{industry} | METRICS | Industry median benchmarks (overwritten each pipeline run) |
 
 **GSI**: `tracking-status-index` (PK: tracking_status, SK: last_updated, projection: ALL)
 
-**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, hhi_score, competition_score, competition_reasoning, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, analyst_target_price, target_price_upside, institutional_transactions, last_updated
+**LATEST item fields**: symbol, company_name, company_description, logo, weburl, sector, industry, sic_industry, price, market_cap, investability_score, fundamental_score, sentiment_score, sentiment_confidence, sentiment_scored_count, sentiment_article_count, news_price_divergence (only when flagged: flag/tier/return_3d/return_1d/volume_ratio/sentiment/as_of/trigger_date; returns are fractions), hhi_score, competition_score, competition_reasoning, risk_flags (ledger: list of objects with flag/first_seen/last_seen/days_active), passes_screen, tracking_status, pe_ratio, forward_pe, peg_ratio, price_to_fcf, debt_to_equity, quick_ratio, interest_coverage_ratio, operating_margin, eps_growth_yoy, revenue_growth_yoy, est_lt_growth, analyst_recommendation, analyst_target_price, target_price_upside, institutional_transactions, last_updated
 
 ### API Endpoints
 
@@ -554,6 +557,10 @@ Architecture:
 | TickerTick only for under-covered stocks | Skip TickerTick for stocks with 4+ FMP articles. Saves ~60% of 6.5s-paced API calls |
 | News-fetcher includes all tracked stocks | ACTIVE + GRACE stocks from DynamoDB included in news fetch, not just today's passers. No tracked stock goes stale |
 | FMP ICR=0 treated as null | FMP returns interestCoverageRatioTTM=0 for debt-free companies. We now skip 0 values to avoid overwriting valid null with misleading zero |
+| News-vs-price divergence flag | HLIO fell 30.7% in 3 sessions after earnings while stock sentiment was +0.72. Advisory flag from stored final bars (zero API cost): sentiment > 0.3 (0.3 flags 7 of 81 tracked stocks today; 0.2 flags 10) and 3-day return ≤ -10% (5.5% of 2,497 stored windows) or ≤ -7% with volume ≥ 2× (2.9%). Lookback 5 windows so a weekend cannot clear it. Never gates the screen or changes the score. Computed in Step 7 from `PRICE_HISTORY#` read back after the backfill |
+| Sentiment recency half-life 4 days | Matches the 5-day one-time risk-flag decay; median article (4 days old) weighs 0.5, p90 (15 days) 0.07. The old docstring claimed recency weighting that did not exist |
+| Same-event articles count once | HLIO had the same "Q3 Earnings Call Highlights" recap twice (MarketBeat, Defense World). Aggregation dedupes; risk flags are still collected from every relevant article so a duplicate cannot hide one |
+| Company wires weigh 0.5 | Business Wire/GlobeNewswire/PR Newswire/Accesswire are issuer-written. Exempt when the article carries a risk flag (adverse disclosures are not promotional) |
 | Hollow growth exclusion | Exclude stocks where Forward P/E < Trailing P/E AND LT Growth ≤ 0. Near-term earnings improving but long-term outlook negative = value trap (cost-cutting, not real growth) |
 
 ### Build Progress

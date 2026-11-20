@@ -43,6 +43,8 @@ from market_time import (
     SKIP_SETTLED_AFTER, is_bar_final, latest_final_session_date,
     new_york_date, new_york_dt, parse_utc_iso,
 )
+from news_text import published_utc
+from price_signals import news_price_divergence
 
 # DynamoDB client
 dynamodb = boto3.resource("dynamodb")
@@ -636,6 +638,55 @@ def _from_decimal(obj):
     return obj
 
 
+def attach_news_price_divergence(scored_stocks: list, table) -> None:
+    """
+    Set stock["news_price_divergence"] for stocks whose news is positive while the
+    stored final bars show a sharp drop (see price_signals). Reads the bars back
+    from PRICE_HISTORY# so the flag reflects what was durably stored. Advisory only.
+    A stock that is not flagged gets no key, so the next LATEST write clears it.
+    """
+    for stock in scored_stocks:
+        stock.pop("news_price_divergence", None)
+        symbol = stock.get("symbol")
+        score = (stock.get("sentiment") or {}).get("sentiment_score")
+        if not symbol or score is None:
+            continue
+        try:
+            item = table.get_item(
+                Key={"PK": f"PRICE_HISTORY#{symbol}", "SK": "DAILY"},
+                ProjectionExpression="bars",
+            ).get("Item", {})
+        except Exception as e:
+            print(f"    {symbol}: WARN could not read bars for divergence ({type(e).__name__})")
+            continue
+        flag = news_price_divergence(_from_decimal(item.get("bars") or []), score)
+        if flag:
+            stock["news_price_divergence"] = flag
+
+
+def select_articles_to_store(articles: list, limit: int = 10) -> list:
+    """
+    Pick the articles to persist: scored ones (relevant and counted once) first,
+    newest first, then the rest newest first; the chosen set is returned newest
+    first. The stock's sentiment is computed from ALL articles upstream, so this
+    only decides what the dashboard can show.
+    """
+    def is_scored(a):
+        analysis = a.get("analysis") or {}
+        return bool(analysis.get("relevant", True)) and analysis.get("counted", True) is not False
+
+    def newest_first(items):
+        # Unparseable dates sort last.
+        return sorted(items, key=lambda a: (published_utc(a.get("published_at")) is not None,
+                                            published_utc(a.get("published_at"))
+                                            or datetime.min.replace(tzinfo=timezone.utc)),
+                      reverse=True)
+
+    scored = newest_first([a for a in articles if is_scored(a)])
+    rest = newest_first([a for a in articles if not is_scored(a)])
+    return newest_first((scored + rest)[:limit])
+
+
 def persist_to_dynamodb(scored_stocks: list, today: str):
     """
     Write scored stocks to DynamoDB.
@@ -772,6 +823,9 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "competition_score": stock.get("competition", {}).get("competition_score"),
                 "competition_reasoning": stock.get("competition", {}).get("competition_reasoning", ""),
                 "ai_threat": stock.get("competition", {}).get("ai_threat", ""),
+                "news_price_divergence": stock.get("news_price_divergence"),
+                "sentiment_scored_count": stock.get("sentiment", {}).get("scored_count"),
+                "sentiment_article_count": stock.get("sentiment", {}).get("article_count"),
                 "first_tracked": first_tracked,
                 "last_updated": now_iso,
                 # GSI attributes for querying by tracking status
@@ -848,7 +902,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
             if articles:
                 # Store compact version: title, url, source, published_at, sentiment, risk_flags
                 analyzed_articles = []
-                for article in articles[:10]:  # Cap at 10
+                for article in select_articles_to_store(articles, 10):
                     analysis = article.get("analysis", {})
                     analyzed_articles.append({
                         "title": article.get("title", ""),
@@ -858,6 +912,9 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                         "sentiment": analysis.get("sentiment", 0),
                         "confidence": analysis.get("confidence", 0),
                         "relevant": analysis.get("relevant", True),
+                        "scored": bool(analysis.get("relevant", True))
+                                  and analysis.get("counted", True) is not False,
+                        "duplicate_of": analysis.get("duplicate_of", ""),
                         "risk_flags": analysis.get("risk_flags", []),
                         "summary": analysis.get("summary", ""),
                     })
@@ -1124,6 +1181,10 @@ def handler(event, context):
 
     # Backfill 30-day price history from FMP (for trend detection)
     backfill_price_history(scored, today)
+
+    # Advisory price-vs-news divergence flag (reads the bars just stored)
+    if os.environ.get("DATA_TABLE_NAME"):
+        attach_news_price_divergence(scored, dynamodb.Table(os.environ["DATA_TABLE_NAME"]))
 
     # Persist to DynamoDB
     persist_to_dynamodb(scored, today)
