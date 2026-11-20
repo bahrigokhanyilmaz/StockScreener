@@ -255,6 +255,25 @@ def test_load_latest_signals_reads_flag_and_prior_event(env):
     env.table.put_item(Item={"PK": "STOCK#AAA", "SK": "LATEST", "guidance_signal": {"event_date": "2026-11-05"}})
     env.table.put_item(Item={"PK": "STOCK#BBB", "SK": "LATEST"})
     got = fh.load_latest_signals(env.table, ["AAA", "BBB", "CCC"])
-    assert got["AAA"] == {"news_price_divergence": None, "prior_event_date": "2026-11-05"}
-    assert got["BBB"] == {"news_price_divergence": None, "prior_event_date": None}
-    assert got["CCC"] == {"news_price_divergence": None, "prior_event_date": None}
+    assert got["AAA"] == {"news_price_divergence": None, "prior_event_date": "2026-11-05",
+                          "prior_guidance": {"event_date": "2026-11-05"}}
+    assert got["BBB"] == {"news_price_divergence": None, "prior_event_date": None, "prior_guidance": None}
+    assert got["CCC"] == {"news_price_divergence": None, "prior_event_date": None, "prior_guidance": None}
+
+
+@pytest.mark.integration
+def test_prior_guidance_identity_is_read_and_passed_to_step_6(env):
+    from decimal import Decimal
+    env.table.put_item(Item={
+        "PK": "STOCK#ACME", "SK": "LATEST", "symbol": "ACME", "tracking_status": "ACTIVE",
+        "last_updated": "2026-11-08T00:00:00Z", "company_name": "Acme Corp",
+        "guidance_signal": {"event_key": "ACME:2026-11-05", "event_date": "2026-11-05",
+                            "input_chars": Decimal("4321"), "extraction_count": Decimal("1"),
+                            "verdict": "negative", "analyst_actions": [{"firm": "x"}]}})
+    _fmp(env, {"ACME": _fmp_filler(6)})
+    _install_http(env)
+    out = _run(env, [])
+    prior = out["stocks_with_news"][0]["prior_guidance"]
+    assert prior == {"event_key": "ACME:2026-11-05", "event_date": "2026-11-05",
+                     "input_chars": 4321, "extraction_count": 1}      # identity only, ints stay ints
+    json.dumps(out)

@@ -109,5 +109,5 @@ def test_parse_utc_iso():
 @pytest.mark.unit
 def test_vendored_copy_is_identical():
     a = open(os.path.join(LAMBDAS_DIR, "shared", "market_time.py"), "rb").read()
-    for lam in ("score-calculator", "news-fetcher"):
+    for lam in ("score-calculator", "news-fetcher", "sentiment-analyzer"):
         assert open(os.path.join(LAMBDAS_DIR, lam, "market_time.py"), "rb").read() == a

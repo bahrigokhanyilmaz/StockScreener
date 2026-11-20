@@ -195,26 +195,37 @@ def fetch_tickertick_news(symbol: str, max_articles: int = TT_FEED_SIZE) -> list
         return []
 
 
+def _decimal_number(value):
+    """json default for DynamoDB Decimals: whole numbers stay int (extraction_count), others float."""
+    return int(value) if value == int(value) else float(value)
+
+
 def load_latest_signals(table, symbols: list[str]) -> dict[str, dict]:
     """
     Read-only: per symbol, the stored news_price_divergence (advisory flag from
-    Step 7) and the stored guidance event date. Symbols that fail to read are omitted.
+    Step 7), the stored guidance event date, and prior_guidance (identity of the
+    last extraction: event_key, event_date, input_chars, extraction_count) so
+    Step 6 can skip events it already extracted. Symbols that fail to read are omitted.
     """
     signals = {}
     for sym in symbols:
         try:
             item = table.get_item(
                 Key={"PK": f"STOCK#{sym}", "SK": "LATEST"},
-                ProjectionExpression="news_price_divergence, guidance_signal.event_date",
+                ProjectionExpression="news_price_divergence, guidance_signal.event_key, "
+                                     "guidance_signal.event_date, guidance_signal.input_chars, "
+                                     "guidance_signal.extraction_count",
             ).get("Item") or {}
         except Exception as e:
             print(f"  Warning: could not read LATEST signals for {sym}: {e}")
             continue
         divergence = item.get("news_price_divergence")
+        prior_guidance = item.get("guidance_signal")
         signals[sym] = {
             # Decimal -> float so the value survives the JSON pipeline output
             "news_price_divergence": json.loads(json.dumps(divergence, default=float)) if divergence else None,
-            "prior_event_date": (item.get("guidance_signal") or {}).get("event_date"),
+            "prior_event_date": (prior_guidance or {}).get("event_date"),
+            "prior_guidance": json.loads(json.dumps(prior_guidance, default=_decimal_number)) if prior_guidance else None,
         }
     return signals
 
@@ -444,6 +455,9 @@ def handler(event, context):
         divergence = signals.get(symbol, {}).get("news_price_divergence")
         if divergence:
             stock_out["news_price_divergence"] = divergence
+        prior_guidance = signals.get(symbol, {}).get("prior_guidance")
+        if prior_guidance:
+            stock_out["prior_guidance"] = prior_guidance
         stocks_with_news.append(stock_out)
 
         # Store raw news in S3

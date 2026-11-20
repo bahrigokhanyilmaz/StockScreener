@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 
 import boto3
 
+from guidance import GUIDANCE_MAX_CALLS, extract_guidance, select_guidance_targets
 from news_text import dedupe_articles, published_utc
 
 # AWS clients
@@ -483,6 +484,21 @@ def handler(event, context):
               f"Confidence: {aggregate['confidence']}, "
               f"Flags: {aggregate['risk_flags']}, "
               f"Competition: HHI={competition['hhi_score']}→Adj={competition['competition_score']}")
+
+    # Earnings guidance: one call per new earnings event (idempotent by event key, capped)
+    targets, deferred = select_guidance_targets(stocks_with_news)
+    print(f"  Guidance extraction: {len(targets)} calls (cap {GUIDANCE_MAX_CALLS}), "
+          f"{len(deferred)} deferred {deferred[:10]}")
+    if targets:
+        now_utc = datetime.now(timezone.utc)
+        by_symbol = {s["symbol"]: s for s in stocks_with_sentiment}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            signals = executor.map(lambda t: extract_guidance(t, bedrock_client, model_id, now_utc), targets)
+            for target, signal in zip(targets, signals):
+                if signal:
+                    by_symbol[target["symbol"]]["guidance_signal"] = signal
+                    print(f"    {target['symbol']}: guidance verdict={signal['verdict']} "
+                          f"vs_consensus={signal['guidance_vs_consensus']} margin={signal['margin_outlook']}")
 
     # Store raw results in S3
     if bucket_name and stocks_with_sentiment:

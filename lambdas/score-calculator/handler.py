@@ -43,6 +43,7 @@ from market_time import (
     SKIP_SETTLED_AFTER, is_bar_final, latest_final_session_date,
     new_york_date, new_york_dt, parse_utc_iso,
 )
+from guidance_penalty import guidance_is_current, guidance_penalty
 from news_text import published_utc
 from price_signals import news_price_divergence
 
@@ -481,7 +482,8 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     """
     Calculate the final Investability Score for a single stock.
 
-    Formula: (0.6 × fundamental) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized) + risk_penalties
+    Formula: (0.6 × fundamental) + (0.25 × sentiment_normalized) + (0.15 × competition_normalized)
+             + risk_penalties + guidance_penalty (<= 0, see guidance_penalty.py) + rev_accel_bonus
 
     All components on 0-100 scale:
     - Fundamental: 0 = barely passed, 100 = crushed every filter
@@ -530,7 +532,9 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
     # flat penalty).
     rev_accel_bonus = 5.0 if stock.get("revenue_accel_underpriced") else 0.0
 
-    final_score = max(0.0, min(100.0, base_score + total_penalty + rev_accel_bonus))
+    guidance_adjustment, guidance_detail = guidance_penalty(stock.get("guidance_signal"), today)
+
+    final_score = max(0.0, min(100.0, base_score + total_penalty + guidance_adjustment + rev_accel_bonus))
 
     return {
         **stock,
@@ -548,6 +552,8 @@ def calculate_investability_score(stock: dict, existing_ledger: list, today: str
             "competition_weighted": round(w_competition * competition_normalized, 1),
             "risk_penalties": applied_penalties,
             "total_penalty": total_penalty,
+            "guidance_penalty": guidance_adjustment,
+            "guidance_detail": guidance_detail,
             "rev_accel_bonus": rev_accel_bonus,
             "base_score_before_penalty": round(base_score, 1),
         },
@@ -662,6 +668,9 @@ def attach_news_price_divergence(scored_stocks: list, table) -> None:
         flag = news_price_divergence(_from_decimal(item.get("bars") or []), score)
         if flag:
             stock["news_price_divergence"] = flag
+
+
+UNSCORED_SNIPPET_CHARS = 240
 
 
 def select_articles_to_store(articles: list, limit: int = 10) -> list:
@@ -824,6 +833,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "competition_reasoning": stock.get("competition", {}).get("competition_reasoning", ""),
                 "ai_threat": stock.get("competition", {}).get("ai_threat", ""),
                 "news_price_divergence": stock.get("news_price_divergence"),
+                "guidance_signal": stock.get("guidance_signal"),
                 "sentiment_scored_count": stock.get("sentiment", {}).get("scored_count"),
                 "sentiment_article_count": stock.get("sentiment", {}).get("article_count"),
                 "first_tracked": first_tracked,
@@ -853,6 +863,10 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 "risk_flags": stock.get("sentiment", {}).get("risk_flags", []),
                 "last_updated": now_iso,
             }
+            # Dated copy of a new extraction only; a carried-forward signal is already in an earlier SCORE# item
+            guidance = stock.get("guidance_signal")
+            if guidance and guidance.get("extracted_on") == today:
+                score_item["guidance_signal"] = guidance
             batch.put_item(Item=_to_decimal(
                 {k: v for k, v in score_item.items() if v is not None}
             ))
@@ -904,6 +918,7 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                 analyzed_articles = []
                 for article in select_articles_to_store(articles, 10):
                     analysis = article.get("analysis", {})
+                    scored = bool(analysis.get("relevant", True)) and analysis.get("counted", True) is not False
                     analyzed_articles.append({
                         "title": article.get("title", ""),
                         "url": article.get("url", ""),
@@ -912,12 +927,14 @@ def persist_to_dynamodb(scored_stocks: list, today: str):
                         "sentiment": analysis.get("sentiment", 0),
                         "confidence": analysis.get("confidence", 0),
                         "relevant": analysis.get("relevant", True),
-                        "scored": bool(analysis.get("relevant", True))
-                                  and analysis.get("counted", True) is not False,
+                        "scored": scored,
                         "duplicate_of": analysis.get("duplicate_of", ""),
                         "risk_flags": analysis.get("risk_flags", []),
                         "summary": analysis.get("summary", ""),
                     })
+                    if not scored:
+                        # The model summary of an unscored article can be misleading; the UI shows the raw text instead
+                        analyzed_articles[-1]["snippet"] = (article.get("description") or "")[:UNSCORED_SNIPPET_CHARS]
                 articles_item = {
                     "PK": f"STOCK#{symbol}",
                     "SK": "ARTICLES",
@@ -1110,6 +1127,29 @@ def _carry_forward_enrichment(table, stocks: list):
             stock["estimates"] = prev_est
 
 
+def _carry_forward_guidance(table, stocks: list, today: str):
+    """
+    LATEST is rewritten whole each run, so a guidance_signal extracted on earnings
+    day would vanish the next day. A stock with no new extraction keeps the stored
+    one while it is still inside the 30-day decay window.
+    """
+    for stock in stocks:
+        symbol = stock.get("symbol", "")
+        if not symbol or stock.get("guidance_signal"):
+            continue
+        try:
+            prev = table.get_item(
+                Key={"PK": f"STOCK#{symbol}", "SK": "LATEST"},
+                ProjectionExpression="guidance_signal",
+            ).get("Item", {})
+        except Exception as e:
+            print(f"    Warning: Could not carry forward guidance for {symbol}: {type(e).__name__}")
+            continue
+        signal = _from_decimal(prev.get("guidance_signal"))
+        if guidance_is_current(signal, today):
+            stock["guidance_signal"] = signal
+
+
 def handler(event, context):
     """
     Lambda entry point. Called by Step Functions after sentiment-analyzer.
@@ -1139,6 +1179,8 @@ def handler(event, context):
     print(f"Calculating investability scores for {len(stocks)} stocks...")
 
     backfill_from_latest(stocks)
+    if os.environ.get("DATA_TABLE_NAME"):
+        _carry_forward_guidance(dynamodb.Table(os.environ["DATA_TABLE_NAME"]), stocks, today)
 
     # Load existing risk flag ledgers from DynamoDB (for lifecycle management)
     existing_ledgers = load_existing_risk_ledgers([s.get("symbol", "") for s in stocks])
