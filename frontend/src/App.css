@@ -449,37 +449,36 @@ th.sticky-col-2 {
   font-size: 0.85rem;
   margin-bottom: 0.5rem;
 }
-
-.history-chart {
+.history-ranges {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 80px;
-  padding: 0.5rem 0;
+  gap: 0.25rem;
+  margin-bottom: 0.25rem;
 }
-
-.history-bar-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  height: 100%;
-  justify-content: flex-end;
+.history-ranges button {
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
 }
-
-.history-bar {
+.history-ranges button.active {
+  background: #334155;
+  color: #e2e8f0;
+}
+.history-svg {
+  display: block;
   width: 100%;
-  min-width: 8px;
-  border-radius: 2px 2px 0 0;
-  transition: height 0.3s;
+  height: 80px;
 }
-
-.history-date {
+.history-labels {
+  display: flex;
+  justify-content: space-between;
   font-size: 0.6rem;
   color: #475569;
   margin-top: 2px;
 }
-
 /* Detail footer */
 .detail-footer {
   margin-top: 1rem;

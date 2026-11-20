@@ -297,6 +297,7 @@ Components:
 - `StockDetail.tsx` — Two tabs:
   - Overview: Company profile, score cards (sentiment card shows "scored n of m articles" and confidence), sparkline chart, divergence banner, Guidance block (components, analyst actions, quotes, event date, age), risk flags (with ledger metadata), news (unscored articles greyed with a "not scored" tag and the raw snippet instead of the model summary, per-article confidence, grey 0 badge for a genuinely scored 0)
   - Metrics Guide: Industry comparison (real medians from SEC SIC data), scoring methodology, metric definitions with interpretation
+- `ScoreHistoryChart.tsx` — Score history as one responsive SVG (viewBox 340x80, bar width = W/n, 1px gap, no min-width, so it cannot overflow). Range buttons 30D/90D/1Y/All by calendar span from the newest snapshot (a button that repeats a shorter range is hidden); windows over 120 points show the last snapshot per ISO week. Heading `Score History (N snapshots, since DATE)`; date labels at first/middle/last; `<title>` tooltip per bar. Logic in `utils/history.ts`
 - `FilterSliders.tsx` — Client-side re-filtering with D/E override note ("or ICR > 3.0x")
 - `MetricsGuide.tsx` — Industry averages (fetched from API), metric definitions, scoring formulas explained
 - `utils/signals.ts` — divergence message, guidance lines/tooltip, `isArticleScored` (legacy items without `scored` fall back to `relevant`)
@@ -631,7 +632,7 @@ Architecture:
 - Suite lives in `tests/` (pytest). Dev deps in `requirements-dev.txt`
   (`pytest`, `moto`, `requests-mock`) — install once with
   `.venv/bin/python3 -m pip install -r requirements-dev.txt`.
-- Run: `./scripts/run_tests.sh` (pytest, then `npx jest` for the CDK assertions) / `-m unit|integration|regression` (pytest args only).
+- Run: `./scripts/run_tests.sh` (pytest, then `npx jest` for the CDK assertions, then Vitest for the frontend: `utils/history.ts` + `ScoreHistoryChart` render safety) / `-m unit|integration|regression` (pytest args only).
 - MUST be green before every deploy. Ad-hoc `scripts/test_*.py` (live-API
   probes) are NOT the suite and are excluded from pytest collection.
 - Mocking: `moto` for DynamoDB (single-table + tracking-status-index GSI),

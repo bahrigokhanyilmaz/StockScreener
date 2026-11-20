@@ -13,11 +13,13 @@ Principle #14), the suite MUST pass before every deploy.
 ## Run
 
 ```bash
-./scripts/run_tests.sh                 # everything (pytest, then Jest for CDK)
+./scripts/run_tests.sh                 # everything (pytest, Jest for CDK, Vitest for frontend)
 ./scripts/run_tests.sh -m regression   # only past-bug regression tests
 ./scripts/run_tests.sh -m unit         # only fast unit tests
 ./scripts/run_tests.sh -m integration  # cross-step / DynamoDB tests
 ```
+
+Frontend only: `cd frontend && npm test` (Vitest, `frontend/src/__tests__/`: `utils/history.ts` logic and a `renderToString` safety test of `ScoreHistoryChart`). Install once with `cd frontend && npm install`.
 
 ## Layout
 

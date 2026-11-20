@@ -132,7 +132,8 @@ stock-screener/
 ├── frontend/                          React + TypeScript dashboard (Vite 8)
 │   └── src/components/
 │       ├── StockTable.tsx             Metrics table with color-coded pass/fail
-│       └── StockDetail.tsx            Company profile + scores + news
+│       ├── StockDetail.tsx            Company profile + scores + news
+│       └── ScoreHistoryChart.tsx      Responsive SVG score history (30D/90D/1Y/All)
 ├── shared/config/
 │   └── screener-filters.json          Filter thresholds (source of truth)
 ├── scripts/                           One-time utility scripts

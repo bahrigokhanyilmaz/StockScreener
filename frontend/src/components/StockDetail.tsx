@@ -3,6 +3,8 @@ import { getStockDetail, getStockHistory, getStockNews, getStockPrices } from '.
 import type { Stock, ScoreHistoryPoint, NewsArticle, PriceBar, GuidanceSignal } from '../api.ts';
 import { calculateTrend } from '../utils/trends.ts';
 import type { TrendData } from '../utils/trends.ts';
+import { scoreColor } from '../utils/history.ts';
+import ScoreHistoryChart from './ScoreHistoryChart.tsx';
 import { daysSince, divergenceMessage, guidanceLines, isArticleScored, isNegativeGuidance } from '../utils/signals.ts';
 import MetricsGuide from './MetricsGuide.tsx';
 
@@ -209,25 +211,7 @@ export default function StockDetail({ ticker, onClose }: Props) {
           )}
 
           {/* Score History */}
-          {history.length > 1 && (
-            <div className="history-section">
-              <h4>Score History ({history.length} days)</h4>
-              <div className="history-chart">
-                {history.map((point, i) => (
-                  <div key={i} className="history-bar-wrapper" title={`${point.date}: ${point.investability_score}`}>
-                    <div
-                      className="history-bar"
-                      style={{
-                        height: `${Math.max(5, (point.investability_score ?? 0))}%`,
-                        backgroundColor: scoreColor(point.investability_score),
-                      }}
-                    />
-                    <span className="history-date">{point.date?.slice(5)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {history.length > 1 && <ScoreHistoryChart history={history} />}
 
           {/* Recent News */}
           <div className="news-section">
@@ -407,13 +391,6 @@ function ScoreCard({ label, value, max, min = 0, color, caption }: {
       {caption && <div className="score-caption">{caption}</div>}
     </div>
   );
-}
-
-function scoreColor(score: number | null): string {
-  if (score === null) return '#6b7280';
-  if (score >= 70) return '#22c55e';
-  if (score >= 40) return '#f59e0b';
-  return '#ef4444';
 }
 
 function sentimentColor(score: number | null): string {
