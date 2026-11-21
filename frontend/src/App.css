@@ -1710,8 +1710,8 @@ th.sticky-col-2 {
 .divergence-badge.divergence-strong { background: #7f1d1d; color: #fca5a5; }
 .divergence-badge.divergence-mild { background: #713f12; color: #fcd34d; }
 .signals-cell { white-space: nowrap; }
-.signals-slots { display: inline-flex; gap: 0.3rem; }
-.signal-slot { display: inline-block; width: 2.4rem; text-align: center; }
+.signals-cell { text-align: left; }
+.signals-row { display: inline-flex; align-items: center; gap: 0.3rem; }
 .guidance-marker {
   display: inline-block;
   padding: 0.1rem 0.3rem;

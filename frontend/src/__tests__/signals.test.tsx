@@ -28,22 +28,23 @@ describe('buildSignalSlots', () => {
 });
 
 describe('SignalsCell markup', () => {
-  const slots = (html: string) => (html.match(/class="signal-slot"/g) || []).length;
-  it('always renders both slots in order, empty when no signal', () => {
+  it('renders an empty left-aligned row when there is no signal', () => {
     const html = renderToString(<SignalsCell stock={mk({})} />);
-    expect(slots(html)).toBe(2);
+    expect(html).toContain('signals-row');
     expect(html).not.toContain('divergence-badge');
     expect(html).not.toContain('guidance-marker');
-    expect(html.indexOf('data-slot="div"')).toBeLessThan(html.indexOf('data-slot="guidance"'));
   });
-  it('places each badge in its own slot', () => {
+  it('renders each badge directly in the row, with no reserved slots', () => {
     const onlyG = renderToString(<SignalsCell stock={mk({ guidance_signal: neg })} />);
-    expect(slots(onlyG)).toBe(2);
-    expect(onlyG.indexOf('guidance-marker')).toBeGreaterThan(onlyG.indexOf('data-slot="guidance"'));
+    expect(onlyG).toContain('guidance-marker');
     expect(onlyG).not.toContain('divergence-badge');
+    expect(onlyG).not.toContain('signal-slot');
+    const onlyD = renderToString(<SignalsCell stock={mk({ news_price_divergence: div('mild') })} />);
+    expect(onlyD).toContain('divergence-mild');
+    expect(onlyD).not.toContain('guidance-marker');
+  });
+  it('puts DIV before G▼ when both are present', () => {
     const both = renderToString(<SignalsCell stock={mk({ news_price_divergence: div('strong'), guidance_signal: neg })} />);
-    expect(slots(both)).toBe(2);
-    expect(both).toContain('divergence-strong');
-    expect(both.indexOf('divergence-badge')).toBeLessThan(both.indexOf('data-slot="guidance"'));
+    expect(both.indexOf('divergence-badge')).toBeLessThan(both.indexOf('guidance-marker'));
   });
 });
