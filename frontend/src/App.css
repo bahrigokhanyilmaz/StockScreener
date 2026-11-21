@@ -1701,7 +1701,6 @@ th.sticky-col-2 {
 /* Price-vs-news divergence and earnings guidance */
 .divergence-badge {
   display: inline-block;
-  margin-left: 0.3rem;
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   font-size: 0.6rem;
@@ -1710,9 +1709,11 @@ th.sticky-col-2 {
 }
 .divergence-badge.divergence-strong { background: #7f1d1d; color: #fca5a5; }
 .divergence-badge.divergence-mild { background: #713f12; color: #fcd34d; }
+.signals-cell { white-space: nowrap; }
+.signals-slots { display: inline-flex; gap: 0.3rem; }
+.signal-slot { display: inline-block; width: 2.4rem; text-align: center; }
 .guidance-marker {
   display: inline-block;
-  margin-left: 0.3rem;
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   background: #450a0a;

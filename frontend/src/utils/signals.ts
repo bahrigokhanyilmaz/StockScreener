@@ -1,4 +1,4 @@
-import type { GuidanceSignal, NewsArticle, NewsPriceDivergence } from '../api.ts';
+import type { GuidanceSignal, NewsArticle, NewsPriceDivergence, Stock } from '../api.ts';
 
 /** Tooltip/banner text for the price-vs-news divergence flag. */
 export function divergenceMessage(d: NewsPriceDivergence): string {
@@ -48,4 +48,25 @@ export function daysSince(isoDate: string, now: number = Date.now()): number {
 export function isArticleScored(a: NewsArticle): boolean {
   if (a.scored !== undefined) return a.scored;
   return a.relevant !== false;
+}
+
+export type SignalSlot =
+  | { key: 'div'; label: 'DIV'; tier: string; tooltip: string }
+  | { key: 'guidance'; label: 'G▼'; tooltip: string }
+  | null;
+
+/** Fixed-order slots for the table's Signals column: [divergence, guidance]. A missing signal is null so its width stays reserved. */
+export function buildSignalSlots(
+  stock: Pick<Stock, 'news_price_divergence' | 'guidance_signal'>,
+): [SignalSlot, SignalSlot] {
+  const d = stock.news_price_divergence;
+  const g = stock.guidance_signal;
+  return [
+    d ? { key: 'div', label: 'DIV', tier: d.tier, tooltip: divergenceMessage(d) } : null,
+    g && isNegativeGuidance(g) ? { key: 'guidance', label: 'G▼', tooltip: guidanceTooltip(g) } : null,
+  ];
+}
+
+export function activeSignalCount(stock: Pick<Stock, 'news_price_divergence' | 'guidance_signal'>): number {
+  return buildSignalSlots(stock).filter(Boolean).length;
 }
